@@ -916,6 +916,8 @@ object SparkSession {
 
         // No active nor global default session. Create a new one.
         val sparkContext = userSuppliedContext.getOrElse {
+          /* else创建一个新的SparkContext */
+          // 将user的设置（options）传给sparkConf
           val sparkConf = new SparkConf()
           options.foreach { case (k, v) => sparkConf.set(k, v) }
 

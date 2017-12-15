@@ -71,6 +71,7 @@ import org.apache.spark.util._
  */
 class SparkContext(config: SparkConf) extends Logging {
 
+  // 该SparkContext创建的位置
   // The call site where this SparkContext was constructed.
   private val creationSite: CallSite = Utils.getCallSite()
 
@@ -78,17 +79,22 @@ class SparkContext(config: SparkConf) extends Logging {
   private val allowMultipleContexts: Boolean =
     config.getBoolean("spark.driver.allowMultipleContexts", false)
 
+  // 为了避免同时有多个处于活动状态的SparkContexts，标记该SparkContexts已经开始构建
+  // 注意：该标记行为必须放置在SparkContexts构建函数之前（怎样算是放在前面呢）
+  // ************************** 所以很重要的一个问题是，scala构造一个类的实例的顺序是怎么样的 **************************
   // In order to prevent multiple SparkContexts from being active at the same time, mark this
   // context as having started construction.
   // NOTE: this must be placed at the beginning of the SparkContext constructor.
   SparkContext.markPartiallyConstructed(this, allowMultipleContexts)
 
   val startTime = System.currentTimeMillis()
-
+  // SparkContext是否停止标志
   private[spark] val stopped: AtomicBoolean = new AtomicBoolean(false)
 
   private[spark] def assertNotStopped(): Unit = {
+    // 为true
     if (stopped.get()) {
+      // activeContext是在SparkContext创建完成后设置的
       val activeContext = SparkContext.activeContext.get()
       val activeCreationSite =
         if (activeContext == null) {
@@ -231,7 +237,10 @@ class SparkContext(config: SparkConf) extends Logging {
   def master: String = _conf.get("spark.master")
   def deployMode: String = _conf.getOption("spark.submit.deployMode").getOrElse("client")
   def appName: String = _conf.get("spark.app.name")
-
+  /**
+    * NOTE: EventLog: 事件日志？
+    * @return
+    */
   private[spark] def isEventLogEnabled: Boolean = _conf.getBoolean("spark.eventLog.enabled", false)
   private[spark] def eventLogDir: Option[URI] = _eventLogDir
   private[spark] def eventLogCodec: Option[String] = _eventLogCodec
@@ -243,11 +252,17 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def isStopped: Boolean = stopped.get()
 
+  /**
+    * AppStatusStore, 应用状态存储 ？？？
+    * @return
+    */
   private[spark] def statusStore: AppStatusStore = _statusStore
 
+  // 异步的监听总线
   // An asynchronous listener bus for Spark events
   private[spark] def listenerBus: LiveListenerBus = _listenerBus
 
+  // 该方法允许由SparkEnv创建的组件在单元测试中被mock（模仿？？）
   // This function allows components created by SparkEnv to be mocked in unit tests:
   private[spark] def createSparkEnv(
       conf: SparkConf,
@@ -258,31 +273,35 @@ class SparkContext(config: SparkConf) extends Logging {
 
   private[spark] def env: SparkEnv = _env
 
+  // 用来存储静态文件和jar包的url和本地时间戳
   // Used to store a URL for each static file/jar together with the file's local timestamp
   private[spark] val addedFiles = new ConcurrentHashMap[String, Long]().asScala
   private[spark] val addedJars = new ConcurrentHashMap[String, Long]().asScala
 
+  // 用于追踪所有持久化的rdd
   // Keeps track of all persisted RDDs
   private[spark] val persistentRdds = {
     val map: ConcurrentMap[Int, RDD[_]] = new MapMaker().weakValues().makeMap[Int, RDD[_]]()
     map.asScala
   }
+  // spark状态追踪器
   def statusTracker: SparkStatusTracker = _statusTracker
-
+  // 进度条
   private[spark] def progressBar: Option[ConsoleProgressBar] = _progressBar
-
+  // spark ui
   private[spark] def ui: Option[SparkUI] = _ui
-
+  // ui的web地址
   def uiWebUrl: Option[String] = _ui.map(_.webUrl)
 
   /**
+   * Hdoop配置，hdfs-site.xml core-site.xml mappred-site.xml yarn-site.xml
    * A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse.
    *
    * @note As it will be reused in all Hadoop RDDs, it's better not to modify it unless you
    * plan to set some global configurations for all Hadoop RDDs.
    */
   def hadoopConfiguration: Configuration = _hadoopConfiguration
-
+  // executor的内存大小
   private[spark] def executorMemory: Int = _executorMemory
 
   // Environment variables to pass to our executors.
@@ -290,14 +309,15 @@ class SparkContext(config: SparkConf) extends Logging {
 
   // Set SPARK_USER for user who is running SparkContext.
   val sparkUser = Utils.getCurrentUserName()
-
+  // 调度器后端
   private[spark] def schedulerBackend: SchedulerBackend = _schedulerBackend
-
-  private[spark] def taskScheduler: TaskScheduler = _taskScheduler
-  private[spark] def taskScheduler_=(ts: TaskScheduler): Unit = {
+  // 任务调度器
+  private[spark] def taskScheduler: TaskScheduler = _taskScheduler // 相当于getter
+  private[spark] def taskScheduler_=(ts: TaskScheduler): Unit = {  // 相当于setter
     _taskScheduler = ts
   }
 
+  // 有向无环图调度器
   private[spark] def dagScheduler: DAGScheduler = _dagScheduler
   private[spark] def dagScheduler_=(ds: DAGScheduler): Unit = {
     _dagScheduler = ds
@@ -314,16 +334,17 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def applicationId: String = _applicationId
   def applicationAttemptId: Option[String] = _applicationAttemptId
-
+  // 事件日志器
   private[spark] def eventLogger: Option[EventLoggingListener] = _eventLogger
-
+  // 分配管理器
   private[spark] def executorAllocationManager: Option[ExecutorAllocationManager] =
     _executorAllocationManager
-
+  // 清理器
   private[spark] def cleaner: Option[ContextCleaner] = _cleaner
-
+  // 检查点路径？
   private[spark] var checkpointDir: Option[String] = None
 
+  // 这个语法是怎么执行的 ？？
   // Thread Local variable that can be used by users to pass information down the stack
   protected[spark] val localProperties = new InheritableThreadLocal[Properties] {
     override protected def childValue(parent: Properties): Properties = {
@@ -343,7 +364,8 @@ class SparkContext(config: SparkConf) extends Logging {
   private def warnSparkMem(value: String): String = {
     logWarning("Using SPARK_MEM to set amount of memory to use per executor process is " +
       "deprecated, please use spark.executor.memory instead.")
-    value
+    value // ? 这里的value要干嘛呢，这什么意思
+          //  哦，应该是赋值给了warnSparkMem， 不对，应该是又返回了value
   }
 
   /** Control our logLevel. This overrides any user-defined log settings.
@@ -359,8 +381,12 @@ class SparkContext(config: SparkConf) extends Logging {
     Utils.setLogLevel(org.apache.log4j.Level.toLevel(upperCased))
   }
 
+  // try的代码块初始化了SparkContext中非常重要的内部变量 very important
   try {
+    // --------------------------------------—— vvv _conf vvv ------------------------------------------------------
+    // _conf在这里第一次初始化，这个config来自构造函数
     _conf = config.clone()
+    // 检查非法的或抛弃的一些设置
     _conf.validateSettings()
 
     if (!_conf.contains("spark.master")) {
@@ -390,10 +416,13 @@ class SparkContext(config: SparkConf) extends Logging {
 
     _conf.set("spark.executor.id", SparkContext.DRIVER_IDENTIFIER)
 
+    // --------------------------------------—— ^^^ _conf ^^^ ------------------------------------------------------
+
     _jars = Utils.getUserJars(_conf)
     _files = _conf.getOption("spark.files").map(_.split(",")).map(_.filter(_.nonEmpty))
       .toSeq.flatten
 
+    // ---------------------------—— vvv _eventLogDit/_eventLogCodec vvv ---------------------------------------------
     _eventLogDir =
       if (isEventLogEnabled) {
         val unresolvedDir = conf.get("spark.eventLog.dir", EventLoggingListener.DEFAULT_LOG_DIR)
@@ -402,7 +431,7 @@ class SparkContext(config: SparkConf) extends Logging {
       } else {
         None
       }
-
+    // 配置事件日志的压缩工具
     _eventLogCodec = {
       val compress = _conf.getBoolean("spark.eventLog.compress", false)
       if (compress && isEventLogEnabled) {
@@ -411,13 +440,16 @@ class SparkContext(config: SparkConf) extends Logging {
         None
       }
     }
+    // ---------------------------—— ^^^ _eventLogDit/_eventLogCodec ^^^ ---------------------------------------------
 
+    // 初始化监听总线
     _listenerBus = new LiveListenerBus(_conf)
 
     // Initialize the app status store and listener before SparkEnv is created so that it gets
     // all events.
     _statusStore = AppStatusStore.createLiveStore(conf, l => listenerBus.addToStatusQueue(l))
 
+    // 创建spark的运行环境 very important
     // Create the Spark execution environment (cache, map output tracker, etc)
     _env = createSparkEnv(_conf, isLocal, listenerBus)
     SparkEnv.set(_env)
@@ -456,6 +488,8 @@ class SparkContext(config: SparkConf) extends Logging {
 
     _hadoopConfiguration = SparkHadoopUtil.get.newConfiguration(_conf)
 
+    // --------------------------------------- vvv jar file vvv --------------------------------------------------------
+    // 添加jar包或file到env.rpcEnv.fileServer上
     // Add each JAR given through the constructor
     if (jars != null) {
       jars.foreach(addJar)
@@ -464,14 +498,19 @@ class SparkContext(config: SparkConf) extends Logging {
     if (files != null) {
       files.foreach(addFile)
     }
+    // --------------------------------------- ^^^ jar file ^^^ --------------------------------------------------------
 
+    // --------------------------------------- vvv _executorMemory vvv --------------------------------------------------------
     _executorMemory = _conf.getOption("spark.executor.memory")
       .orElse(Option(System.getenv("SPARK_EXECUTOR_MEMORY")))
       .orElse(Option(System.getenv("SPARK_MEM"))
       .map(warnSparkMem))
       .map(Utils.memoryStringToMb)
       .getOrElse(1024)
+    // --------------------------------------- ^^^ _executorMemory ^^^ --------------------------------------------------------
 
+
+    // --------------------------------------- vvv executorEnvs vvv ----------------------------------------------------
     // Convert java options to env vars as a work around
     // since we can't set env vars directly in sbt.
     for { (envKey, propKey) <- Seq(("SPARK_TESTING", "spark.testing"))
@@ -486,23 +525,32 @@ class SparkContext(config: SparkConf) extends Logging {
     executorEnvs("SPARK_EXECUTOR_MEMORY") = executorMemory + "m"
     executorEnvs ++= _conf.getExecutorEnv
     executorEnvs("SPARK_USER") = sparkUser
+    // --------------------------------------- ^^^ executorEnvs ^^^ ----------------------------------------------------
 
+
+    // --------------------------------------- vvv _heartbeatReceiver vvv ----------------------------------------------
     // We need to register "HeartbeatReceiver" before "createTaskScheduler" because Executor will
     // retrieve "HeartbeatReceiver" in the constructor. (SPARK-6640)
     _heartbeatReceiver = env.rpcEnv.setupEndpoint(
       HeartbeatReceiver.ENDPOINT_NAME, new HeartbeatReceiver(this))
+    // --------------------------------------- ^^^ _heartbeatReceiver ^^^ ----------------------------------------------
 
+
+
+    // ------------------------ vvv _schedulerBackend _taskScheduler _dagScheduler vvv ---------------------------------
     // Create and start the scheduler
     val (sched, ts) = SparkContext.createTaskScheduler(this, master, deployMode)
     _schedulerBackend = sched
     _taskScheduler = ts
     _dagScheduler = new DAGScheduler(this)
     _heartbeatReceiver.ask[Boolean](TaskSchedulerIsSet)
+    // ------------------------ ^^^ _schedulerBackend _taskScheduler _dagScheduler ^^^ ---------------------------------
 
     // start TaskScheduler after taskScheduler sets DAGScheduler reference in DAGScheduler's
     // constructor
     _taskScheduler.start()
 
+    // --------------------------------------- vvv _applicationId vvv ----------------------------------------------
     _applicationId = _taskScheduler.applicationId()
     _applicationAttemptId = taskScheduler.applicationAttemptId()
     _conf.set("spark.app.id", _applicationId)
@@ -511,6 +559,7 @@ class SparkContext(config: SparkConf) extends Logging {
     }
     _ui.foreach(_.setAppId(_applicationId))
     _env.blockManager.initialize(_applicationId)
+    // --------------------------------------- ^^^ _applicationId ^^^ ----------------------------------------------
 
     // The metrics system for Driver need to be set spark.app.id to app ID.
     // So it should start after we get app ID from the task scheduler and set spark.app.id.
@@ -530,6 +579,7 @@ class SparkContext(config: SparkConf) extends Logging {
         None
       }
 
+    // ------------------------------------ vvv _executorAllocationManager vvv -----------------------------------------
     // Optionally scale number of executors dynamically based on workload. Exposed for testing.
     val dynamicAllocationEnabled = Utils.isDynamicAllocationEnabled(_conf)
     _executorAllocationManager =
@@ -545,7 +595,9 @@ class SparkContext(config: SparkConf) extends Logging {
         None
       }
     _executorAllocationManager.foreach(_.start())
+    // ------------------------------------ ^^^ _executorAllocationManager ^^^ -----------------------------------------
 
+    // --------------------------------------------- vvv _cleaner vvv --------------------------------------------------
     _cleaner =
       if (_conf.getBoolean("spark.cleaner.referenceTracking", true)) {
         Some(new ContextCleaner(this))
@@ -553,7 +605,7 @@ class SparkContext(config: SparkConf) extends Logging {
         None
       }
     _cleaner.foreach(_.start())
-
+    // --------------------------------------------- ^^^ _cleaner ^^^ --------------------------------------------------
     setupAndStartListenerBus()
     postEnvironmentUpdate()
     postApplicationStart()
@@ -2446,11 +2498,15 @@ object SparkContext extends Logging {
       sc: SparkContext,
       allowMultipleContexts: Boolean): Unit = {
     SPARK_CONTEXT_CONSTRUCTOR_LOCK.synchronized {
+      // ??? ctiveContext.get()最多只能获得一个ctx吧
+      // filter 和传进来的sc不相等的sparkContext，说明存在其他的sparkContext
       Option(activeContext.get()).filter(_ ne sc).foreach { ctx =>
           val errMsg = "Only one SparkContext may be running in this JVM (see SPARK-2243)." +
             " To ignore this error, set spark.driver.allowMultipleContexts = true. " +
             s"The currently running SparkContext was created at:\n${ctx.creationSite.longForm}"
           val exception = new SparkException(errMsg)
+          // 即使允许存在多个sparkContext，还是会warning
+          // 如果不允许，就抛出异常
           if (allowMultipleContexts) {
             logWarning("Multiple running SparkContexts detected in the same JVM!", exception)
           } else {
@@ -2458,6 +2514,7 @@ object SparkContext extends Logging {
           }
         }
 
+      // 存在其它正在创建的ctx
       contextBeingConstructed.filter(_ ne sc).foreach { otherContext =>
         // Since otherContext might point to a partially-constructed context, guard against
         // its creationSite field being null:
@@ -2485,6 +2542,7 @@ object SparkContext extends Logging {
   def getOrCreate(config: SparkConf): SparkContext = {
     // Synchronize to ensure that multiple create requests don't trigger an exception
     // from assertNoOtherContextIsRunning within setActiveContext
+    // Synchronize关键字的作用是：当有多个创建请求时，在setActiveContext方法中的assertNoOtherContextIsRunning方法不会产生一个异常
     SPARK_CONTEXT_CONSTRUCTOR_LOCK.synchronized {
       if (activeContext.get() == null) {
         setActiveContext(new SparkContext(config), allowMultipleContexts = false)
@@ -2535,7 +2593,9 @@ object SparkContext extends Logging {
       sc: SparkContext,
       allowMultipleContexts: Boolean): Unit = {
     SPARK_CONTEXT_CONSTRUCTOR_LOCK.synchronized {
+      // 先判断是否有其它context正在运行
       assertNoOtherContextIsRunning(sc, allowMultipleContexts)
+      // 如果没有，这是正在创建的context为sc
       contextBeingConstructed = Some(sc)
     }
   }
@@ -2547,7 +2607,10 @@ object SparkContext extends Logging {
   private[spark] def setActiveContext(
       sc: SparkContext,
       allowMultipleContexts: Boolean): Unit = {
+    // （如果从getOrCreate方法进来，则加重入锁了；但也可以从外面第一次进来）
     SPARK_CONTEXT_CONSTRUCTOR_LOCK.synchronized {
+      // 如果允许可以存在多个context，那么，也只是提出一个warning
+      // 所以，activeContext会被覆盖吗？？？ object貌似是单例的
       assertNoOtherContextIsRunning(sc, allowMultipleContexts)
       contextBeingConstructed = None
       activeContext.set(sc)

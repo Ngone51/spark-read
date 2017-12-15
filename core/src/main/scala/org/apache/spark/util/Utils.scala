@@ -1513,6 +1513,7 @@ private[spark] object Utils extends Logging {
       }
     val longForm = callStack.take(callStackDepth).mkString("\n")
 
+    // scala默认最后一行语句为返回结果
     CallSite(shortForm, longForm)
   }
 
@@ -2038,6 +2039,8 @@ private[spark] object Utils extends Logging {
       // make sure to handle if the path has a fragment (applies to yarn
       // distributed cache)
       if (uri.getFragment() != null) {
+        // 根据相对路径创建一个文件，然后再根据这个文件获得绝对路径
+        // 其实也有可能，这个路径本身已经是绝对路径了
         val absoluteURI = new File(uri.getPath()).getAbsoluteFile().toURI()
         return new URI(absoluteURI.getScheme(), absoluteURI.getHost(), absoluteURI.getPath(),
           uri.getFragment())
