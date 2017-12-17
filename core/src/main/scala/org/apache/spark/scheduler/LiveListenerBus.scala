@@ -37,6 +37,7 @@ import org.apache.spark.metrics.source.Source
 /**
  * Asynchronously passes SparkListenerEvents to registered SparkListeners.
  *
+ * 在start()方法被调用之前，posted事件只是被缓存起来。只有当listener bus启动后，这些事件才会分发给所有attached listener
  * Until `start()` is called, all posted events are only buffered. Only after this listener bus
  * has started will events be actually propagated to all attached listeners. This listener bus
  * is stopped when `stop()` is called, and it will drop further events after stopping.
@@ -89,11 +90,11 @@ private[spark] class LiveListenerBus(conf: SparkConf) {
    */
   private[spark] def addToQueue(
       listener: SparkListenerInterface,
-      queue: String): Unit = synchronized {
+      queue: String): Unit = synchronized { // 注意synchronized关键字
     if (stopped.get()) {
       throw new IllegalStateException("LiveListenerBus is stopped.")
     }
-
+    // find()返回第一个匹配的元素
     queues.asScala.find(_.name == queue) match {
       case Some(queue) =>
         queue.addListener(listener)

@@ -2610,7 +2610,7 @@ object SparkContext extends Logging {
     // （如果从getOrCreate方法进来，则加重入锁了；但也可以从外面第一次进来）
     SPARK_CONTEXT_CONSTRUCTOR_LOCK.synchronized {
       // 如果允许可以存在多个context，那么，也只是提出一个warning
-      // 所以，activeContext会被覆盖吗？？？ object貌似是单例的
+      // 所以，activeContext(类似静态变量)会被覆盖吗？？？
       assertNoOtherContextIsRunning(sc, allowMultipleContexts)
       contextBeingConstructed = None
       activeContext.set(sc)

@@ -90,6 +90,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     if (value == null) {
       throw new NullPointerException("null value for " + key)
     }
+    // silent用来提示是否需要通知该配置已经被抛弃
     if (!silent) {
       logDeprecationWarning(key)
     }

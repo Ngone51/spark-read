@@ -42,10 +42,11 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
 
   // Cap the capacity of the queue so we get an explicit error (rather than an OOM exception) if
   // it's perpetually being added to more quickly than it's being drained.
+  // LinkedBlockingQueue线程安全
   private val eventQueue = new LinkedBlockingQueue[SparkListenerEvent](
     conf.get(LISTENER_BUS_EVENT_QUEUE_CAPACITY))
 
-  // Keep the event count separately, so that waitUntilEmpty() can be implemented properly;
+    // Keep the event count separately, so that waitUntilEmpty() can be implemented properly;
   // this allows that method to return only when the events in the queue have been fully
   // processed (instead of just dequeued).
   private val eventCount = new AtomicLong()
@@ -72,7 +73,7 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
   metrics.metricRegistry.register(s"queue.$name.size", new Gauge[Int] {
     override def getValue: Int = eventQueue.size()
   })
-
+  // 分发消息事件线程
   private val dispatchThread = new Thread(s"spark-listener-group-$name") {
     setDaemon(true)
     override def run(): Unit = Utils.tryOrStopSparkContext(sc) {
@@ -80,9 +81,11 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
     }
   }
 
+                                                          // 看不懂这个语法啊....
   private def dispatch(): Unit = LiveListenerBus.withinListenerThread.withValue(true) {
     try {
       var next: SparkListenerEvent = eventQueue.take()
+      // POISON_PILL是指为空的时候吗？？？
       while (next != POISON_PILL) {
         val ctx = processingTime.time()
         try {

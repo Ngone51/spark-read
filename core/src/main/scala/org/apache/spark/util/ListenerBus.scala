@@ -63,6 +63,7 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
   /**
    * Post the event to all registered listeners. The `postToAll` caller should guarantee calling
    * `postToAll` in the same thread for all events.
+   * postToAll()的调用者需要保证对于所有的事件，在同一个线程中调用
    */
   def postToAll(event: E): Unit = {
     // JavaConverters can create a JIterableWrapper if we use asScala.
