@@ -40,6 +40,8 @@ private[netty] abstract class NettyRpcCallContext(override val senderAddress: Rp
 
 /**
  * If the sender and the receiver are in the same process, the reply can be sent back via `Promise`.
+ * 如果发送方和接收方在同一个进程里，那么就可以通过Promise来reply
+ * So, what is a Promise ???
  */
 private[netty] class LocalNettyRpcCallContext(
     senderAddress: RpcAddress,

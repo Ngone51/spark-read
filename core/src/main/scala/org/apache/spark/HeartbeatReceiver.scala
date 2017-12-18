@@ -63,6 +63,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
     this(sc, new SystemClock)
   }
 
+  // 将HeartbeatReceiver添加到监听总线中
   sc.listenerBus.addToManagementQueue(this)
 
   override val rpcEnv: RpcEnv = sc.env.rpcEnv
@@ -88,6 +89,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
   private var timeoutCheckingTask: ScheduledFuture[_] = null
 
+  // 用于执行一些耗时较短的actions
   // "eventLoopThread" is used to run some pretty fast actions. The actions running in it should not
   // block the thread for a long time.
   private val eventLoopThread =

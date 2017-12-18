@@ -226,6 +226,7 @@ object SparkEnv extends Logging {
       listenerBus: LiveListenerBus = null,
       mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
 
+    // 判断是为driver还是executor创建SparkEnv
     val isDriver = executorId == SparkContext.DRIVER_IDENTIFIER
 
     // Listener bus is only used on the driver
@@ -233,11 +234,13 @@ object SparkEnv extends Logging {
       assert(listenerBus != null, "Attempted to create driver SparkEnv with null listener bus!")
     }
 
+    // [mark]创建安全管理者
     val securityManager = new SecurityManager(conf, ioEncryptionKey)
     if (isDriver) {
       securityManager.initializeAuth()
     }
 
+    // 这个ioEncryptionKey是个什么玩意儿？？？
     ioEncryptionKey.foreach { _ =>
       if (!securityManager.isEncryptionEnabled()) {
         logWarning("I/O encryption enabled without RPC encryption: keys will be visible on the " +
@@ -246,19 +249,23 @@ object SparkEnv extends Logging {
     }
 
     val systemName = if (isDriver) driverSystemName else executorSystemName
+    // 创建rpcEnv
     val rpcEnv = RpcEnv.create(systemName, bindAddress, advertiseAddress, port.getOrElse(-1), conf,
       securityManager, numUsableCores, !isDriver)
 
     // Figure out which port RpcEnv actually bound to in case the original port is 0 or occupied.
+    // 获取rpcEnv真正绑定的port，万一存在原先的端口号为0或者被占用的情况
     if (isDriver) {
       conf.set("spark.driver.port", rpcEnv.address.port.toString)
     }
 
     // Create an instance of the class with the given name, possibly initializing it with our conf
+    //根据给定的类名创建一个实例对象，可能会用conf来初始化
     def instantiateClass[T](className: String): T = {
       val cls = Utils.classForName(className)
       // Look for a constructor taking a SparkConf and a boolean isDriver, then one taking just
       // SparkConf, then one taking no arguments
+      // 寻找参数为SparkConf和boolean的构造函数，如果没有，则找参数为SparkConf的构造函数，如果还是没有，则找无参的构造函数
       try {
         cls.getConstructor(classOf[SparkConf], java.lang.Boolean.TYPE)
           .newInstance(conf, new java.lang.Boolean(isDriver))
@@ -280,14 +287,19 @@ object SparkEnv extends Logging {
       instantiateClass[T](conf.get(propertyName, defaultClassName))
     }
 
+    // 通过上面的两个函数，来实例化一个Serializer类
     val serializer = instantiateClassFromConf[Serializer](
       "spark.serializer", "org.apache.spark.serializer.JavaSerializer")
     logDebug(s"Using serializer: ${serializer.getClass}")
 
+    // 创建一个Serializer管理者
     val serializerManager = new SerializerManager(serializer, conf, ioEncryptionKey)
 
     val closureSerializer = new JavaSerializer(conf)
 
+    // (需要看下spark的rpc原理)
+    // 如果是driver，注册EndPoint
+    // 如果是executor，创建一个driver的EndPoint的引用(ref)
     def registerOrLookupEndpoint(
         name: String, endpointCreator: => RpcEndpoint):
       RpcEndpointRef = {
@@ -298,9 +310,11 @@ object SparkEnv extends Logging {
         RpcUtils.makeDriverRef(name, conf, rpcEnv)
       }
     }
-
+    // 创建广播管理者
     val broadcastManager = new BroadcastManager(isDriver, conf, securityManager)
 
+    // 如果是driver，创建MapOutputTrackerMaster（for master节点），
+    // 反之，就是executor，创建MapOutputTrackerWorker（worker节点）
     val mapOutputTracker = if (isDriver) {
       new MapOutputTrackerMaster(conf, broadcastManager, isLocal)
     } else {
@@ -313,6 +327,7 @@ object SparkEnv extends Logging {
       new MapOutputTrackerMasterEndpoint(
         rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf))
 
+    // --------------------------------------- vvv  shuffle vvv --------------------------------------------------------
     // Let the user specify short names for shuffle managers
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
@@ -321,15 +336,18 @@ object SparkEnv extends Logging {
     val shuffleMgrClass =
       shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase(Locale.ROOT), shuffleMgrName)
     val shuffleManager = instantiateClass[ShuffleManager](shuffleMgrClass)
+    // --------------------------------------- ^^^  shuffle ^^^ --------------------------------------------------------
 
+    // 是否启用内存泄漏管理者
     val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)
+    // 创建内存管理者
     val memoryManager: MemoryManager =
       if (useLegacyMemoryManager) {
         new StaticMemoryManager(conf, numUsableCores)
       } else {
         UnifiedMemoryManager(conf, numUsableCores)
       }
-
+    // --------------------------------------- vvv block vvv --------------------------------------------------------
     val blockManagerPort = if (isDriver) {
       conf.get(DRIVER_BLOCK_MANAGER_PORT)
     } else {
@@ -349,6 +367,7 @@ object SparkEnv extends Logging {
     val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,
       blockTransferService, securityManager, numUsableCores)
+    // --------------------------------------- ^^^  block ^^^ --------------------------------------------------------
 
     val metricsSystem = if (isDriver) {
       // Don't start metrics system right now for Driver.

@@ -62,6 +62,7 @@ private[spark] class TaskSchedulerImpl(
     this(sc, sc.conf.get(config.MAX_TASK_FAILURES))
   }
 
+  // 黑名单tracker ？？？
   // Lazily initializing blackListTrackOpt to avoid getting empty ExecutorAllocationClient,
   // because ExecutorAllocationClient is created after this TaskSchedulerImpl.
   private[scheduler] lazy val blacklistTrackerOpt = maybeCreateBlacklistTracker(sc)
@@ -69,6 +70,7 @@ private[spark] class TaskSchedulerImpl(
   val conf = sc.conf
 
   // How often to check for speculative tasks
+  // 检测speculative task的时间间隔，默认100ms
   val SPECULATION_INTERVAL_MS = conf.getTimeAsMs("spark.speculation.interval", "100ms")
 
   // Duplicate copies of a task will only be launched if the original copy has been running for

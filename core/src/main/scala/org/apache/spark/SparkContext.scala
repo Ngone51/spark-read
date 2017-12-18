@@ -449,8 +449,9 @@ class SparkContext(config: SparkConf) extends Logging {
     // all events.
     _statusStore = AppStatusStore.createLiveStore(conf, l => listenerBus.addToStatusQueue(l))
 
-    // 创建spark的运行环境 very important
     // Create the Spark execution environment (cache, map output tracker, etc)
+    // 创建spark的运行环境 very important
+    // 大概摸了一遍，还不够
     _env = createSparkEnv(_conf, isLocal, listenerBus)
     SparkEnv.set(_env)
 
@@ -2715,6 +2716,7 @@ object SparkContext extends Logging {
   }
 
   /**
+   * 在local模式下的driver core的个数
    * The number of driver cores to use for execution in local mode, 0 otherwise.
    */
   private[spark] def numDriverCores(master: String): Int = {
@@ -2723,6 +2725,7 @@ object SparkContext extends Logging {
     }
     master match {
       case "local" => 1
+      // 注意在LOCAL_N_REGEX变量后面跟了一个r，是一个函数调用，返回了正则匹配的结果，这个结果对应了threads
       case SparkMasterRegex.LOCAL_N_REGEX(threads) => convertToInt(threads)
       case SparkMasterRegex.LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
       case _ => 0 // driver is not used for execution

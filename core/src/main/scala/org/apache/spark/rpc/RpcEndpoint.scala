@@ -22,6 +22,7 @@ import org.apache.spark.SparkException
 /**
  * A factory class to create the [[RpcEnv]]. It must have an empty constructor so that it can be
  * created using Reflection.
+ * 一个用于创建RpcEnv的工厂类。后面的`It`指的是RpcEnvFactory还是RpcEnv？（应该是RpcEnvFactory吧）
  */
 private[spark] trait RpcEnvFactory {
 
@@ -79,6 +80,7 @@ private[spark] trait RpcEndpoint {
   }
 
   /**
+   * invoke ？是用反射来处理的吗？
    * Invoked when any exception is thrown during handling messages.
    */
   def onError(cause: Throwable): Unit = {
