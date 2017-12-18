@@ -22,7 +22,7 @@ import org.apache.spark.SparkException
 /**
  * A factory class to create the [[RpcEnv]]. It must have an empty constructor so that it can be
  * created using Reflection.
- * 一个用于创建RpcEnv的工厂类。后面的`It`指的是RpcEnvFactory还是RpcEnv？（应该是RpcEnvFactory吧）
+ * 一个用于创建RpcEnv的工厂类，且该工厂类必须有一个无参的构造函数（来用反射创建实例）。
  */
 private[spark] trait RpcEnvFactory {
 

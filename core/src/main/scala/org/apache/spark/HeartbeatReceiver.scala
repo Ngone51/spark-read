@@ -89,6 +89,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
   private var timeoutCheckingTask: ScheduledFuture[_] = null
 
+  // 事件轮询线程
   // 用于执行一些耗时较短的actions
   // "eventLoopThread" is used to run some pretty fast actions. The actions running in it should not
   // block the thread for a long time.
@@ -98,6 +99,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
   private val killExecutorThread = ThreadUtils.newDaemonSingleThreadExecutor("kill-executor-thread")
 
   override def onStart(): Unit = {
+    // eventLoopThread每隔60000ms检查一次：是否有过期（近期没有发送心跳）的节点
     timeoutCheckingTask = eventLoopThread.scheduleAtFixedRate(new Runnable {
       override def run(): Unit = Utils.tryLogNonFatalError {
         Option(self).foreach(_.ask[Boolean](ExpireDeadHosts))
