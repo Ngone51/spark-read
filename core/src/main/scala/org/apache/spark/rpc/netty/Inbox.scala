@@ -86,22 +86,30 @@ private[netty] class Inbox(
    */
   def process(dispatcher: Dispatcher): Unit = {
     var message: InboxMessage = null
-    inbox.synchronized {
+    inbox.synchronized { // synchronized start
+      // 如果不允许多个线程同时处理消息，且正在处理该inbox中消息的线程数量大于0（如果现在这个
+      // 线程再进来，就有两个线程同时再处理该inbox中的消息了，和第一个判断条件相违背），则返回
       if (!enableConcurrent && numActiveThreads != 0) {
         return
       }
       message = messages.poll()
       if (message != null) {
+        // 统计当前处理该inbox消息的线程数量
         numActiveThreads += 1
       } else {
         return
       }
-    }
-    while (true) {
+    } // synchronized end
+    while (true) { // 线程（多线程并发或者单线程）可以循环的从messages队列中取出消息进行处理
       safelyCall(endpoint) {
         message match {
           case RpcMessage(_sender, content, context) =>
             try {
+              // very important below!!!!!!
+              // 在HeartbeatReceiver的例子中，HeartbeatReceiver实现了RpcEndPoint接口，所以这里会执行
+              // HeartbeatReceiver的receiveAndReply方法(整个过程从HeartbeatReceiver中的ask(ExpireDeadHosts)方法开始发出消息，
+              // 然后最终由HeartbeatReceiver的receiveAndReply接收消息，并通过match case匹配ExpireDeadHosts的消息类型，执行
+              // expireDeadHosts()方法（用于检测过期的节点）)---然而这也只是一个本地消息传递的例子
               endpoint.receiveAndReply(context).applyOrElse[Any, Unit](content, { msg =>
                 throw new SparkException(s"Unsupported message $message from ${_sender}")
               })
@@ -150,13 +158,19 @@ private[netty] class Inbox(
       inbox.synchronized {
         // "enableConcurrent" will be set to false after `onStop` is called, so we should check it
         // every time.
+        // 先来看if的条件：如果不允许多线程并发处理消息，且numActiveThreads!=1（那肯定是大于1了）
+        // 但是从一开始线程进入的条件可知，如果一直是不允许多线程并发处理的话，那么，numActiveThreads肯定不会超过1。
+        // 所以，唯一可以解释的是：在该线程进入这个方法的时候是允许多线程并发处理的，numActiveThreads肯定也大于1，
+        // 然后，在onStop被调用之后，enableConcurrent就被reset为false了（这刚好可以解释上面注释的作用）。此时，就不允许
+        // 多线程并发处理了，于是乎，spark在这里的策略是：如果该线程发现自己不是最后的一个执行消息处理任务的线程(worker)，
+        // 那么，就退出，直到剩下最后一个线程。那么，此时，就又变成了单线程处理消息的模式。
         if (!enableConcurrent && numActiveThreads != 1) {
           // If we are not the only one worker, exit
           numActiveThreads -= 1
           return
         }
         message = messages.poll()
-        if (message == null) {
+        if (message == null) { // 直到messages消息队列处理完毕，退出该循环
           numActiveThreads -= 1
           return
         }

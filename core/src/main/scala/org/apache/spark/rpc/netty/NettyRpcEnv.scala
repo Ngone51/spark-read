@@ -199,6 +199,8 @@ private[netty] class NettyRpcEnv(
   }
 
   private[netty] def ask[T: ClassTag](message: RequestMessage, timeout: RpcTimeout): Future[T] = {
+    // ！！！ 注意promise和p的区分，这个设计很巧妙
+    // 这个promise用于远程的消息传递，也会在本地消息传递的时候，complete一下（见line218）
     val promise = Promise[Any]()
     val remoteAddr = message.receiver.address
 
@@ -212,9 +214,9 @@ private[netty] class NettyRpcEnv(
     }
 
     def onSuccess(reply: Any): Unit = reply match {
-      case RpcFailure(e) => onFailure(e)
+      case RpcFailure(e) => onFailure(e) // 如果Pomise已经complete了，则会抛出异常
       case rpcReply =>
-        if (!promise.trySuccess(rpcReply)) {
+        if (!promise.trySuccess(rpcReply)) { // !!! 注意: 这个Promise是函数第一行定义的
           logWarning(s"Ignored message: $reply")
         }
     }
@@ -222,6 +224,10 @@ private[netty] class NettyRpcEnv(
     try {
       if (remoteAddr == address) {
         val p = Promise[Any]()
+        // 注意这个p在这里注册了p.future的回调函数，有两种情况会执行回调函数：
+        // 一、存在异常：在Dispatcher#postMessage:168行代码执行（p.tryFailure(e), complete promise），
+        // 二、成功执行：在RpcEndPoint（比如HeartBeatReceiver实例）的receiveAndReply()里执行context.reply()（reply里面会
+        // 执行p.success(),  Promise complete，p.future才有返回值）后
         p.future.onComplete {
           case Success(response) => onSuccess(response)
           case Failure(e) => onFailure(e)
@@ -238,19 +244,22 @@ private[netty] class NettyRpcEnv(
         }(ThreadUtils.sameThread)
       }
 
+      // 开启一个时间超时的监控线程,如果超时，把异常值赋值给promise.future（此时，promise也就complete了）
       val timeoutCancelable = timeoutScheduler.schedule(new Runnable {
         override def run(): Unit = {
           onFailure(new TimeoutException(s"Cannot receive any reply from ${remoteAddr} " +
             s"in ${timeout.duration}"))
         }
       }, timeout.duration.toNanos, TimeUnit.NANOSECONDS)
+      // 如果promise.future.omComplete的作用是，如果future在超时之前完成，那么就取消timeoutScheduler线程的执行
       promise.future.onComplete { v =>
         timeoutCancelable.cancel(true)
-      }(ThreadUtils.sameThread)
+      }(ThreadUtils.sameThread) // 这是啥意思？？？
     } catch {
       case NonFatal(e) =>
         onFailure(e)
     }
+    //
     promise.future.mapTo[T].recover(timeout.addMessageIfTimeout)(ThreadUtils.sameThread)
   }
 

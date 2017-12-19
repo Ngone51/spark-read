@@ -51,6 +51,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     new ConcurrentHashMap[RpcEndpoint, RpcEndpointRef]
 
   // Track the receivers whose inboxes may contain messages.
+  // 用来追踪哪些接收方的inbox中有消息
   private val receivers = new LinkedBlockingQueue[EndpointData]
 
   /**
@@ -150,7 +151,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
    */
   private def postMessage(
       endpointName: String,
-      message: InboxMessage,
+      message: InboxMessage, // 从调用传过来的参数(e) => p.tryFailure(e)看，不应该是(Exception) => Boolean吗？（scala语法还没懂）
       callbackIfStopped: (Exception) => Unit): Unit = {
     val error = synchronized {
       val data = endpoints.get(endpointName)
@@ -160,10 +161,16 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
         Some(new SparkException(s"Could not find $endpointName."))
       } else {
         data.inbox.post(message)
+        // 在receivers添加该接收方，表明其有消息可以接受
         receivers.offer(data)
+        // 一切正常的话，data = None，那么，(e) => p.tryFailure(e)函数对None能执行吗？
+        // 答案是：不会。因为foreach函数只会选择isEmpty为false的元素执行其中的值函数，而None的isEmpty为true
+        // 所以这就可以解释的通了：在这里，p（Promise）不会complete，而是在RpcEndPonit的context.reply()（reply里面会
+        // 执行p.success(),  Promise complete，p.future才有返回值）之后，NettyRpcEnv#ask函数里的p.future才能执行注册的回调函数。
         None
       }
     }
+    // 在这里Promise的complete都是因为错误的data，所以最终，p.future的返回结果都是包含一个错误异常的。
     // We don't need to call `onStop` in the `synchronized` block
     error.foreach(callbackIfStopped)
   }
@@ -193,20 +200,22 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     endpoints.containsKey(name)
   }
 
-  /** Thread pool used for dispatching messages. */
+  /** Thread pool used for dispatching messages. （用于分发消息的线程池，底层又交给MessageLoop去分发消息）*/
   private val threadpool: ThreadPoolExecutor = {
     val availableCores =
       if (numUsableCores > 0) numUsableCores else Runtime.getRuntime.availableProcessors()
     val numThreads = nettyEnv.conf.getInt("spark.rpc.netty.dispatcher.numThreads",
       math.max(2, availableCores))
     val pool = ThreadUtils.newDaemonFixedThreadPool(numThreads, "dispatcher-event-loop")
+    // 在初始化完成后，马上开始执行分发消息的任务
+    // 什么时候结束？？？
     for (i <- 0 until numThreads) {
       pool.execute(new MessageLoop)
     }
     pool
   }
 
-  /** Message loop used for dispatching messages. */
+  /** Message loop used for dispatching messages. (用于分发消息，消费inbox中的消息)*/
   private class MessageLoop extends Runnable {
     override def run(): Unit = {
       try {
@@ -214,10 +223,12 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
           try {
             val data = receivers.take()
             if (data == PoisonPill) {
-              // Put PoisonPill back so that other MessageLoops can see it.
+              // Put PoisonPill back so that other MessageLoops can see it. （那么，会不会所有的MessageLoop都退出执行呢？）
+              // 233333，这两行代码是真的有意思
               receivers.offer(PoisonPill)
               return
             }
+            // 处理inbox中等待分发的消息
             data.inbox.process(Dispatcher.this)
           } catch {
             case NonFatal(e) => logError(e.getMessage, e)

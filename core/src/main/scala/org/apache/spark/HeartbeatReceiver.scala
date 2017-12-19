@@ -99,7 +99,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
   private val killExecutorThread = ThreadUtils.newDaemonSingleThreadExecutor("kill-executor-thread")
 
   override def onStart(): Unit = {
-    // eventLoopThread每隔60000ms检查一次：是否有过期（近期没有发送心跳）的节点
+    // eventLoopThread(事件轮询线程)每隔60000ms检查一次：是否有过期（近期没有发送心跳）的节点
     timeoutCheckingTask = eventLoopThread.scheduleAtFixedRate(new Runnable {
       override def run(): Unit = Utils.tryLogNonFatalError {
         Option(self).foreach(_.ask[Boolean](ExpireDeadHosts))
@@ -121,6 +121,8 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
       context.reply(true)
     case ExpireDeadHosts =>
       expireDeadHosts()
+      // 这个reply最终会执行p.success()，这个p是从NettyRpcEnv#ask:225行代码定义的Promise而来的，p.success()执行，最终
+      // 才能使p.future的回调函数被执行
       context.reply(true)
 
     // Messages received from executors
