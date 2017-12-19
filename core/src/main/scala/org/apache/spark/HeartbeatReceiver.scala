@@ -111,6 +111,8 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
     // Messages sent and received locally
     case ExecutorRegistered(executorId) =>
+      // 所谓的executor注册，其实就是用一个HashMap
+      // 记录了该executor最近一次和HeatBeatReceiver通信的时间（高！实在是高！）
       executorLastSeen(executorId) = clock.getTimeMillis()
       context.reply(true)
     case ExecutorRemoved(executorId) =>

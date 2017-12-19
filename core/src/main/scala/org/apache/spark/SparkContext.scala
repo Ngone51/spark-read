@@ -544,6 +544,9 @@ class SparkContext(config: SparkConf) extends Logging {
     _schedulerBackend = sched
     _taskScheduler = ts
     _dagScheduler = new DAGScheduler(this)
+    // 等到SparkContext的_taskScheduler初始化完成后，_heartbeatReceiver（RpcEndPointRef）就发送给HearBeatReceiver一个
+    // 消息（TaskSchedulerIsSet），通知HearBeatReceiver：SparkContext的_taskScheduler初始化完成了，你可以初始化自己的
+    // scheduler了（scheduler = sc.taskScheduler）
     _heartbeatReceiver.ask[Boolean](TaskSchedulerIsSet)
     // ------------------------ ^^^ _schedulerBackend _taskScheduler _dagScheduler ^^^ ---------------------------------
 
