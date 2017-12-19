@@ -77,6 +77,7 @@ private[netty] class Inbox(
   private var numActiveThreads = 0
 
   // OnStart should be the first message to process
+  // inbox初始化的时候，会把OnStart消息塞进去
   inbox.synchronized {
     messages.add(OnStart)
   }
@@ -101,6 +102,7 @@ private[netty] class Inbox(
       }
     } // synchronized end
     while (true) { // 线程（多线程并发或者单线程）可以循环的从messages队列中取出消息进行处理
+      // TODO: 闭包函数？？？
       safelyCall(endpoint) {
         message match {
           case RpcMessage(_sender, content, context) =>
@@ -127,6 +129,7 @@ private[netty] class Inbox(
             })
 
           case OnStart =>
+            // endpoint在这里启动？？？（我目前只了解HeartBeatReceiver，不知道其它的endpoint的情况）
             endpoint.onStart()
             if (!endpoint.isInstanceOf[ThreadSafeRpcEndpoint]) {
               inbox.synchronized {
@@ -140,6 +143,8 @@ private[netty] class Inbox(
             val activeThreads = inbox.synchronized { inbox.numActiveThreads }
             assert(activeThreads == 1,
               s"There should be only a single active thread but found $activeThreads threads.")
+            // OnStop消息处理后，inbox对应的endpoint需要在dispatcher中移除，
+            // 因为endpoint已经发送了OnStop的消息，说明它不会再发消息过来了
             dispatcher.removeRpcEndpointRef(endpoint)
             endpoint.onStop()
             assert(isEmpty, "OnStop should be the last message")
@@ -188,6 +193,8 @@ private[netty] class Inbox(
     }
   }
 
+  // stop()方法被调用之后，其它消息不会再被放进来（从而也保证OnStop是inbox中的最后一个消息），
+  // 而已经在inbox中的消息，会通过单线程的方式继续被处理
   def stop(): Unit = inbox.synchronized {
     // The following codes should be in `synchronized` so that we can make sure "OnStop" is the last
     // message
@@ -195,8 +202,10 @@ private[netty] class Inbox(
       // We should disable concurrent here. Then when RpcEndpoint.onStop is called, it's the only
       // thread that is processing messages. So `RpcEndpoint.onStop` can release its resources
       // safely.
+      // 这一步是如此精妙的设计啊！！！
       enableConcurrent = false
       stopped = true
+      // 把OnStop消息放入inbox中
       messages.add(OnStop)
       // Note: The concurrent events in messages will be processed one by one.
     }

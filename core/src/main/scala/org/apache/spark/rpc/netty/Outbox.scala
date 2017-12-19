@@ -142,6 +142,7 @@ private[netty] class Outbox(nettyEnv: NettyRpcEnv, val address: RpcAddress) {
         return
       }
       if (connectFuture != null) {
+        // 说明有其它线程正在远程连接，其它线程如果连接成功，会继续执行drainOutbox()，所以其它线程就不用管了
         // We are connecting to the remote address, so just exit
         return
       }

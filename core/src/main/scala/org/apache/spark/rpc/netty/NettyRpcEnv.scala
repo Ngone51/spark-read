@@ -160,6 +160,7 @@ private[netty] class NettyRpcEnv(
         if (outbox == null) {
           val newOutbox = new Outbox(this, receiver.address)
           val oldOutbox = outboxes.putIfAbsent(receiver.address, newOutbox)
+          // outIfAbsent()函数的特性要求对返回值做检测
           if (oldOutbox == null) {
             newOutbox
           } else {
@@ -199,6 +200,7 @@ private[netty] class NettyRpcEnv(
   }
 
   private[netty] def ask[T: ClassTag](message: RequestMessage, timeout: RpcTimeout): Future[T] = {
+    // TODO：这里Promise和Future实在是太绕，先放一放
     // ！！！ 注意promise和p的区分，这个设计很巧妙
     // 这个promise用于远程的消息传递，也会在本地消息传递的时候，complete一下（见line218）
     val promise = Promise[Any]()
@@ -222,7 +224,9 @@ private[netty] class NettyRpcEnv(
     }
 
     try {
+      // 如果是本地消息
       if (remoteAddr == address) {
+        // p仅用于本地消息传递
         val p = Promise[Any]()
         // 注意这个p在这里注册了p.future的回调函数，有两种情况会执行回调函数：
         // 一、存在异常：在Dispatcher#postMessage:168行代码执行（p.tryFailure(e), complete promise），
@@ -232,8 +236,11 @@ private[netty] class NettyRpcEnv(
           case Success(response) => onSuccess(response)
           case Failure(e) => onFailure(e)
         }(ThreadUtils.sameThread)
+        // 本地消息不需要序列化（直接从JVM中拿就是了）
         dispatcher.postLocalMessage(message, p)
-      } else {
+      } else { // 如果是远程消息
+        // 创建RpcOutBoxMessage类型的消息
+        // 因为需要经过网络传输，所以需要序列化消息
         val rpcMessage = RpcOutboxMessage(message.serialize(this),
           onFailure,
           (client, response) => onSuccess(deserialize[Any](client, response)))

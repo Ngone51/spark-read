@@ -45,6 +45,7 @@ class InboxSuite extends SparkFunSuite {
     inbox.stop()
     inbox.process(dispatcher)
     assert(inbox.isEmpty)
+    // only a test，so started&stopped both are true is not wired...
     endpoint.verifyStarted()
     endpoint.verifyStopped()
   }
