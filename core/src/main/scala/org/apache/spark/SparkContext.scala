@@ -262,7 +262,7 @@ class SparkContext(config: SparkConf) extends Logging {
   // An asynchronous listener bus for Spark events
   private[spark] def listenerBus: LiveListenerBus = _listenerBus
 
-  // 该方法允许由SparkEnv创建的组件在单元测试中被mock（模仿？？）
+  // 该方法允许由SparkEnv创建的组件在单元测试中被mock（Mockito: java 单元测试框架）
   // This function allows components created by SparkEnv to be mocked in unit tests:
   private[spark] def createSparkEnv(
       conf: SparkConf,
@@ -449,11 +449,13 @@ class SparkContext(config: SparkConf) extends Logging {
     // all events.
     _statusStore = AppStatusStore.createLiveStore(conf, l => listenerBus.addToStatusQueue(l))
 
+    // ----------------------------------------—— vvv _env vvv -------------------------------------------------------
     // Create the Spark execution environment (cache, map output tracker, etc)
     // 创建spark的运行环境 very important
     // 大概摸了一遍，还不够
     _env = createSparkEnv(_conf, isLocal, listenerBus)
     SparkEnv.set(_env)
+    // ----------------------------------------—— ^^^ _env ^^^ -------------------------------------------------------
 
     // If running the REPL, register the repl's output dir with the file server.
     _conf.getOption("spark.repl.class.outputDir").foreach { path =>
@@ -2429,6 +2431,7 @@ class SparkContext(config: SparkConf) extends Logging {
     _listenerBusStarted = true
   }
 
+  // 向监听总线提交应用启动事件
   /** Post the application start event */
   private def postApplicationStart() {
     // Note: this code assumes that the task scheduler has been initialized and has contacted

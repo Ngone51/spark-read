@@ -51,6 +51,7 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
   // processed (instead of just dequeued).
   private val eventCount = new AtomicLong()
 
+  // 被抛弃（可能由于eventQueue已满造成）的事件的计数，每次log后，会被重置为0
   /** A counter for dropped events. It will be reset every time we log it. */
   private val droppedEventsCounter = new AtomicLong(0L)
 
@@ -64,6 +65,7 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
   private val started = new AtomicBoolean(false)
   private val stopped = new AtomicBoolean(false)
 
+  // 不同于droppedEventsCounter， droppedEvents不会被重置（应该是在应用执行期间一直增长）
   private val droppedEvents = metrics.metricRegistry.counter(s"queue.$name.numDroppedEvents")
   private val processingTime = metrics.metricRegistry.timer(s"queue.$name.listenerProcessingTime")
 
@@ -84,8 +86,10 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
                                                           // 看不懂这个语法啊....
   private def dispatch(): Unit = LiveListenerBus.withinListenerThread.withValue(true) {
     try {
+      // 当eventQueue为空时，会阻塞
       var next: SparkListenerEvent = eventQueue.take()
-      // POISON_PILL是指为空的时候吗？？？
+      // POISON_PILLS是Spark的一种执行终止策略：当stop()被调用时，就会把POISON_PILL丢入队列中，以让线程退出循环
+      // 不同于Dispatcher中的一点是：Dispatcher分发消息时是多线程，所以需要把取出来的POISON_PILL再放回去
       while (next != POISON_PILL) {
         val ctx = processingTime.time()
         try {
@@ -142,6 +146,7 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
     }
 
     eventCount.incrementAndGet()
+    // 如果队列已满，返回false
     if (eventQueue.offer(event)) {
       return
     }
@@ -159,12 +164,15 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
 
     val droppedCount = droppedEventsCounter.get
     if (droppedCount > 0) {
-      // Don't log too frequently
+      // Don't log too frequently（超过600000ms才log，那一分钟这个值又是怎么来的？经验咯）
       if (System.currentTimeMillis() - lastReportTimestamp >= 60 * 1000) {
         // There may be multiple threads trying to decrease droppedEventsCounter.
         // Use "compareAndSet" to make sure only one thread can win.
         // And if another thread is increasing droppedEventsCounter, "compareAndSet" will fail and
         // then that thread will update it.
+        // 可能会有多个线程想要重置droppedEventsCounter，但是compareAndSet保证了只有一个线程可以重置该变量
+        // 且，如果有另一个线程正在给droppedEventsCounter加1，那么，其它线程的compareAndSet都会失败，但是
+        // 正在给droppedEventsCounter加1的那个线程，最终会重置droppedEventsCounter(这个设计好巧妙)
         if (droppedEventsCounter.compareAndSet(droppedCount, 0)) {
           val prevLastReportTimestamp = lastReportTimestamp
           lastReportTimestamp = System.currentTimeMillis()

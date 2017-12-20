@@ -349,7 +349,10 @@ private[spark] object AppStatusStore {
   def createLiveStore(conf: SparkConf, addListenerFn: SparkListener => Unit): AppStatusStore = {
     val store = new InMemoryStore()
     val listener = new AppStatusListener(store, conf, true)
+    // 添加AppStatusListener到监听总线
     addListenerFn(listener)
+    // （对于不是正在运行的应用或在测试环境下，在setupListeners()内部，还会添加SQLAppStatusListener到监听总线）
+    // ??? 不懂
     AppStatusPlugin.loadPlugins().foreach { p =>
       p.setupListeners(conf, store, addListenerFn, true)
     }

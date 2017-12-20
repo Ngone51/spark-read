@@ -51,6 +51,7 @@ private[spark] class AppStatusListener(
 
   private var sparkVersion = SPARK_VERSION
   private var appInfo: v1.ApplicationInfo = null
+  // 运行一个任务所需要的线程数
   private var coresPerTask: Int = 1
 
   // How often to update live entities. -1 means "never update" when replaying applications,
@@ -62,6 +63,8 @@ private[spark] class AppStatusListener(
 
   // Keep track of live entities, so that task metrics can be efficiently updated (without
   // causing too many writes to the underlying store, and other expensive operations).
+  // 追踪这些正在运行的实体，能让任务的统计信息高效地更新（而不用频繁地去修改底层的存储（AppStatusStore），
+  // 以及其它昂贵的操作）
   private val liveStages = new ConcurrentHashMap[(Int, Int), LiveStage]()
   private val liveJobs = new HashMap[Int, LiveJob]()
   private val liveExecutors = new HashMap[String, LiveExecutor]()
@@ -74,6 +77,13 @@ private[spark] class AppStatusListener(
     case _ =>
   }
 
+  /**
+    * Spark监听器事件发生时的工作原理
+    * 当[[SparkListenerApplicationStart]]事件发生时（同过监听总线被提交到所有类型的AsyncEventQueue中）,
+    * AsyncEventQueue中的dispatchThread会分发已经提交的事件,其中包括[[SparkListenerApplicationStart]]事件，
+    * SparkListenerBus会将该事件委派给已经注册监听该事件的监听器进行处理
+    */
+  // 应用程序启动事件
   override def onApplicationStart(event: SparkListenerApplicationStart): Unit = {
     assert(event.appId.isDefined, "Application without IDs are not supported.")
 
@@ -96,6 +106,9 @@ private[spark] class AppStatusListener(
       None,
       Seq(attempt))
 
+    // 当应用程序启动时，kvstore会存储应用程序的初始信息
+    // ！！！注意，该kvstore和AppStatusStore里的kvstore是指向同一个对象的，
+    // 所以，AppStatusStore的也会同步应用程序的状态存储记录
     kvstore.write(new ApplicationInfoWrapper(appInfo))
   }
 
@@ -146,6 +159,8 @@ private[spark] class AppStatusListener(
   override def onExecutorAdded(event: SparkListenerExecutorAdded): Unit = {
     // This needs to be an update in case an executor re-registers after the driver has
     // marked it as "dead".
+    // 无论是真的新增还是更新，最终都会当做更新一个executor来处理（以应对‘在driver标记一个execuutor状态为dead之后，
+    // 该executor重新注册’的情况）
     val exec = getOrCreateExecutor(event.executorId, event.time)
     exec.host = event.executorInfo.executorHost
     exec.isActive = true
@@ -173,18 +188,20 @@ private[spark] class AppStatusListener(
     }
   }
 
+  // 添加executor至黑名单
   override def onExecutorBlacklisted(event: SparkListenerExecutorBlacklisted): Unit = {
     updateBlackListStatus(event.executorId, true)
   }
-
+  // 从黑名单中移除executor
   override def onExecutorUnblacklisted(event: SparkListenerExecutorUnblacklisted): Unit = {
     updateBlackListStatus(event.executorId, false)
   }
 
+  // 把集群节点添加至黑名单，会导致该节点下的所有executor添加至黑名单
   override def onNodeBlacklisted(event: SparkListenerNodeBlacklisted): Unit = {
     updateNodeBlackList(event.hostId, true)
   }
-
+  // 从黑名单中移除集群节点
   override def onNodeUnblacklisted(event: SparkListenerNodeUnblacklisted): Unit = {
     updateNodeBlackList(event.hostId, false)
   }
@@ -200,6 +217,7 @@ private[spark] class AppStatusListener(
     val now = System.nanoTime()
 
     // Implicitly (un)blacklist every executor associated with the node.
+    // 将一个节点加入（移出）黑名单，会隐含地使该节点下的所有executor也被加入（移出）黑名单
     liveExecutors.values.foreach { exec =>
       if (exec.hostname == host) {
         exec.isBlacklisted = blacklisted
@@ -216,7 +234,11 @@ private[spark] class AppStatusListener(
     // stages' transitive stage dependencies, but some of these stages might be skipped if their
     // output is available from earlier runs.
     // See https://github.com/apache/spark/pull/3009 for a more extensive discussion.
+    // 该job的task总数 = 所有stage的task的总和
     val numTasks = {
+      // completionTime为stage中，所有tasks执行完成的时间或者stage被取消的时间；
+      // completionTime为empty，说明该stage未完成或未结束
+      // 为什么取变量名为missingStages？？？
       val missingStages = event.stageInfos.filter(_.completionTime.isEmpty)
       missingStages.map(_.numTasks).sum
     }
@@ -229,7 +251,7 @@ private[spark] class AppStatusListener(
     val job = new LiveJob(
       event.jobId,
       lastStageName,
-      if (event.time > 0) Some(new Date(event.time)) else None,
+      if (event.time > 0) Some(new Date(event.time)) else None, // 任务提交时间
       event.stageIds,
       jobGroup,
       numTasks)
@@ -239,7 +261,9 @@ private[spark] class AppStatusListener(
     event.stageInfos.foreach { stageInfo =>
       // A new job submission may re-use an existing stage, so this code needs to do an update
       // instead of just a write.
+      // 新提交的job可能会复用一个已经存在的stage，所有我们需要更新stage而不是重写
       val stage = getOrCreateStage(stageInfo)
+      // 添加该stage对应的job（一个stage可能被多个job复用）
       stage.jobs :+= job
       stage.jobIds += event.jobId
       liveUpdate(stage, now)
@@ -247,6 +271,8 @@ private[spark] class AppStatusListener(
 
     // Create the graph data for all the job's stages.
     event.stageInfos.foreach { stage =>
+      // very important！！！
+      // 为每个stage构建DAG图？？？
       val graph = RDDOperationGraph.makeOperationGraph(stage, maxGraphRootNodes)
       val uigraph = new RDDOperationGraphWrapper(
         stage.stageId,
@@ -303,11 +329,13 @@ private[spark] class AppStatusListener(
     }.getOrElse(SparkUI.DEFAULT_POOL_NAME)
 
     // Look at all active jobs to find the ones that mention this stage.
+    // 找到该stage对应的所有正在运行的job
     stage.jobs = liveJobs.values
       .filter(_.stageIds.contains(event.stageInfo.stageId))
       .toSeq
     stage.jobIds = stage.jobs.map(_.jobId).toSet
 
+    // TODO: 咦？为什么会有两次？？？
     stage.schedulingPool = Option(event.properties).flatMap { p =>
       Option(p.getProperty("spark.scheduler.pool"))
     }.getOrElse(SparkUI.DEFAULT_POOL_NAME)
@@ -766,6 +794,8 @@ private[spark] class AppStatusListener(
   }
 
   /** Update an entity only if in a live app; avoids redundant writes when replaying logs. */
+  // 仅仅在一个在线运行的应用中，更新实体的状态；
+  // ？？？避免再relaying日志的时候，重复写
   private def liveUpdate(entity: LiveEntity, now: Long): Unit = {
     if (live) {
       update(entity, now)

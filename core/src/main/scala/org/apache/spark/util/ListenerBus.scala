@@ -69,11 +69,13 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
     // JavaConverters can create a JIterableWrapper if we use asScala.
     // However, this method will be called frequently. To avoid the wrapper cost, here we use
     // Java Iterator directly.
+    // listenersPlusTimers:这个变量应该解读为listener&timer
     val iter = listenersPlusTimers.iterator
     while (iter.hasNext) {
       val listenerAndMaybeTimer = iter.next()
       val listener = listenerAndMaybeTimer._1
       val maybeTimer = listenerAndMaybeTimer._2
+      // 记录监听事件的处理时长
       val maybeTimerContext = if (maybeTimer.isDefined) {
         maybeTimer.get.time()
       } else {

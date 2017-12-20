@@ -89,6 +89,7 @@ private[sql] class SQLAppStatusPlugin extends AppStatusPlugin {
       live: Boolean): Unit = {
     // For live applications, the listener is installed in [[setupUI]]. This also avoids adding
     // the listener when the UI is disabled. Force installation during testing, though.
+    // 对于正在运行的应用，监听器在[[setupUI]]的时候注册，而不是这里
     if (!live || Utils.isTesting) {
       val listener = new SQLAppStatusListener(conf, store, live, None)
       addListenerFn(listener)

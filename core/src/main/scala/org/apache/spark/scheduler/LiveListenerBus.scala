@@ -61,6 +61,7 @@ private[spark] class LiveListenerBus(conf: SparkConf) {
   /** When `droppedEventsCounter` was logged last time in milliseconds. */
   @volatile private var lastReportTimestamp = 0L
 
+  //
   private val queues = new CopyOnWriteArrayList[AsyncEventQueue]()
 
   /** Add a listener to queue shared by all non-internal listeners. */
@@ -125,6 +126,8 @@ private[spark] class LiveListenerBus(conf: SparkConf) {
   }
 
   /** Post an event to all queues. */
+
+  // 注意！！！：一个事件会提交给所有的队列（每个队列中有不同的listener，不同的listener可能监听了同一种事件）
   def post(event: SparkListenerEvent): Unit = {
     if (!stopped.get()) {
       metrics.numEventsPosted.inc()

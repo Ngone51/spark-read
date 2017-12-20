@@ -233,22 +233,25 @@ private class LiveTask(
 }
 
 private class LiveExecutor(val executorId: String, _addTime: Long) extends LiveEntity {
-
+  // executor的基本信息
   var hostPort: String = null
   var host: String = null
   var isActive = true
   var totalCores = 0
 
+  // executor的时间节点
   val addTime = new Date(_addTime)
   var removeTime: Date = null
   var removeReason: String = null
 
+  // executor的资源信息
   var rddBlocks = 0
   var memoryUsed = 0L
   var diskUsed = 0L
   var maxTasks = 0
   var maxMemory = 0L
 
+  // executor的任务信息
   var totalTasks = 0
   var activeTasks = 0
   var completedTasks = 0
@@ -258,6 +261,7 @@ private class LiveExecutor(val executorId: String, _addTime: Long) extends LiveE
   var totalInputBytes = 0L
   var totalShuffleRead = 0L
   var totalShuffleWrite = 0L
+  // 是否为黑名单executor，黑名单的作用是？？？
   var isBlacklisted = false
 
   var executorLogs = Map[String, String]()
