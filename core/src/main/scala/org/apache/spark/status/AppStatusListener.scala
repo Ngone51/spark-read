@@ -345,15 +345,22 @@ private[spark] class AppStatusListener(
     }
 
     stage.jobs.foreach { job =>
+      // 从job的completedStages移出该stage（既然该stage刚刚提交，为什么会存在completedStages中呢？）
+      // 我的理解：首先不一定存在，这就是一个新的stage。还有一种可能是，之前该job执行过该stage，这次是
+      // 重新执行，这样的话就合理了
       job.completedStages = job.completedStages - event.stageInfo.stageId
       job.activeStages += 1
       liveUpdate(job, now)
     }
-
+    // ??? 什么样的stage会放在一个schedulingPool里面？
+    // 是一个job里的stages？那么'spark.scheduler.pool'就会在job创建的时候设置？（在SparkContext里的localProperties设置）
+    // 如果默认，是否所有的stages都放在一个schedulingPool里？
     val pool = pools.getOrElseUpdate(stage.schedulingPool, new SchedulerPool(stage.schedulingPool))
     pool.stageIds = pool.stageIds + event.stageInfo.stageId
     update(pool, now)
 
+    // TODO: read
+    // 更新rdd
     event.stageInfo.rddInfos.foreach { info =>
       if (info.storageLevel.isValid) {
         liveUpdate(liveRDDs.getOrElseUpdate(info.id, new LiveRDD(info)), now)
@@ -370,8 +377,16 @@ private[spark] class AppStatusListener(
     liveUpdate(task, now)
 
     Option(liveStages.get((event.stageId, event.stageAttemptId))).foreach { stage =>
+      // 更新stage的active的task数量
       stage.activeTasks += 1
+      // stage的最早发起时间是以所有task中的最早发起时间为准
+      // 那么问题来了，后来的task的发起时间会比先来的task的发起时间还早吗？
+      // 也是有可能的，毕竟task的发起时间不等同于提交的时间。
       stage.firstLaunchTime = math.min(stage.firstLaunchTime, event.taskInfo.launchTime)
+      // maybeUpdate: 如果距离上一次修改时间未超过liveUpdatePeriodNs(!= -1)，那么，更新就不执行，否则，就更新
+      // 如果更新不执行，其实也没关系，只是没有写入到kvstore里去，但是内存中的liveStages的状态还是改变了，下次
+      // 有新的task过来时，且已经超过更新周期，此时，可以在kvstore中更新stage的信息。
+      // 这样做的好处是：避免频繁更新kvstore（见57-59行注释），更新底层kvstore的代价（应该（没研究过））比较大。
       maybeUpdate(stage, now)
 
       stage.jobs.foreach { job =>
@@ -388,6 +403,7 @@ private[spark] class AppStatusListener(
   }
 
   override def onTaskGettingResult(event: SparkListenerTaskGettingResult): Unit = {
+    // 貌似只更新了lastWriteTime，什么意思，没读懂？？？
     // Call update on the task so that the "getting result" time is written to the store; the
     // value is part of the mutable TaskInfo state that the live entity already references.
     liveTasks.get(event.taskInfo.taskId).foreach { task =>
