@@ -104,6 +104,7 @@ private[spark] class LocalSchedulerBackend(
   private var localEndpoint: RpcEndpointRef = null
   private val userClassPath = getUserClasspath(conf)
   private val listenerBus = scheduler.sc.listenerBus
+  // TODO 先不管这个LauncherBackend
   private val launcherBackend = new LauncherBackend() {
     override def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
   }
@@ -122,11 +123,15 @@ private[spark] class LocalSchedulerBackend(
 
   override def start() {
     val rpcEnv = SparkEnv.get.rpcEnv
+    // (为driver)创建一个本地的EndPoint(server)
     val executorEndpoint = new LocalEndpoint(rpcEnv, userClassPath, scheduler, this, totalCores)
     localEndpoint = rpcEnv.setupEndpoint("LocalSchedulerBackendEndpoint", executorEndpoint)
+    // 添加executor事件（此时，app还没start啊，但是此时bus也还启动啊，事件只是缓存在eventQueue里面，So，这个
+    // 添加事件的先后顺序有关系吗？？？）：其实这里是创建了一个driver，但是driver也被spark内部视为executor来对待
+    // 会通过先前创建的AppStatusListener存储该executor的信息
     listenerBus.post(SparkListenerExecutorAdded(
       System.currentTimeMillis,
-      executorEndpoint.localExecutorId,
+      executorEndpoint.localExecutorId, // 'driver'
       new ExecutorInfo(executorEndpoint.localExecutorHostname, totalCores, Map.empty)))
     launcherBackend.setAppId(appId)
     launcherBackend.setState(SparkAppHandle.State.RUNNING)

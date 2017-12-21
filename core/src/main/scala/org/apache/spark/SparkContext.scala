@@ -482,6 +482,7 @@ class SparkContext(config: SparkConf) extends Logging {
         None
       }
     _ui.foreach { ui =>
+      // 此处会设置监听器
       // Load any plugins that might want to modify the UI.
       AppStatusPlugin.loadPlugins().foreach(_.setupUI(ui))
 
@@ -574,17 +575,20 @@ class SparkContext(config: SparkConf) extends Logging {
     // Attach the driver metrics servlet handler to the web ui after the metrics system is started.
     _env.metricsSystem.getServletHandlers.foreach(handler => ui.foreach(_.attachHandler(handler)))
 
+    // --------------------------------------- vvv _eventLogger vvv ----------------------------------------------
     _eventLogger =
       if (isEventLogEnabled) {
         val logger =
           new EventLoggingListener(_applicationId, _applicationAttemptId, _eventLogDir.get,
             _conf, _hadoopConfiguration)
         logger.start()
+        // 此处添加EventLoggingListener监听器
         listenerBus.addToEventLogQueue(logger)
         Some(logger)
       } else {
         None
       }
+    // --------------------------------------- ^^^ _eventLogger ^^^ ----------------------------------------------
 
     // ------------------------------------ vvv _executorAllocationManager vvv -----------------------------------------
     // Optionally scale number of executors dynamically based on workload. Exposed for testing.
@@ -613,8 +617,11 @@ class SparkContext(config: SparkConf) extends Logging {
       }
     _cleaner.foreach(_.start())
     // --------------------------------------------- ^^^ _cleaner ^^^ --------------------------------------------------
+    // 添加外部的listeners，并start bus（在start()方法被调用之前，posted events只能缓存在eventQuene里边）
     setupAndStartListenerBus()
+    // 向bus提交EnvironmentUpdate事件
     postEnvironmentUpdate()
+    // 向bus提交App start事件
     postApplicationStart()
 
     // Post init
@@ -2438,7 +2445,7 @@ class SparkContext(config: SparkConf) extends Logging {
     // Note: this code assumes that the task scheduler has been initialized and has contacted
     // the cluster manager to get an application ID (in case the cluster manager provides one).
     listenerBus.post(SparkListenerApplicationStart(appName, Some(applicationId),
-      startTime, sparkUser, applicationAttemptId, schedulerBackend.getDriverLogUrls))
+      startTime, sparkUser, applicationAttemptId, schedulerBackend.getDriverLogUrls)) // getDriverLogUrls为None ???
   }
 
   /** Post the application end event */
@@ -2454,6 +2461,7 @@ class SparkContext(config: SparkConf) extends Logging {
       val addedFilePaths = addedFiles.keys.toSeq
       val environmentDetails = SparkEnv.environmentDetails(conf, schedulingMode, addedJarPaths,
         addedFilePaths)
+      // 提交SparkListenerEnvironmentUpdate事件
       val environmentUpdate = SparkListenerEnvironmentUpdate(environmentDetails)
       listenerBus.post(environmentUpdate)
     }
@@ -2643,6 +2651,7 @@ object SparkContext extends Logging {
   private[spark] val RDD_SCOPE_NO_OVERRIDE_KEY = "spark.rdd.scope.noOverride"
 
   /**
+   * 是不是就是说，driver其实也是一个executor，只是它被用来执行user程序
    * Executor id for the driver.  In earlier versions of Spark, this was `<driver>`, but this was
    * changed to `driver` because the angle brackets caused escaping issues in URLs and XML (see
    * SPARK-6716 for more details).

@@ -55,6 +55,7 @@ private[spark] trait SchedulerBackend {
   def applicationId(): String = appId
 
   /**
+   * AttempId always be None ???
    * Get the attempt ID for this run, if the cluster manager supports multiple
    * attempts. Applications run in client mode will not have attempt IDs.
    *

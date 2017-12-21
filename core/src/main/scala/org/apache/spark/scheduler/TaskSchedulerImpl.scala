@@ -174,9 +174,11 @@ private[spark] class TaskSchedulerImpl(
 
   def newTaskId(): Long = nextTaskId.getAndIncrement()
 
+  // 在local模式下，相当于只启动backend
   override def start() {
     backend.start()
 
+    // 如果是非local模式运行且设置了speculation策略，则开启speculationScheduler线程，用来定时检查是否有speculative tasks
     if (!isLocal && conf.getBoolean("spark.speculation", false)) {
       logInfo("Starting speculative execution thread")
       speculationScheduler.scheduleWithFixedDelay(new Runnable {
