@@ -85,7 +85,7 @@ private class LiveJob(
     val info = new v1.JobData(
       jobId,
       name,
-      None, // description is always None?
+      None, // description is always None? 哈哈哈哈哈哈
       submissionTime,
       completionTime,
       stageIds,
@@ -128,34 +128,35 @@ private class LiveTask(
     if (metrics != null) {
       val old = recordedMetrics
       recordedMetrics = new v1.TaskMetrics(
-        metrics.executorDeserializeTime,
-        metrics.executorDeserializeCpuTime,
+        metrics.executorDeserializeTime, // executor反序列化耗时
+        metrics.executorDeserializeCpuTime, // executor反序列化Cpu耗时？
         metrics.executorRunTime,
         metrics.executorCpuTime,
         metrics.resultSize,
-        metrics.jvmGCTime,
-        metrics.resultSerializationTime,
-        metrics.memoryBytesSpilled,
-        metrics.diskBytesSpilled,
-        metrics.peakExecutionMemory,
+        metrics.jvmGCTime, // jvm GC耗时（这个是怎么记录下来的？）
+        metrics.resultSerializationTime, //结果序列化耗时
+        metrics.memoryBytesSpilled, // 溢出的内存字节数？
+        metrics.diskBytesSpilled, // 硬盘溢出的字节数？
+        metrics.peakExecutionMemory, // 运行时内存占用峰值？
         new v1.InputMetrics(
-          metrics.inputMetrics.bytesRead,
-          metrics.inputMetrics.recordsRead),
+          metrics.inputMetrics.bytesRead, // bytesRead ???
+          metrics.inputMetrics.recordsRead), // recordsRead ???
         new v1.OutputMetrics(
           metrics.outputMetrics.bytesWritten,
           metrics.outputMetrics.recordsWritten),
-        new v1.ShuffleReadMetrics(
-          metrics.shuffleReadMetrics.remoteBlocksFetched,
-          metrics.shuffleReadMetrics.localBlocksFetched,
-          metrics.shuffleReadMetrics.fetchWaitTime,
-          metrics.shuffleReadMetrics.remoteBytesRead,
-          metrics.shuffleReadMetrics.remoteBytesReadToDisk,
+        new v1.ShuffleReadMetrics( /************* Shuffle Read ***************/
+          metrics.shuffleReadMetrics.remoteBlocksFetched, // 远程块获取数量？？？
+          metrics.shuffleReadMetrics.localBlocksFetched, // 本地块获取数量？？？
+          metrics.shuffleReadMetrics.fetchWaitTime, // 获取等待时间
+          metrics.shuffleReadMetrics.remoteBytesRead, // 远程读取字节数
+          metrics.shuffleReadMetrics.remoteBytesReadToDisk, // 远程读取（read to？）硬盘字节数？？
           metrics.shuffleReadMetrics.localBytesRead,
           metrics.shuffleReadMetrics.recordsRead),
-        new v1.ShuffleWriteMetrics(
+        new v1.ShuffleWriteMetrics( /*** 为什么Shuffle Write就没有remote相关的操作？？？***/
           metrics.shuffleWriteMetrics.bytesWritten,
           metrics.shuffleWriteMetrics.writeTime,
           metrics.shuffleWriteMetrics.recordsWritten))
+      // 计算delta
       if (old != null) calculateMetricsDelta(recordedMetrics, old) else recordedMetrics
     } else {
       null
@@ -396,6 +397,7 @@ private class LiveStage extends LiveEntity {
   var activeTasks = 0
   var completedTasks = 0
   var failedTasks = 0
+  // 已完成任务的index（为该task在task set中的index，详见TaskInfo#index）
   val completedIndices = new OpenHashSet[Int]()
 
   var killedTasks = 0
@@ -403,6 +405,7 @@ private class LiveStage extends LiveEntity {
 
   var firstLaunchTime = Long.MaxValue
 
+  // stage的统计信息：executor执行时间，读写字节数、shuffle读写字节数、溢出字节数等等
   val metrics = new MetricsTracker()
 
   val executorSummaries = new HashMap[String, LiveExecutorStageSummary]()
@@ -449,6 +452,7 @@ private class LiveStage extends LiveEntity {
       schedulingPool,
 
       info.rddInfos.map(_.id),
+      // accumulator ???
       newAccumulatorInfos(info.accumulables.values),
       None,
       None,

@@ -248,6 +248,7 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
   var trackerEndpoint: RpcEndpointRef = _
 
   /**
+   * 每次map output lost(丢失？？？)的时候，epoch会增加
    * The driver-side counter is incremented every time that a map output is lost. This value is sent
    * to executors as part of tasks, where executors compare the new epoch number to the highest
    * epoch number that they received in the past. If the new epoch number is higher then executors
@@ -271,6 +272,7 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
     }
   }
 
+  // one-way message为什么还会有reply with true？？？我对one-way message的理解有问题吗
   /** Send a one-way message to the trackerEndpoint, to which we expect it to reply with true. */
   protected def sendTracker(message: Any) {
     val response = askTracker[Boolean](message)
@@ -307,6 +309,7 @@ private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging 
 }
 
 /**
+ * Driver端对象，用于跟踪stage的map output的location
  * Driver-side class that keeps track of the location of the map output of a stage.
  *
  * The DAGScheduler uses this class to (de)register map output statuses and to look up statistics
@@ -328,6 +331,7 @@ private[spark] class MapOutputTrackerMaster(
   /** Whether to compute locality preferences for reduce tasks */
   private val shuffleLocalityEnabled = conf.getBoolean("spark.shuffle.reduceLocality.enabled", true)
 
+  // 看不懂。。。？？？
   // Number of map and reduce tasks above which we do not assign preferred locations based on map
   // output sizes. We limit the size of jobs for which assign preferred locations as computing the
   // top locations by size becomes expensive.
@@ -335,6 +339,7 @@ private[spark] class MapOutputTrackerMaster(
   // NOTE: This should be less than 2000 as we use HighlyCompressedMapStatus beyond that
   private val SHUFFLE_PREF_REDUCE_THRESHOLD = 1000
 
+  // 看不懂。。。？？？
   // Fraction of total map output that must be at a location for it to considered as a preferred
   // location for a reduce task. Making this larger will focus on fewer locations where most data
   // can be read locally, but may lead to more delay in scheduling if those locations are busy.
@@ -352,6 +357,7 @@ private[spark] class MapOutputTrackerMaster(
 
   // Thread pool used for handling map output status requests. This is a separate thread pool
   // to ensure we don't block the normal dispatcher threads.
+  // dispatcher threads就是指threadpool运行的线程吧（看配置的名字就知道咯）
   private val threadpool: ThreadPoolExecutor = {
     val numThreads = conf.getInt("spark.shuffle.mapOutput.dispatcher.numThreads", 8)
     val pool = ThreadUtils.newDaemonFixedThreadPool(numThreads, "map-output-dispatcher")

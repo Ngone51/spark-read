@@ -44,6 +44,8 @@ private[spark] trait SchedulableBuilder {
 private[spark] class FIFOSchedulableBuilder(val rootPool: Pool)
   extends SchedulableBuilder with Logging {
 
+  // what???
+  // 哈???
   override def buildPools() {
     // nothing
   }

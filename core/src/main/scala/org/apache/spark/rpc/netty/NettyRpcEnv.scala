@@ -266,7 +266,7 @@ private[netty] class NettyRpcEnv(
       case NonFatal(e) =>
         onFailure(e)
     }
-    //
+    // 记得还要返回future
     promise.future.mapTo[T].recover(timeout.addMessageIfTimeout)(ThreadUtils.sameThread)
   }
 
