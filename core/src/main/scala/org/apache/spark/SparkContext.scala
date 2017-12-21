@@ -447,6 +447,7 @@ class SparkContext(config: SparkConf) extends Logging {
 
     // Initialize the app status store and listener before SparkEnv is created so that it gets
     // all events.
+    // 啊哈
     _statusStore = AppStatusStore.createLiveStore(conf, l => listenerBus.addToStatusQueue(l))
 
     // ----------------------------------------—— vvv _env vvv -------------------------------------------------------

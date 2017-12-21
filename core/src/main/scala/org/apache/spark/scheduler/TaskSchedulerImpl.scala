@@ -69,6 +69,8 @@ private[spark] class TaskSchedulerImpl(
 
   val conf = sc.conf
 
+  // spark speculative策略：如果一个task执行时间超过了MIN_TIME_TO_SPECULATION（单位）设置的时间，就会在其它executor上启动一
+  // 个相同的task，如果该task率先执行完毕，则原先的task就会被禁止继续执行。
   // How often to check for speculative tasks
   // 检测speculative task的时间间隔，默认100ms
   val SPECULATION_INTERVAL_MS = conf.getTimeAsMs("spark.speculation.interval", "100ms")
@@ -85,8 +87,10 @@ private[spark] class TaskSchedulerImpl(
   val STARVATION_TIMEOUT_MS = conf.getTimeAsMs("spark.starvation.timeout", "15s")
 
   // CPUs to request per task
+  // 执行一个task需要的cpu个数
   val CPUS_PER_TASK = conf.getInt("spark.task.cpus", 1)
 
+  // TODO read：TaskSetManager seems especially important
   // TaskSetManagers are not thread safe, so any access to one should be synchronized
   // on this class.
   private val taskSetsByStageIdAndAttempt = new HashMap[Int, HashMap[Int, TaskSetManager]]
@@ -105,26 +109,33 @@ private[spark] class TaskSchedulerImpl(
   // IDs of the tasks running on each executor
   private val executorIdToRunningTaskIds = new HashMap[String, HashSet[Long]]
 
+  // 返回每个executor上runningTask的个数
   def runningTasksByExecutors: Map[String, Int] = synchronized {
     executorIdToRunningTaskIds.toMap.mapValues(_.size)
   }
 
   // The set of executors we have on each host; this is used to compute hostsAlive, which
-  // in turn is used to decide when we can attain data locality on a given host
+  // in turn(怎么翻译？？？) is used to decide when we can attain data locality on a given host
+  // 记录每个节点上的executor集合。可以用来计算hostsAlive，也可以用来判断是否可以在给定的节点上获取本地数据
   protected val hostToExecutors = new HashMap[String, HashSet[String]]
 
+  // 一个机架上有哪些节点？？？
   protected val hostsByRack = new HashMap[String, HashSet[String]]
 
+  // 每个executorId对应的节点
   protected val executorIdToHost = new HashMap[String, String]
 
+  // 哈？
   // Listener object to pass upcalls into
   var dagScheduler: DAGScheduler = null
 
   var backend: SchedulerBackend = null
 
+  // mapOutput跟踪器？
   val mapOutputTracker = SparkEnv.get.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]
 
   private var schedulableBuilder: SchedulableBuilder = null
+  // scheduler调度策略
   // default scheduler is FIFO
   private val schedulingModeConf = conf.get(SCHEDULER_MODE_PROPERTY, SchedulingMode.FIFO.toString)
   val schedulingMode: SchedulingMode =
@@ -138,6 +149,7 @@ private[spark] class TaskSchedulerImpl(
   val rootPool: Pool = new Pool("", schedulingMode, 0, 0)
 
   // This is a var so that we can reset it for testing purposes.
+  // 反序列化和远程获取（如果有必要）task的结果
   private[spark] var taskResultGetter = new TaskResultGetter(sc.env, this)
 
   override def setDAGScheduler(dagScheduler: DAGScheduler) {
@@ -517,8 +529,10 @@ private[spark] class TaskSchedulerImpl(
 
   override def defaultParallelism(): Int = backend.defaultParallelism()
 
+  // TODO mark to read
   // Check for speculatable tasks in all our active jobs.
   def checkSpeculatableTasks() {
+    //  revive: 复活（很形象的变量名）
     var shouldRevive = false
     synchronized {
       shouldRevive = rootPool.checkSpeculatableTasks(MIN_TIME_TO_SPECULATION)

@@ -37,6 +37,7 @@ import org.apache.spark.util.kvstore.KVStore
 /**
  * A Spark listener that writes application information to a data store. The types written to the
  * store are defined in the `storeTypes.scala` file and are based on the public REST API.
+ * 用来【写】kvstore
  *
  * @param lastUpdateTime When replaying logs, the log's last update time, so that the duration of
  *                       unfinished tasks can be more accurately calculated (see SPARK-21922).
@@ -65,6 +66,14 @@ private[spark] class AppStatusListener(
   // causing too many writes to the underlying store, and other expensive operations).
   // 追踪这些正在运行的实体，能让任务的统计信息高效地更新（而不用频繁地去修改底层的存储（AppStatusStore），
   // 以及其它昂贵的操作）
+  /**
+    * spark记录Application执行状态的一个重要策略是：在内存中定义多个实体（job，Stage，task，executor等）的映射（liveJobs、
+    * liveStages、liveTasks等），并在映射中存储当前Application的执行状态。而这些映射只是起到暂时存储的作用，最终都将写入
+    * （比直接更新映射代价要大）kvstore（同时同步AppStatusStore对象，该对象用于读取kvstore中的信息）。对于粒度较小的实体，
+    * 比如task，可能会有频繁地更新操作，所以，spark设置了liveUpdatePeriodNs（更新周期），来控制写入kvstore的频率。而对于stage和job（粒度大，频率低）相关的事件，
+    * 就没有比较严格的更新（kvstore）控制。
+    */
+                                             // stageId, stageAttemptId
   private val liveStages = new ConcurrentHashMap[(Int, Int), LiveStage]()
   private val liveJobs = new HashMap[Int, LiveJob]()
   private val liveExecutors = new HashMap[String, LiveExecutor]()
@@ -335,7 +344,7 @@ private[spark] class AppStatusListener(
       .toSeq
     stage.jobIds = stage.jobs.map(_.jobId).toSet
 
-    // TODO: 咦？为什么会有两次？？？
+    // remove redundant code below 已经提交pr，并merge,see[SPARK-22847]
     stage.schedulingPool = Option(event.properties).flatMap { p =>
       Option(p.getProperty("spark.scheduler.pool"))
     }.getOrElse(SparkUI.DEFAULT_POOL_NAME)
@@ -366,7 +375,7 @@ private[spark] class AppStatusListener(
         liveUpdate(liveRDDs.getOrElseUpdate(info.id, new LiveRDD(info)), now)
       }
     }
-
+    // 第一提交，肯定是会update的
     liveUpdate(stage, now)
   }
 
@@ -454,8 +463,10 @@ private[spark] class AppStatusListener(
 
     Option(liveStages.get((event.stageId, event.stageAttemptId))).foreach { stage =>
       if (metricsDelta != null) {
+        // 更新stage的统计信息（耗时、读写字节数等等）
         stage.metrics.update(metricsDelta)
       }
+      // taskEnd：活跃任务数减1，已完成任务数加1
       stage.activeTasks -= 1
       stage.completedTasks += completedDelta
       if (completedDelta > 0) {
@@ -469,11 +480,13 @@ private[spark] class AppStatusListener(
       maybeUpdate(stage, now)
 
       // Store both stage ID and task index in a single long variable for tracking at job level.
+      // 在一个long类型的变量中，用高32位存储stageId，低32位存储task index，以此记录job级别的信息
       val taskIndex = (event.stageId.toLong << Integer.SIZE) | event.taskInfo.index
       stage.jobs.foreach { job =>
         job.activeTasks -= 1
         job.completedTasks += completedDelta
         if (completedDelta > 0) {
+          // 在job级别就得同时记录stageId和task index（在上面的stage，只记录了task index）
           job.completedIndices.add(taskIndex)
         }
         job.failedTasks += failedDelta
@@ -484,6 +497,7 @@ private[spark] class AppStatusListener(
         maybeUpdate(job, now)
       }
 
+      // 记录（stageId, attemptId）对应的executor的一些任务相关的信息，以及统计信息
       val esummary = stage.executorSummary(event.taskInfo.executorId)
       esummary.taskTime += event.taskInfo.duration
       esummary.succeededTasks += completedDelta
@@ -505,6 +519,7 @@ private[spark] class AppStatusListener(
       // first attempt of this task. This may not be 100% accurate because the first attempt
       // could have failed half-way through. The correct fix would be to keep track of the
       // metrics added by each attempt, but this is much more complicated.
+      // TODO 这个resubmiteed是指该任务需要之后被re-schedule，还是它是一个已经被re-schedule且现在结束的任务？？？
       if (event.reason != Resubmitted) {
         if (event.taskMetrics != null) {
           val readMetrics = event.taskMetrics.shuffleReadMetrics
@@ -517,15 +532,21 @@ private[spark] class AppStatusListener(
 
       // Force an update on live applications when the number of active tasks reaches 0. This is
       // checked in some tests (e.g. SQLTestUtilsBase) so it needs to be reliably up to date.
+      // 这个exec在foreach{}里面，是不是就没有线程安全的问题？？？
       if (exec.activeTasks == 0) {
         liveUpdate(exec, now)
       } else {
         maybeUpdate(exec, now)
       }
     }
+    // 一个task终于结束了...
+    // 可以看到，越是底层的结构（例如task）的变动，影响的上层结构越多
   }
 
+  // stage结束事件
   override def onStageCompleted(event: SparkListenerStageCompleted): Unit = {
+    // maybeStage可能为null
+    // 既然收到了该stage的结束事件，那么，该stage却没有在liveStages里面，这种情况可能么???
     val maybeStage = Option(liveStages.remove((event.stageInfo.stageId, event.stageInfo.attemptId)))
     maybeStage.foreach { stage =>
       val now = System.nanoTime()
@@ -544,6 +565,12 @@ private[spark] class AppStatusListener(
         stage.status match {
           case v1.StageStatus.COMPLETE =>
             job.completedStages += event.stageInfo.stageId
+            // 那job的completed task呢？
+            // 答：在taskEnd事件中处理；在这里，Spark对某个结构（task、stage、job）事件响应遵循这样一个逻辑：
+            // 事件的主体对哪些其它结构产生了影响，则更新那些其它结构。比如：stage complete本身会对job对stage信息
+            // 的统计产生影响，虽然stage的完成也意味着task的完成，但是task complete在Job级别的统计已经在taskEnd事件
+            // 中处理了。所以里就不用处理了。（好吧，写得有点绕）
+            // 但是，对于skipped stage情况就不一样了，此时，job的skippedTasks只能在这里处理
           case v1.StageStatus.SKIPPED =>
             job.skippedStages += event.stageInfo.stageId
             job.skippedTasks += event.stageInfo.numTasks
@@ -551,6 +578,7 @@ private[spark] class AppStatusListener(
             job.failedStages += 1
         }
         job.activeStages -= 1
+        // stage complete，就直接更新kvstore（stage complete事件的频率应该不是很高）
         liveUpdate(job, now)
       }
 
@@ -558,18 +586,25 @@ private[spark] class AppStatusListener(
         pool.stageIds = pool.stageIds - event.stageInfo.stageId
         update(pool, now)
       }
-
+      // 更新了什么？？？ only for lastWriteTime？？？
       stage.executorSummaries.values.foreach(update(_, now))
       update(stage, now)
     }
   }
-
+  // BlockManager添加事件（driver会把BlockManager当做‘executor’来看待）
   override def onBlockManagerAdded(event: SparkListenerBlockManagerAdded): Unit = {
+    // BlockManagerAdded事件和ExecutorAdded事件之间的关系？？？
+    // 注释什么意思？？？
+    // 回答：在这里需要重新设置已经在onExecutorAdded事件设置过的该executor的一些信息，
+    // 因为在UI模块中，driver会把这（是指BlockManager的添加吗）当做一个
+    // “executor”来看待（看下面的代码就可以发现，全都是是在executor上的更新，并没有‘liveBlockManager’这个entity），
+    // 虽然并没有SparkListenerExecutorAdded事件产生
     // This needs to set fields that are already set by onExecutorAdded because the driver is
     // considered an "executor" in the UI, but does not have a SparkListenerExecutorAdded event.
     val exec = getOrCreateExecutor(event.blockManagerId.executorId, event.time)
     exec.hostPort = event.blockManagerId.hostPort
     event.maxOnHeapMem.foreach { _ =>
+      // BlockManager主要的配置信息
       exec.totalOnHeap = event.maxOnHeapMem.get
       exec.totalOffHeap = event.maxOffHeapMem.get
     }
@@ -580,26 +615,32 @@ private[spark] class AppStatusListener(
 
   override def onBlockManagerRemoved(event: SparkListenerBlockManagerRemoved): Unit = {
     // Nothing to do here. Covered by onExecutorRemoved.
+    // 所以如果这个事件提交了，但是executor还在运行，所以BlockManager也就没有remove咯？？？
   }
 
   override def onUnpersistRDD(event: SparkListenerUnpersistRDD): Unit = {
+    // 如果一个rdd在磁盘了持久化了，那么，就在内存（liveRDDs、kvstore）中删除它
     liveRDDs.remove(event.rddId)
     kvstore.delete(classOf[RDDStorageInfoWrapper], event.rddId)
   }
 
+  // executor metrics更新事件
   override def onExecutorMetricsUpdate(event: SparkListenerExecutorMetricsUpdate): Unit = {
     val now = System.nanoTime()
 
     event.accumUpdates.foreach { case (taskId, sid, sAttempt, accumUpdates) =>
       liveTasks.get(taskId).foreach { task =>
+        // task的metrics信息直接覆盖更新
         val metrics = TaskMetrics.fromAccumulatorInfos(accumUpdates)
         val delta = task.updateMetrics(metrics)
         maybeUpdate(task, now)
 
+        // stage的metrics信息则是累加task的metrics的delta（也是很显然的）
         Option(liveStages.get((sid, sAttempt))).foreach { stage =>
           stage.metrics.update(delta)
           maybeUpdate(stage, now)
 
+          // executor的metrics更新和stage一样
           val esummary = stage.executorSummary(event.execId)
           esummary.metrics.update(delta)
           maybeUpdate(esummary, now)
@@ -642,6 +683,7 @@ private[spark] class AppStatusListener(
       .sortBy(_.stageId)
   }
 
+  // TODO read
   private def updateRDDBlock(event: SparkListenerBlockUpdated, block: RDDBlockId): Unit = {
     val now = System.nanoTime()
     val executorId = event.blockUpdatedInfo.blockManagerId.executorId
@@ -780,6 +822,7 @@ private[spark] class AppStatusListener(
       new Function[(Int, Int), LiveStage]() {
         override def apply(key: (Int, Int)): LiveStage = new LiveStage()
       })
+    // 在这里，初始化stage.info
     stage.info = info
     stage
   }
@@ -789,6 +832,7 @@ private[spark] class AppStatusListener(
       oldSummary: Map[String, Int]): Map[String, Int] = {
     reason match {
       case k: TaskKilled =>
+        // 如果任务是因为被kill终止的，那么，stage的summary，会记录因为这个reason而致使task终止的例子数量加一
         oldSummary.updated(k.reason, oldSummary.getOrElse(k.reason, 0) + 1)
       case denied: TaskCommitDenied =>
         val reason = denied.toErrorString
@@ -811,7 +855,7 @@ private[spark] class AppStatusListener(
 
   /** Update an entity only if in a live app; avoids redundant writes when replaying logs. */
   // 仅仅在一个在线运行的应用中，更新实体的状态；
-  // ？？？避免再relaying日志的时候，重复写
+  // ？？？避免在relaying日志的时候，重复写
   private def liveUpdate(entity: LiveEntity, now: Long): Unit = {
     if (live) {
       update(entity, now)
