@@ -210,6 +210,7 @@ case object TaskResultLost extends TaskFailedReason {
 /**
  * :: DeveloperApi ::
  * Task was killed intentionally and needs to be rescheduled.
+ * task被故意终止来，需要重新调度（执行？）
  */
 @DeveloperApi
 case class TaskKilled(reason: String) extends TaskFailedReason {

@@ -418,14 +418,14 @@ private[spark] class AppStatusListener(
     }
 
     val now = System.nanoTime()
-
+                                // remove返回刚刚删除的liveTask
     val metricsDelta = liveTasks.remove(event.taskInfo.taskId).map { task =>
       task.info = event.taskInfo
 
       val errorMessage = event.reason match {
         case Success =>
           None
-        case k: TaskKilled =>
+        case k: TaskKilled => // 这种情况会重新调度task
           Some(k.reason)
         case e: ExceptionFailure => // Handle ExceptionFailure because we might have accumUpdates
           Some(e.toErrorString)
