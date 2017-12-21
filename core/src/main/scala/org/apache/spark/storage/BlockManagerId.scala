@@ -26,12 +26,15 @@ import org.apache.spark.util.Utils
 
 /**
  * :: DeveloperApi ::
+ * 该类代表了一个BlockManager的唯一标识
  * This class represent an unique identifier for a BlockManager.
  *
  * The first 2 constructors of this class are made private to ensure that BlockManagerId objects
  * can be created only using the apply method in the companion object. This allows de-duplication
  * of ID objects. Also, constructor parameters are private to ensure that parameters cannot be
  * modified from outside this class.
+ * 类BlockManagerId的前两个构造函数是private的，能够保证BlockManagerId对象只在它的伴生对象中被创建。这样能够避免
+ * 重复的BlockManagerId的对象。并且，构造函数的参数也是private的，这也保证了避免参数被外部类修改。
  */
 @DeveloperApi
 class BlockManagerId private (
@@ -68,6 +71,7 @@ class BlockManagerId private (
       executorId == SparkContext.LEGACY_DRIVER_IDENTIFIER
   }
 
+  // 这个数据的读写取格式应该是约定好的吧（类似protocol）
   override def writeExternal(out: ObjectOutput): Unit = Utils.tryOrIOException {
     out.writeUTF(executorId_)
     out.writeUTF(host_)
@@ -131,7 +135,7 @@ private[spark] object BlockManagerId {
     obj.readExternal(in)
     getCachedBlockManagerId(obj)
   }
-
+  // 额...s
   val blockManagerIdCache = new ConcurrentHashMap[BlockManagerId, BlockManagerId]()
 
   def getCachedBlockManagerId(id: BlockManagerId): BlockManagerId = {

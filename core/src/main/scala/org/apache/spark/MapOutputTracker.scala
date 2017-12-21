@@ -388,6 +388,7 @@ private[spark] class MapOutputTrackerMaster(
         while (true) {
           try {
             val data = mapOutputRequests.take()
+            // PoisonPill策略
              if (data == PoisonPill) {
               // Put PoisonPill back so that other MessageLoops can see it.
               mapOutputRequests.offer(PoisonPill)
