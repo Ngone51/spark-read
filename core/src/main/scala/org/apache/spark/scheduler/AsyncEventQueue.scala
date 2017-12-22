@@ -154,6 +154,7 @@ private class AsyncEventQueue(val name: String, conf: SparkConf, metrics: LiveLi
     eventCount.decrementAndGet()
     droppedEvents.inc()
     droppedEventsCounter.incrementAndGet()
+    // 这个logDroppedEvent只会赋值一次（所以如果之后eventQueue经历不满又满过程的时候，这个log是不会有了）
     if (logDroppedEvent.compareAndSet(false, true)) {
       // Only log the following message once to avoid duplicated annoying logs.
       logError(s"Dropping event from queue $name. " +
