@@ -112,6 +112,7 @@ private[spark] class ByteBufferBlockData(
  * retrieving blocks both locally and remotely into various stores (memory, disk, and off-heap).
  *
  * Note that [[initialize()]] must be called before the BlockManager is usable.
+ * 其实为什么不在LiveListenerBus也加这样的说明呢：post必须在listener建立之后才能调用，而不让问题搞的更复杂，see[SPARK-22850]
  */
 private[spark] class BlockManager(
     executorId: String,
@@ -127,25 +128,30 @@ private[spark] class BlockManager(
     numUsableCores: Int)
   extends BlockDataManager with BlockEvictionHandler with Logging {
 
+  // 是否启用外部shuffle服务 ？？？
   private[spark] val externalShuffleServiceEnabled =
     conf.getBoolean("spark.shuffle.service.enabled", false)
 
+  // 磁盘块管理
   val diskBlockManager = {
     // Only perform cleanup if an external service is not serving our shuffle files.
+    // 只有在外部服务没有在为shuffle文件服务或当前节点为driver时，才会执行在stop调用是执行删除操作
     val deleteFilesOnStop =
       !externalShuffleServiceEnabled || executorId == SparkContext.DRIVER_IDENTIFIER
     new DiskBlockManager(conf, deleteFilesOnStop)
   }
-
+  // 块信息管理
   // Visible for testing
   private[storage] val blockInfoManager = new BlockInfoManager
-
+  // ？？？
   private val futureExecutionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128))
 
   // Actual storage of where blocks are kept
+  // 内存存储
   private[spark] val memoryStore =
     new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
+  // 磁盘存储
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager, securityManager)
   memoryManager.setMemoryStore(memoryStore)
 
@@ -169,11 +175,13 @@ private[spark] class BlockManager(
       tmpPort
     }
   }
-
+  // BlockManager的唯一标识
   var blockManagerId: BlockManagerId = _
 
   // Address of the server that serves this executor's shuffle files. This is either an external
   // service, or just our own Executor's BlockManager.
+  // shuffleServerId是服务该executor的shuffle 文件的服务端地址。这有可能是一个外部的服务，也有可能这就是
+  // 在该executor上的BlockManager
   private[spark] var shuffleServerId: BlockManagerId = _
 
   // Client to read other executors' shuffle files. This is either an external service, or just the
@@ -204,8 +212,10 @@ private[spark] class BlockManager(
   private val peerFetchLock = new Object
   private var lastPeerFetchTime = 0L
 
+  // 块复制策略
   private var blockReplicationPolicy: BlockReplicationPolicy = _
 
+  // 一个用来跟踪所有超出指定内存阈值的远程块（为什么是跟踪远程的？？？）上的文件。这些文件会通过若引用的方式自动删除。
   // A TempFileManager used to track all the files of remote blocks which above the
   // specified memory threshold. Files will be deleted automatically based on weak reference.
   // Exposed for test
@@ -214,9 +224,11 @@ private[spark] class BlockManager(
   private val maxRemoteBlockToMem = conf.get(config.MAX_REMOTE_BLOCK_SIZE_FETCH_TO_MEM)
 
   /**
+   * 之所以没有在构造函数里给定appId，是因为BlockManager实例化的时候，appId可能还不知道。
    * Initializes the BlockManager with the given appId. This is not performed in the constructor as
    * the appId may not be known at BlockManager instantiation time (in particular for the driver,
-   * where it is only learned after registration with the TaskScheduler).
+   * where it is only learned after registration with the TaskScheduler -> (既然这样，我们在taskscheduler
+   * 实例化之后，在实例化BlockManager不就可以了吗？？？)).
    *
    * This method initializes the BlockTransferService and ShuffleClient, registers with the
    * BlockManagerMaster, starts the BlockManagerWorker endpoint, and registers with a local shuffle

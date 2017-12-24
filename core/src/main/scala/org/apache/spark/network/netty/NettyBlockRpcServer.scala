@@ -34,7 +34,7 @@ import org.apache.spark.storage.{BlockId, StorageLevel}
 
 /**
  * Serves requests to open blocks by simply registering one chunk per block requested.
- * Handles opening and uploading arbitrary BlockManager blocks.
+ * Handles opening and uploading arbitrary（随意地？？？） BlockManager blocks.
  *
  * Opened blocks are registered with the "one-for-one" strategy, meaning each Transport-layer Chunk
  * is equivalent to one Spark-level shuffle block.
