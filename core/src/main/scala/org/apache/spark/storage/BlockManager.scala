@@ -112,7 +112,7 @@ private[spark] class ByteBufferBlockData(
  * retrieving blocks both locally and remotely into various stores (memory, disk, and off-heap).
  *
  * Note that [[initialize()]] must be called before the BlockManager is usable.
- * 其实为什么不在LiveListenerBus也加这样的说明呢：post必须在listener建立之后才能调用，而不让问题搞的更复杂，see[SPARK-22850]
+ * 其实为什么不在LiveListenerBus也加这样的说明呢：post必须在listener建立之后才能调用，而不让问题搞的更复杂：see[SPARK-22850]
  */
 private[spark] class BlockManager(
     executorId: String,
@@ -235,9 +235,12 @@ private[spark] class BlockManager(
    * service if configured.
    */
   def initialize(appId: String): Unit = {
+    // 初始化blockTransferService
     blockTransferService.init(this)
+    // 初始化shuffleClient
     shuffleClient.init(appId)
 
+    // 初始化块赋值策略
     blockReplicationPolicy = {
       val priorityClass = conf.get(
         "spark.storage.replication.policy", classOf[RandomBlockReplicationPolicy].getName)
@@ -247,9 +250,10 @@ private[spark] class BlockManager(
       ret
     }
 
+    // 初始化id，会先从缓存中尝试获取，如果没有，再创建新的BlockManagerId，并加入缓存
     val id =
       BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
-
+    // 向BlockManagerMaster注册该BlockManager
     val idFromMaster = master.registerBlockManager(
       id,
       maxOnHeapMemory,
@@ -265,6 +269,7 @@ private[spark] class BlockManager(
       blockManagerId
     }
 
+    // TODO read
     // Register Executors' configuration with the local shuffle service, if one should exist.
     if (externalShuffleServiceEnabled && !blockManagerId.isDriver) {
       registerWithExternalShuffleServer()
@@ -1292,6 +1297,7 @@ private[spark] class BlockManager(
       maxReplicas: Int): Unit = {
     logInfo(s"Using $blockManagerId to pro-actively replicate $blockId")
     blockInfoManager.lockForReading(blockId).foreach { info =>
+      // TODO read
       val data = doGetLocalBytes(blockId, info)
       val storageLevel = StorageLevel(
         useDisk = info.level.useDisk,

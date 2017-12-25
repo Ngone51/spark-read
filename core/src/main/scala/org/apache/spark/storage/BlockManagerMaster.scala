@@ -29,6 +29,8 @@ import org.apache.spark.util.{RpcUtils, ThreadUtils}
 
 private[spark]
 class BlockManagerMaster(
+    // 如果是driver，则driverEndpoint是BlockManagerMasterEndPoint
+    // 如果是executor，则driverEndpoint是BlockManagerMasterEndPoint的引用，用于和driver通信
     var driverEndpoint: RpcEndpointRef,
     conf: SparkConf,
     isDriver: Boolean)
@@ -64,6 +66,7 @@ class BlockManagerMaster(
     val updatedId = driverEndpoint.askSync[BlockManagerId](
       RegisterBlockManager(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint))
     logInfo(s"Registered BlockManager $updatedId")
+    // 更新后的id包含了topology信息
     updatedId
   }
 

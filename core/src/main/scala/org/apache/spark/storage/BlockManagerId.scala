@@ -135,7 +135,7 @@ private[spark] object BlockManagerId {
     obj.readExternal(in)
     getCachedBlockManagerId(obj)
   }
-  // 额...s
+  // 额...
   val blockManagerIdCache = new ConcurrentHashMap[BlockManagerId, BlockManagerId]()
 
   def getCachedBlockManagerId(id: BlockManagerId): BlockManagerId = {

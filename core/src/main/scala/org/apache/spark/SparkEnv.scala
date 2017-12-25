@@ -348,21 +348,28 @@ object SparkEnv extends Logging {
         UnifiedMemoryManager(conf, numUsableCores)
       }
     // --------------------------------------- vvv block vvv --------------------------------------------------------
+    // 获取BlockManager的端口号
     val blockManagerPort = if (isDriver) {
       conf.get(DRIVER_BLOCK_MANAGER_PORT)
     } else {
       conf.get(BLOCK_MANAGER_PORT)
     }
 
+    // 创建NettyBlockTransferService
+    // TODO 留意一下advertiseAddress（在executor中bindAddress和advertiseAddress都是hostname）
     val blockTransferService =
       new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
         blockManagerPort, numUsableCores)
 
+    // 创建BlockManagerMaster
+    // 如果是driver，则第一个参数返回BlockManagerMasterEndpoint
+    // 如果是executor，则第一个参数返回BlockManagerMasterEndpoint的引用
     val blockManagerMaster = new BlockManagerMaster(registerOrLookupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)),
       conf, isDriver)
 
+    // 最后，创建BlockManager
     // NB: blockManager is not valid until initialize() is called later.
     val blockManager = new BlockManager(executorId, rpcEnv, blockManagerMaster,
       serializerManager, conf, memoryManager, mapOutputTracker, shuffleManager,

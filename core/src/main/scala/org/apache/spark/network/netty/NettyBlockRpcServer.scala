@@ -38,6 +38,7 @@ import org.apache.spark.storage.{BlockId, StorageLevel}
  *
  * Opened blocks are registered with the "one-for-one" strategy, meaning each Transport-layer Chunk
  * is equivalent to one Spark-level shuffle block.
+ * 注册了“一对一”策略的打开的Block，意为着每一个传输层的chunk对应着spark层的一个shuffle block
  */
 class NettyBlockRpcServer(
     appId: String,

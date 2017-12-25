@@ -453,7 +453,8 @@ class SparkContext(config: SparkConf) extends Logging {
     // ----------------------------------------—— vvv _env vvv -------------------------------------------------------
     // Create the Spark execution environment (cache, map output tracker, etc)
     // 创建spark的运行环境 very important
-    // 大概摸了一遍，还不够
+    // 1. rpc构建
+    // 2. BlockManager构建
     _env = createSparkEnv(_conf, isLocal, listenerBus)
     SparkEnv.set(_env)
     // ----------------------------------------—— ^^^ _env ^^^ -------------------------------------------------------
@@ -561,11 +562,13 @@ class SparkContext(config: SparkConf) extends Logging {
     // --------------------------------------- vvv _applicationId vvv ----------------------------------------------
     _applicationId = _taskScheduler.applicationId()
     _applicationAttemptId = taskScheduler.applicationAttemptId()
+    // 在_conf中设置appId，到时候executor会去从_conf中获取，然后调用BlockManager的initialize(appId)
     _conf.set("spark.app.id", _applicationId)
     if (_conf.getBoolean("spark.ui.reverseProxy", false)) {
       System.setProperty("spark.ui.proxyBase", "/proxy/" + _applicationId)
     }
     _ui.foreach(_.setAppId(_applicationId))
+    // TODO Block读写相关的没有看
     _env.blockManager.initialize(_applicationId)
     // --------------------------------------- ^^^ _applicationId ^^^ ----------------------------------------------
 

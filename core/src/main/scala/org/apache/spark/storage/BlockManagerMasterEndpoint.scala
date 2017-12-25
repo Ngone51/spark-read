@@ -121,6 +121,7 @@ class BlockManagerMasterEndpoint(
       context.reply(true)
 
     case RemoveExecutor(execId) =>
+      // 在BlockManagerMasterEndPonit中，即使是收到RemoveExecutor事件，删除的也只是BlockManager
       removeExecutor(execId)
       context.reply(true)
 
@@ -199,18 +200,25 @@ class BlockManagerMasterEndpoint(
     )
   }
 
+  // 根据BlockManagerId，删除BlockManager
   private def removeBlockManager(blockManagerId: BlockManagerId) {
     val info = blockManagerInfo(blockManagerId)
 
+    // 删除该BlockManager对应的executorId
     // Remove the block manager from blockManagerIdByExecutor.
     blockManagerIdByExecutor -= blockManagerId.executorId
 
+    // 删除该BlockManager对应的BlockManagerInfo
     // Remove it from blockManagerInfo and remove all the blocks.
     blockManagerInfo.remove(blockManagerId)
 
+    // 删除该BlockManager下的Blocks
     val iterator = info.blocks.keySet.iterator
-    while (iterator.hasNext) {
+    while (iterator.hasNext) { // 注意这里是个while循环
       val blockId = iterator.next
+      // locations指包含该被删除block的所有BlocManager
+      // 所以，这就意味着，下面代码中，随机选择的用来复制该block的executor是已经包含了该block块的，
+      // 只是在原先的基础上多了一个复制
       val locations = blockLocations.get(blockId)
       locations -= blockManagerId
       // De-register the block if none of the block managers have it. Otherwise, if pro-active
@@ -221,6 +229,8 @@ class BlockManagerMasterEndpoint(
       if (locations.size == 0) {
         blockLocations.remove(blockId)
         logWarning(s"No more replicas available for $blockId !")
+        // 我猜，之所以是要设置proactivelyReplicate（积极主动地复制），是因为，其实随机选择的executor已经有该block的副本了,
+        // 然后你还要复制一份，这不积极吗？
       } else if (proactivelyReplicate && (blockId.isRDD || blockId.isInstanceOf[TestBlockId])) {
         // As a heursitic, assume single executor failure to find out the number of replicas that
         // existed before failure
@@ -229,8 +239,10 @@ class BlockManagerMasterEndpoint(
         val blockLocations = locations.toSeq
         val candidateBMId = blockLocations(i)
         blockManagerInfo.get(candidateBMId).foreach { bm =>
+          // foreach里的bm是指BlockManagerInfo，filter里的bm是指BlockManagerId（为什么要这么命名，是故意让人看不懂吗？？？）
           val remainingLocations = locations.toSeq.filter(bm => bm != candidateBMId)
           val replicateMsg = ReplicateBlock(blockId, remainingLocations, maxReplicas)
+          // bm(BlockManagerId)作为随机选择的executor，来复制该block（该executor原先就有该block的一个副本，现在又多了一个）
           bm.slaveEndpoint.ask[Boolean](replicateMsg)
         }
       }
@@ -353,30 +365,40 @@ class BlockManagerMasterEndpoint(
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
     // the dummy id is not expected to contain the topology information.
     // we get that info here and respond back with a more fleshed out block manager id
+    // dummy(傀儡) BlockManagerId不包含拓扑信息（这个拓扑信息到底是啥？），
+    // 在这里，我们有拓扑信息，然后返回给slave一个更加具体（包含拓扑信息）的BlockManagerId
     val id = BlockManagerId(
       idWithoutTopologyInfo.executorId,
       idWithoutTopologyInfo.host,
       idWithoutTopologyInfo.port,
-      topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host))
+      topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host)) // 补充拓扑信息，貌似和机架感知有关系
 
     val time = System.currentTimeMillis()
     if (!blockManagerInfo.contains(id)) {
       blockManagerIdByExecutor.get(id.executorId) match {
         case Some(oldId) =>
+          // 1.说明一个executor上只能有一个BlockManager
+          // 2.如果发现同一个executor上有第二个BlockManager注册（所有注册行为只有一次！！！），
+          // 则直接删除该executor(基于该executor已经挂了的假设)
+          // 3.哪种情况会发生二次注册？
           // A block manager of the same executor already exists, so remove it (assumed dead)
           logError("Got two different block manager registrations on same executor - "
               + s" will replace old one $oldId with new one $id")
+          // 删除该executor（在这里并没有真的删除executor，只是删除了BlockManager，只是把BlockManager当做‘executor’来对待）
+          // 感觉这里传参oldId.executorId更好，毕竟删除的是旧的，不是吗？？？
           removeExecutor(id.executorId)
         case None =>
       }
       logInfo("Registering block manager %s with %s RAM, %s".format(
         id.hostPort, Utils.bytesToString(maxOnHeapMemSize + maxOffHeapMemSize), id))
 
+      // executor <-> BlockManagerId <-> BlockMangerInfo
       blockManagerIdByExecutor(id.executorId) = id
 
       blockManagerInfo(id) = new BlockManagerInfo(
         id, System.currentTimeMillis(), maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint)
     }
+    // AppStatusListener会监听该事件，同时会把BlockManager的添加事件当做‘executor’来对待
     listenerBus.post(SparkListenerBlockManagerAdded(time, id, maxOnHeapMemSize + maxOffHeapMemSize,
         Some(maxOnHeapMemSize), Some(maxOffHeapMemSize)))
     id
@@ -500,7 +522,7 @@ private[spark] class BlockManagerInfo(
   // Mapping from block id to its status.
   private val _blocks = new JHashMap[BlockId, BlockStatus]
 
-  // Cached blocks held by this BlockManager. This does not include broadcast blocks.
+  // Cached blocks held by this BlockManager. This does not include broadcast blocks.（不包含广播块）
   private val _cachedBlocks = new mutable.HashSet[BlockId]
 
   def getStatus(blockId: BlockId): Option[BlockStatus] = Option(_blocks.get(blockId))
@@ -533,7 +555,7 @@ private[spark] class BlockManagerInfo(
         _remainingMem += originalMemSize
       }
     }
-
+    // TODO read
     if (storageLevel.isValid) {
       /* isValid means it is either stored in-memory or on-disk.
        * The memSize here indicates the data size in or dropped from memory,

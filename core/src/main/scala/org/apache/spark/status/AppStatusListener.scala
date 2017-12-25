@@ -603,6 +603,9 @@ private[spark] class AppStatusListener(
     // considered an "executor" in the UI, but does not have a SparkListenerExecutorAdded event.
     val exec = getOrCreateExecutor(event.blockManagerId.executorId, event.time)
     exec.hostPort = event.blockManagerId.hostPort
+    // 这个有问题吧...直接eventforeach好了啊，万一maxOnHeapMem isEmpty就惨了
+    // 不对！ 之所以这样写是因为，event它不支持foreach操作，然后借助一下maxOnHeapMem
+    // 但是，直接去掉外面的foreach不行吗？？？
     event.maxOnHeapMem.foreach { _ =>
       // BlockManager主要的配置信息
       exec.totalOnHeap = event.maxOnHeapMem.get
