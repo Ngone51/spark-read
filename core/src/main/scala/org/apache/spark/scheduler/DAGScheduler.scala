@@ -377,7 +377,8 @@ class DAGScheduler(
       partitions: Array[Int],
       jobId: Int,
       callSite: CallSite): ResultStage = {
-    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，没有ShuffleDependency啊（为什么debug断点进不来）
+    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，没有ShuffleDependency啊（为什么debug断点进不来: 重新编译一下源码，恢复正常）
+    // debug后发现，对于SparkPi，parents确实为Nil
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
     val stage = new ResultStage(id, rdd, func, partitions, parents, jobId, callSite)
