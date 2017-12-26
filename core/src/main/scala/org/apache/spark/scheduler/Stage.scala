@@ -65,6 +65,7 @@ private[scheduler] abstract class Stage(
   val numPartitions = rdd.partitions.length
 
   /** Set of jobs that this stage belongs to. */
+  // 注意：firstJobId在Stage对象创建时，没有加入进来的，调用DAGScheduler#updateJobIdStageIdMaps方法时才加进来
   val jobIds = new HashSet[Int]
 
   /** The ID to use for the next new attempt for this stage. */

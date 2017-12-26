@@ -203,6 +203,7 @@ public class TransportClient implements Closeable {
   }
 
   /**
+   * 用于发送一个不透明的消息给服务端的RpcHandler。callback函数会在服务端响应或接收到错误后被调用。
    * Sends an opaque message to the RpcHandler on the server-side. The callback will be invoked
    * with the server's response or upon any failure.
    *

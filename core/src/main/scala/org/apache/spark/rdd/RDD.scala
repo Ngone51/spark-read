@@ -47,7 +47,7 @@ import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, Poi
   SamplingUtils}
 
 /**
- * A Resilient Distributed Dataset (RDD), the basic abstraction in Spark. Represents an immutable,
+ * A Resilient Distributed Dataset (RDD), the basic abstraction in Spark. Represents an immutable, // 不可修改
  * partitioned collection of elements that can be operated on in parallel. This class contains the
  * basic operations available on all RDDs, such as `map`, `filter`, and `persist`. In addition,
  * [[org.apache.spark.rdd.PairRDDFunctions]] contains operations available only on RDDs of key-value
@@ -101,6 +101,7 @@ abstract class RDD[T: ClassTag](
   }
 
   /** Construct an RDD with just a one-to-one dependency on one parent */
+  // 创建一个和父RDD是一对一依赖的RDD
   def this(@transient oneParent: RDD[_]) =
     this(oneParent.context, List(new OneToOneDependency(oneParent)))
 
@@ -368,6 +369,7 @@ abstract class RDD[T: ClassTag](
    * Return a new RDD by applying a function to all elements of this RDD.
    */
   def map[U: ClassTag](f: T => U): RDD[U] = withScope {
+    // TODO read（这是一个什么鬼啊？？？）
     val cleanF = sc.clean(f)
     new MapPartitionsRDD[U, T](this, (context, pid, iter) => iter.map(cleanF))
   }

@@ -140,6 +140,7 @@ class DAGScheduler(
   private[scheduler] def numTotalJobs: Int = nextJobId.get()
   private val nextStageId = new AtomicInteger(0)
 
+  // 一个job对应的所有stage
   private[scheduler] val jobIdToStageIds = new HashMap[Int, HashSet[Int]]
   private[scheduler] val stageIdToStage = new HashMap[Int, Stage]
   /**
@@ -376,6 +377,7 @@ class DAGScheduler(
       partitions: Array[Int],
       jobId: Int,
       callSite: CallSite): ResultStage = {
+    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，没有ShuffleDependency啊（为什么debug断点进不来）
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
     val stage = new ResultStage(id, rdd, func, partitions, parents, jobId, callSite)
@@ -419,7 +421,7 @@ class DAGScheduler(
   }
 
   /**
-   * Returns shuffle dependencies that are immediate parents of the given RDD.
+   * Returns shuffle dependencies that are immediate parents（直接的父亲，不是间接的，看下面的说明） of the given RDD.
    *
    * This function will not return more distant ancestors.  For example, if C has a shuffle
    * dependency on B which has a shuffle dependency on A:
@@ -435,6 +437,7 @@ class DAGScheduler(
     val parents = new HashSet[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
     val waitingForVisit = new ArrayStack[RDD[_]]
+    // BFS即视感
     waitingForVisit.push(rdd)
     while (waitingForVisit.nonEmpty) {
       val toVisit = waitingForVisit.pop()
@@ -495,6 +498,7 @@ class DAGScheduler(
         s.jobIds += jobId
         jobIdToStageIds.getOrElseUpdate(jobId, new HashSet[Int]()) += s.id
         val parentsWithoutThisJobId = s.parents.filter { ! _.jobIds.contains(jobId) }
+        // 为什么要加tail？？？
         updateJobIdStageIdMapsList(parentsWithoutThisJobId ++ stages.tail)
       }
     }

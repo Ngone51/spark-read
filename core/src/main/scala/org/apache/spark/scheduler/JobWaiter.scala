@@ -30,7 +30,7 @@ import org.apache.spark.internal.Logging
 private[spark] class JobWaiter[T](
     dagScheduler: DAGScheduler,
     val jobId: Int,
-    totalTasks: Int,
+    totalTasks: Int, // 分区个数对应了task的个数？？？
     resultHandler: (Int, T) => Unit)
   extends JobListener with Logging {
 

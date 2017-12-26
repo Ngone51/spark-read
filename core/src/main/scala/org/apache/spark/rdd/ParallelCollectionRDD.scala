@@ -94,7 +94,9 @@ private[spark] class ParallelCollectionRDD[T: ClassTag](
   // UPDATE: A parallel collection can be checkpointed to HDFS, which achieves this goal.
 
   override def getPartitions: Array[Partition] = {
+    // 先对传进来的数据分片
     val slices = ParallelCollectionRDD.slice(data, numSlices).toArray
+    // 再对每个分片创建一个Partition（分区）
     slices.indices.map(i => new ParallelCollectionPartition(id, i, slices(i))).toArray
   }
 
@@ -109,6 +111,8 @@ private[spark] class ParallelCollectionRDD[T: ClassTag](
 
 private object ParallelCollectionRDD {
   /**
+   * 对于Range collection，也用Range来表示每一个分片，有利于减少内存的开销。（我的理解，Range不用存储
+   * 区间的所有数值，只需要存储开始值、结束值和步长即可 ）
    * Slice a collection into numSlices sub-collections. One extra thing we do here is to treat Range
    * collections specially, encoding the slices as other Ranges to minimize memory cost. This makes
    * it efficient to run Spark over RDDs representing large sets of numbers. And if the collection
@@ -120,6 +124,7 @@ private object ParallelCollectionRDD {
     }
     // Sequences need to be sliced at the same set of index positions for operations
     // like RDD.zip() to behave as expected
+    // 计算每一组分片的起始index和结束index
     def positions(length: Long, numSlices: Int): Iterator[(Int, Int)] = {
       (0 until numSlices).iterator.map { i =>
         val start = ((i * length) / numSlices).toInt
@@ -131,13 +136,17 @@ private object ParallelCollectionRDD {
       case r: Range =>
         positions(r.length, numSlices).zipWithIndex.map { case ((start, end), index) =>
           // If the range is inclusive, use inclusive range for the last slice
+          // 如果range是inclusive（我理解是闭区间），那么，最后一个分片也是用闭区间的range
           if (r.isInclusive && index == numSlices - 1) {
             new Range.Inclusive(r.start + start * r.step, r.end, r.step)
           }
           else {
+            // 其它的分片都是开区间的
             new Range(r.start + start * r.step, r.start + end * r.step, r.step)
           }
         }.toSeq.asInstanceOf[Seq[Seq[T]]]
+        // 为什么Range和NumericRange的处理方式差别这么大？
+        // 好吧，NumericRange并不是继承Range的
       case nr: NumericRange[_] =>
         // For ranges of Long, Double, BigInteger, etc
         val slices = new ArrayBuffer[Seq[T]](numSlices)
@@ -145,6 +154,7 @@ private object ParallelCollectionRDD {
         for ((start, end) <- positions(nr.length, numSlices)) {
           val sliceSize = end - start
           slices += r.take(sliceSize).asInstanceOf[Seq[T]]
+          // 大概是把上个步骤以及分过片的那部分区间里的值给裁剪掉了
           r = r.drop(sliceSize)
         }
         slices

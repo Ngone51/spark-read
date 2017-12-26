@@ -31,6 +31,7 @@ import org.apache.spark.internal.Logging
 /**
  * A general, named code block representing an operation that instantiates RDDs.
  *
+ * 所有在对应的代码块里实例化的rdd，都会存储一个该对象的引用
  * All RDDs instantiated in the corresponding code block will store a pointer to this object.
  * Examples include, but will not be limited to, existing RDD operations, such as textFile,
  * reduceByKey, and treeAggregate.
@@ -90,6 +91,9 @@ private[spark] object RDDOperationScope extends Logging {
   def nextScopeId(): Int = scopeCounter.getAndIncrement
 
   /**
+   * 执行给定的代码体(body)，由此在该代码体重创建的所有RDD就具有一样的scope。该scope的名称以堆栈中第一个不是该方法名(withScope)
+   * 的方法的名称命名。
+   * 注意！！！：不允许存在return块
    * Execute the given body such that all RDDs created in this body will have the same scope.
    * The name of the scope will be the first method name in the stack trace that is not the
    * same as this method's.
@@ -100,6 +104,7 @@ private[spark] object RDDOperationScope extends Logging {
       sc: SparkContext,
       allowNesting: Boolean = false)(body: => T): T = {
     val ourMethodName = "withScope"
+    // 在堆栈中寻找调用该方法的方法名
     val callerMethodName = Thread.currentThread.getStackTrace()
       .dropWhile(_.getMethodName != ourMethodName)
       .find(_.getMethodName != ourMethodName)
@@ -114,7 +119,7 @@ private[spark] object RDDOperationScope extends Logging {
 
   /**
    * Execute the given body such that all RDDs created in this body will have the same scope.
-   *
+   * 如果允许嵌套，那么，任何在给定的代码体里调用此方法(withScope)，都会实例化一个子scope，并嵌套在该scope里面
    * If nesting is allowed, any subsequent calls to this method in the given body will instantiate
    * child scopes that are nested within our scope. Otherwise, these calls will take no effect.
    *
@@ -135,6 +140,8 @@ private[spark] object RDDOperationScope extends Logging {
     val noOverrideKey = SparkContext.RDD_SCOPE_NO_OVERRIDE_KEY
     val oldScopeJson = sc.getLocalProperty(scopeKey)
     val oldScope = Option(oldScopeJson).map(RDDOperationScope.fromJson)
+    // 这个NoOverride是干嘛的？？？不允许覆盖？
+    // 我的理解是：如果不忽略父scope，且允许嵌套，那么，就需要重新设置scopeKey的value值，这时就发生了值的覆盖
     val oldNoOverride = sc.getLocalProperty(noOverrideKey)
     try {
       if (ignoreParent) {
@@ -148,8 +155,10 @@ private[spark] object RDDOperationScope extends Logging {
       if (!allowNesting) {
         sc.setLocalProperty(noOverrideKey, "true")
       }
+      // 在这儿执行body！！！
       body
     } finally {
+      // 最后还有恢复？？？有点类似dfs
       // Remember to restore any state that was modified before exiting
       sc.setLocalProperty(scopeKey, oldScopeJson)
       sc.setLocalProperty(noOverrideKey, oldNoOverride)

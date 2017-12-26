@@ -32,6 +32,8 @@ private[spark] object CheckpointState extends Enumeration {
 }
 
 /**
+ * 这个类包含了所有和RDD检查点相关的信息。该类的每个实例关联了一个RDD。该类能够管理关联RDD的检查点流程，以及，
+ * 通过提供检查点RDD的更新分区、迭代器和首选的存储位置，来管理提交的检查点的状态。
  * This class contains all the information related to RDD checkpointing. Each instance of this
  * class is associated with an RDD. It manages process of checkpointing of the associated RDD,
  * as well as, manages the post-checkpoint state by providing the updated partitions,
@@ -51,6 +53,7 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
   // TODO: are we sure we need to use a global lock in the following methods?
 
   /**
+   * 返回该RDD的检查点数据是否已经持久化
    * Return whether the checkpoint data for this RDD is already persisted.
    */
   def isCheckpointed: Boolean = RDDCheckpointData.synchronized {
@@ -58,6 +61,8 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
   }
 
   /**
+   * 具体化该RDD，并持久化它的内容。
+   * 这个方法的调用发生在该RDD上第一个action被调用完成后
    * Materialize this RDD and persist its content.
    * This is called immediately after the first action invoked on this RDD has completed.
    */
@@ -72,6 +77,7 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
       }
     }
 
+    // TODO read 这个doCheckpoint()是什么鬼？？？
     val newRDD = doCheckpoint()
 
     // Update our state and truncate the RDD lineage

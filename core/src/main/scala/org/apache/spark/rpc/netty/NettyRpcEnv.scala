@@ -160,7 +160,7 @@ private[netty] class NettyRpcEnv(
         if (outbox == null) {
           val newOutbox = new Outbox(this, receiver.address)
           val oldOutbox = outboxes.putIfAbsent(receiver.address, newOutbox)
-          // outIfAbsent()函数的特性要求对返回值做检测
+          // putIfAbsent()函数的特性要求对返回值做检测
           if (oldOutbox == null) {
             newOutbox
           } else {
