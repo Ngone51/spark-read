@@ -428,7 +428,10 @@ class DAGScheduler(
    * dependency on B which has a shuffle dependency on A:
    *
    * A <-- B <-- C
-   *
+   * 那如果是这样的呢？（首先，有没有这样的依赖情形？(应该没有吧，结合下面代码得出的结果)如果有返回B和D吗？）
+   *  A <-- B <-- C
+   *              |
+   *        D <---
    * calling this function with rdd C will only return the B <-- C dependency.
    *
    * This function is scheduler-visible for the purpose of unit testing.
@@ -446,6 +449,8 @@ class DAGScheduler(
         visited += toVisit
         toVisit.dependencies.foreach {
           case shuffleDep: ShuffleDependency[_, _, _] =>
+            // 按照注释的意思，shuffleDep应该只有一个
+            // 这样，我们是否可以认为，一个RDD最多只有一个ShuffleDependency呢？
             parents += shuffleDep
           case dependency =>
             waitingForVisit.push(dependency.rdd)
@@ -857,6 +862,7 @@ class DAGScheduler(
     listenerBus.post(SparkListenerTaskGettingResult(taskInfo))
   }
 
+  // 处理作业提交
   private[scheduler] def handleJobSubmitted(jobId: Int,
       finalRDD: RDD[_],
       func: (TaskContext, Iterator[_]) => _,
