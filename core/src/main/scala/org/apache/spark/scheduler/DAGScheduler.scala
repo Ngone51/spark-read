@@ -438,6 +438,7 @@ class DAGScheduler(
    */
   private[scheduler] def getShuffleDependencies(
       rdd: RDD[_]): HashSet[ShuffleDependency[_, _, _]] = {
+    // 虽然定义了HashSet，但是最多只会存储一个parent的吧，可能是为了之后使用算子操作（map）？？？
     val parents = new HashSet[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
     val waitingForVisit = new ArrayStack[RDD[_]]
@@ -952,19 +953,25 @@ class DAGScheduler(
   }
 
   /** Submits stage, but first recursively submits any missing parents. */
-  // 提交stage，但是会先递归地提交任何遗漏的parent stage
+  // 提交stage，但是会先[递归]地提交任何遗漏的parent stage
   private def submitStage(stage: Stage) {
+    // 该jobId为所有需要该stage且处于active状态的Job里面最早被提交的Job
     val jobId = activeJobForStage(stage)
     if (jobId.isDefined) {
       logDebug("submitStage(" + stage + ")")
+      // 如果该Stage既不是在等待parent stage执行完，又不是正在running，且不是需要被resubmit的，
+      // 就尝试提交它（不一定提交，因为还要递归检查它的parent stage是否已经提交）
       if (!waitingStages(stage) && !runningStages(stage) && !failedStages(stage)) {
+        // 获取可能遗漏的parent stage
         val missing = getMissingParentStages(stage).sortBy(_.id)
         logDebug("missing: " + missing)
+        // 如果没有parent stage了，就直接提交该stage中tasks
         if (missing.isEmpty) {
           logInfo("Submitting " + stage + " (" + stage.rdd + "), which has no missing parents")
           submitMissingTasks(stage, jobId.get)
         } else {
           for (parent <- missing) {
+            // 递归寻找
             submitStage(parent)
           }
           waitingStages += stage
@@ -980,12 +987,15 @@ class DAGScheduler(
     logDebug("submitMissingTasks(" + stage + ")")
 
     // First figure out the indexes of partition ids to compute.
+    // 首先获取到需要计算的分区
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
 
     // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
     // with this Stage
+    // 获取该job对应的属性设置
     val properties = jobIdToActiveJob(jobId).properties
 
+    // 标记该stage为running stage
     runningStages += stage
     // SparkListenerStageSubmitted should be posted before testing whether tasks are
     // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
@@ -1022,6 +1032,8 @@ class DAGScheduler(
     // If there are tasks to execute, record the submission time of the stage. Otherwise,
     // post the even without the submission time, which indicates that this stage was
     // skipped.
+    // 如果该Stage有task需要执行（partitions不为空？），就记录该Stage的提交时间。否则，
+    // 在提交stage submit事件时，如果没有提交时间，则意味着该Stage跳过执行。
     if (partitionsToCompute.nonEmpty) {
       stage.latestInfo.submissionTime = Some(clock.getTimeMillis())
     }
@@ -1782,6 +1794,7 @@ private[scheduler] class DAGSchedulerEventProcessLoop(dagScheduler: DAGScheduler
   }
 
   private def doOnReceive(event: DAGSchedulerEvent): Unit = event match {
+    // 处理新提交的job
     case JobSubmitted(jobId, rdd, func, partitions, callSite, listener, properties) =>
       dagScheduler.handleJobSubmitted(jobId, rdd, func, partitions, callSite, listener, properties)
 
