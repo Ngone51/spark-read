@@ -805,7 +805,9 @@ class DAGScheduler(
   // That should take care of at least part of the priority inversion problem with
   // cross-job dependencies.
   private def activeJobForStage(stage: Stage): Option[Int] = {
+    // jobsThatUseStage包含了所有拥有该Stage的jobId，且有序排列，以保证job的有序执行（id小的先执行）
     val jobsThatUseStage: Array[Int] = stage.jobIds.toArray.sorted
+    // 找出最早提交（find找到第一个匹配就结束）的包含该Stage且处于active状态的jobId
     jobsThatUseStage.find(jobIdToActiveJob.contains)
   }
 
@@ -874,6 +876,8 @@ class DAGScheduler(
     try {
       // New stage creation may throw an exception if, for example, jobs are run on a
       // HadoopRDD whose underlying HDFS files have been deleted.
+      // 从finalRDD开始，倒着向前，构建出第一个Stage（从Job执行的角
+      // 度看是最后一个运行的stage，所以必定为ResultStage）
       finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)
     } catch {
       case e: Exception =>
@@ -882,7 +886,9 @@ class DAGScheduler(
         return
     }
 
+    // 根据finalStage构建Job
     val job = new ActiveJob(jobId, finalStage, callSite, listener, properties)
+    // TODO：read清理缓存的location？？
     clearCacheLocs()
     logInfo("Got job %s (%s) with %d output partitions".format(
       job.jobId, callSite.shortForm, partitions.length))
@@ -898,6 +904,7 @@ class DAGScheduler(
     val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
     listenerBus.post(
       SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
+    // 从最后一个stage开始提交（并不意味着先执行），而是该函数会递归向上寻找parent stage，直到第一个stage
     submitStage(finalStage)
   }
 
@@ -945,6 +952,7 @@ class DAGScheduler(
   }
 
   /** Submits stage, but first recursively submits any missing parents. */
+  // 提交stage，但是会先递归地提交任何遗漏的parent stage
   private def submitStage(stage: Stage) {
     val jobId = activeJobForStage(stage)
     if (jobId.isDefined) {
