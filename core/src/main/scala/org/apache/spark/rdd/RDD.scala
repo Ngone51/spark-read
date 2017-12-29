@@ -718,6 +718,7 @@ abstract class RDD[T: ClassTag](
   def groupBy[K](f: T => K, p: Partitioner)(implicit kt: ClassTag[K], ord: Ordering[K] = null)
       : RDD[(K, Iterable[T])] = withScope {
     val cleanF = sc.clean(f)
+    // groupBy的真实实现：map+groupByKey
     this.map(t => (cleanF(t), t)).groupByKey(p)
   }
 

@@ -313,6 +313,9 @@ class DAGScheduler(
   }
 
   /**
+   * 如果一个shuffle map stage已经在shuffleIdToMapStage存在了，则直接返回。否则，
+   * 会先为该ShuffleDependency所有的未在shuffleIdToMapStage中注册的祖先ShuffleDependencies
+   * 创建shuffle map stage，然后再为该ShuffleDependency自己，创建shuffle map stage。
    * Gets a shuffle map stage if one exists in shuffleIdToMapStage. Otherwise, if the
    * shuffle map stage doesn't already exist, this method will create the shuffle map stage in
    * addition to any missing ancestor shuffle map stages.
@@ -326,6 +329,8 @@ class DAGScheduler(
 
       case None =>
         // Create stages for all missing ancestor shuffle dependencies.
+        // 返回该rdd的所有祖先（不再是直接）ShuffleDependencies
+        // 那shuffle dependency的遍历顺序是？？？可能又是类似于树的先序遍历？？？
         getMissingAncestorShuffleDependencies(shuffleDep.rdd).foreach { dep =>
           // Even though getMissingAncestorShuffleDependencies only returns shuffle dependencies
           // that were not already in shuffleIdToMapStage, it's possible that by the time we
@@ -350,6 +355,9 @@ class DAGScheduler(
   def createShuffleMapStage(shuffleDep: ShuffleDependency[_, _, _], jobId: Int): ShuffleMapStage = {
     val rdd = shuffleDep.rdd
     val numTasks = rdd.partitions.length
+    // 虽然这一步又调用了getOrCreateParentStages(), 但是感觉在ResultStage创建时，调用的那一次，
+    // 应该已经把所有的stage都创建好了。在这里只会有get的过程，没有create的过程了。不知道我理解的对不对？？？
+    // [[理解的不对！]] “这里”其实属于创建ResultStage的一部分，所以，不可能所有的Stage创建好了
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
     val stage = new ShuffleMapStage(
@@ -357,6 +365,13 @@ class DAGScheduler(
 
     stageIdToStage(id) = stage
     shuffleIdToMapStage(shuffleDep.shuffleId) = stage
+    // 到这一步，整个DAG图的所有Stage已经划分好了 --> 又不对！只能说，
+    // 包括该rdd及该rdd所有祖先在内的构成的子DAG图的stage已经划分好了
+
+    // 划分完之后，再更新stage和该JobId的依赖关系
+    // 这样看来，在创建ResultStage的末尾再调用updateJobIdStageIdMaps，
+    // 是不是其(result stage)父类的stage大都已经建立和JobId之间的依赖关系？？？
+    // 或者说，其实最后只剩下了result stage（也就是final stage）自己还没建立和job的依赖关系？？？
     updateJobIdStageIdMaps(jobId, stage)
 
     if (!mapOutputTracker.containsShuffle(shuffleDep.shuffleId)) {
@@ -370,6 +385,7 @@ class DAGScheduler(
 
   /**
    * Create a ResultStage associated with the provided jobId.
+   * 创建ResultStage，在一个完整的Job中，只有一个ResultStage，就是action触发阶段所在的stage，其它都是ShuffleMapStage
    */
   private def createResultStage(
       rdd: RDD[_],
@@ -379,10 +395,15 @@ class DAGScheduler(
       callSite: CallSite): ResultStage = {
     // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，没有ShuffleDependency啊（为什么debug断点进不来: 重新编译一下源码，恢复正常）
     // debug后发现，对于SparkPi，parents确实为Nil
+    /**
+     * getOrCreateParentStages()只会返回该rdd一层关系内(或直接)的stage依赖
+     * 同时，getOrCreateParentStages()执行完后，所有Stage就划分好了
+     */
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
     val stage = new ResultStage(id, rdd, func, partitions, parents, jobId, callSite)
     stageIdToStage(id) = stage
+    // 这里update的是不是只有该Stage自己？？？
     updateJobIdStageIdMaps(jobId, stage)
     stage
   }
@@ -392,16 +413,19 @@ class DAGScheduler(
    * the provided firstJobId.
    */
   private def getOrCreateParentStages(rdd: RDD[_], firstJobId: Int): List[Stage] = {
+    // getShuffleDependencies(rdd)只会获取和该rdd直接关联（详见该函数的说明）的ShuffleDependency
     getShuffleDependencies(rdd).map { shuffleDep =>
       getOrCreateShuffleMapStage(shuffleDep, firstJobId)
     }.toList
   }
 
+  // 这个函数会通过getShuffleDependencies()一层一层往上找到所有还未在shuffleIdToMapStage里注册的ShuffleDependency
   /** Find ancestor shuffle dependencies that are not registered in shuffleToMapStage yet */
   private def getMissingAncestorShuffleDependencies(
       rdd: RDD[_]): ArrayStack[ShuffleDependency[_, _, _]] = {
     val ancestors = new ArrayStack[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
+    // 哪里manually了？这样就算是manually？
     // We are manually maintaining a stack here to prevent StackOverflowError
     // caused by recursively visiting
     val waitingForVisit = new ArrayStack[RDD[_]]
@@ -410,6 +434,10 @@ class DAGScheduler(
       val toVisit = waitingForVisit.pop()
       if (!visited(toVisit)) {
         visited += toVisit
+        /**
+         * TODO 感觉这边可以把rdd之间的"直接shuffle dependency关系"保存起来(比如Map[id, HashSet[sdep]])，
+         * 这样，在createShuffleMapStage#L359时，就不用再重新找直接地shuffleDependencies了。
+         */
         getShuffleDependencies(toVisit).foreach { shuffleDep =>
           if (!shuffleIdToMapStage.contains(shuffleDep.shuffleId)) {
             ancestors.push(shuffleDep)
@@ -422,23 +450,28 @@ class DAGScheduler(
   }
 
   /**
-   * Returns shuffle dependencies that are immediate parents（直接的父亲，不是间接的，看下面的说明） of the given RDD.
+   * 我觉得对于spark源码newbie，对于“immediate parents”的理解可能会有问题（我一开始就没理解对）
+   * 假设rdd之间存在这样的依赖关系(shf: ShuffleDependency， oto: OneToOneDep)：
+   *         a <-shf- b <- oto- <- c
+   *                              /
+   * f <-shf- <- e <-oto- d <- shf
+   * 那么，最终，parents变量会返回ShuffleDependency(a), ShuffleDependency(d)。而不包括ShuffleDependency(f)。
+   * 也就是说，OneToOneDependency并不影响"直接性"。
+   *
+   * Returns shuffle dependencies that are immediate parents of the given RDD.
    *
    * This function will not return more distant ancestors.  For example, if C has a shuffle
    * dependency on B which has a shuffle dependency on A:
    *
    * A <-- B <-- C
-   * 那如果是这样的呢？（首先，有没有这样的依赖情形？(应该没有吧，结合下面代码得出的结果)如果有返回B和D吗？）
-   *  A <-- B <-- C
-   *              |
-   *        D <---
+   *
    * calling this function with rdd C will only return the B <-- C dependency.
    *
    * This function is scheduler-visible for the purpose of unit testing.
    */
   private[scheduler] def getShuffleDependencies(
       rdd: RDD[_]): HashSet[ShuffleDependency[_, _, _]] = {
-    // 虽然定义了HashSet，但是最多只会存储一个parent的吧，可能是为了之后使用算子操作（map）？？？
+    // 虽然定义了HashSet，但是最多只会存储一个parent的吧，可能是为了之后使用算子操作（map）？？？不对！
     val parents = new HashSet[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
     val waitingForVisit = new ArrayStack[RDD[_]]
@@ -451,7 +484,7 @@ class DAGScheduler(
         toVisit.dependencies.foreach {
           case shuffleDep: ShuffleDependency[_, _, _] =>
             // 按照注释的意思，shuffleDep应该只有一个
-            // 这样，我们是否可以认为，一个RDD最多只有一个ShuffleDependency呢？
+            // 这样，我们是否可以认为，一个RDD最多只有一个ShuffleDependency呢？ 不对，理解有问题，看函数说明
             parents += shuffleDep
           case dependency =>
             waitingForVisit.push(dependency.rdd)
@@ -505,7 +538,24 @@ class DAGScheduler(
         s.jobIds += jobId
         jobIdToStageIds.getOrElseUpdate(jobId, new HashSet[Int]()) += s.id
         val parentsWithoutThisJobId = s.parents.filter { ! _.jobIds.contains(jobId) }
-        // 为什么要加tail？？？
+        /** 为什么要加tail？？？
+         * 答：不熟悉scala语法导致迟迟看不懂代码逻辑。在scala中，List的tail表示去除第一个元素后的剩余元素List
+         * 而last才是获取List的最后一个元素。
+         * 所以这个函数的递归逻辑应该是这样的：
+         * 假设有这样的一个DAG：D依赖C，C依赖B和G，B依赖A和F（字母表示一个stage）
+         * A <- B <- C <- D
+         *     /    /
+         *   F    G
+         * 那么，如果D先进来，处理完D，得到D的parentsWithoutThisJobId为{C}（假设这里所有的parents的jobIds都不包含
+         * 传进来的jobId），那么下一个处理的Stage就是C，然后对应的parentsWithoutThisJobId为{B, G}。再接下来，处理B，
+         * 得到对应的parentsWithoutThisJobId为{A, F, G}。以此类推，接下来分别是：A->{F, G}，F->{G}, G->{}。
+         * 可以发现，如果把这个DAG图左旋90度当做一颗"树"来看的话，那么，上述处理Stage的过程就是对树做先序遍历的过程。
+         * 最终的结果是，这个DAG图（或树）上的所有节点，都加入了该JobId。
+         *
+         * 如果在上述过程中，发现B已经包含了该jobId，然后B及其父节点（A，F）就不会被继续处理？
+         * 那么，A和F是否会遗漏该jobId？？？
+         * 结论是不会，我们可以从该函数的逻辑确定，如果子节点拥有某个JobId，那么，其父节点也必定会包含该jobId。
+         */
         updateJobIdStageIdMapsList(parentsWithoutThisJobId ++ stages.tail)
       }
     }
