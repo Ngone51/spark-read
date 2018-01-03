@@ -780,6 +780,10 @@ class SparkContext(config: SparkConf) extends Logging {
   def parallelize[T: ClassTag](
       seq: Seq[T],
       numSlices: Int = defaultParallelism): RDD[T] = withScope {
+                      // 注意：defaultParallelism会先找到taskSchduler.defaultParallelism， 然后
+    // taskSchduler.defaultParallelism又是SchedulerBackend.defaultParallelism,
+    // SchedulerBackend.defaultParallelism又是“spark.default.parallelism”这个配置参数的值，
+    // 如果没有配置该值，则默认为totalCores（cpu的核数）
     assertNotStopped()
     new ParallelCollectionRDD[T](this, seq, numSlices, Map[Int, Seq[String]]())
   }
