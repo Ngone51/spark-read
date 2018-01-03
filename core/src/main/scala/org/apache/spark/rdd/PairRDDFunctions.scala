@@ -753,8 +753,9 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    */
   def mapValues[U](f: V => U): RDD[(K, U)] = self.withScope {
     val cleanF = self.context.clean(f)
+    // TODO 看不懂啊？？？
     new MapPartitionsRDD[(K, U), (K, V)](self,
-      (context, pid, iter) => iter.map { case (k, v) => (k, cleanF(v)) },
+      (context, pid, iter) => iter.map { case (k, v) => (k, cleanF(v))},
       preservesPartitioning = true)
   }
 

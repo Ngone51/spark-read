@@ -494,6 +494,7 @@ class DAGScheduler(
     parents
   }
 
+  // 获取未提交的parent stages
   private def getMissingParentStages(stage: Stage): List[Stage] = {
     val missing = new HashSet[Stage]
     val visited = new HashSet[RDD[_]]
@@ -503,12 +504,17 @@ class DAGScheduler(
     def visit(rdd: RDD[_]) {
       if (!visited(rdd)) {
         visited += rdd
+        // TODO read
+        // rdd有未被缓存的分区？？？
         val rddHasUncachedPartitions = getCacheLocs(rdd).contains(Nil)
         if (rddHasUncachedPartitions) {
           for (dep <- rdd.dependencies) {
             dep match {
               case shufDep: ShuffleDependency[_, _, _] =>
+                // 为什么又是一个rdd一个rdd的往上找，而不是一个stage一个Stage的往上找？难道下面真的有可能创建新的Stage吗？
+                // TODO：在这里还会有创建stage的情况吗？如果有，在什么情形下呢？
                 val mapStage = getOrCreateShuffleMapStage(shufDep, stage.firstJobId)
+                // 如果该stage还未完成？？则加入missing
                 if (!mapStage.isAvailable) {
                   missing += mapStage
                 }
@@ -1012,7 +1018,7 @@ class DAGScheduler(
       // 如果该Stage既不是在等待parent stage执行完，又不是正在running，且不是需要被resubmit的，
       // 就尝试提交它（不一定提交，因为还要递归检查它的parent stage是否已经提交）
       if (!waitingStages(stage) && !runningStages(stage) && !failedStages(stage)) {
-        // 获取可能遗漏的parent stage
+        // 获取未执行的parent stage
         val missing = getMissingParentStages(stage).sortBy(_.id)
         logDebug("missing: " + missing)
         // 如果没有parent stage了，就直接提交该stage中tasks
@@ -1032,7 +1038,7 @@ class DAGScheduler(
     }
   }
 
-  /** Called when stage's parents are available and we can now do its task. */
+  /** Called when stage's parents are（not吧？？？）available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {
     logDebug("submitMissingTasks(" + stage + ")")
 

@@ -464,6 +464,7 @@ class BlockManagerMasterEndpoint(
     }
   }
 
+  // 获取多个block id的location
   private def getLocationsMultipleBlockIds(
       blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
     blockIds.map(blockId => getLocations(blockId))
