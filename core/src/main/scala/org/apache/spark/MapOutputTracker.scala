@@ -38,6 +38,9 @@ import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
 import org.apache.spark.util._
 
 /**
+ * 这是一个用于MapOutputTrackerMaster记录一个ShuffleMapStage的辅助类
+ *
+ * 该类维护了一个从mapId到MapStatus的映射。并且为了加快task获取map output statuses的请求速度, 还维护了一个序列化map的缓存。
  * Helper class used by the [[MapOutputTrackerMaster]] to perform bookkeeping for a single
  * ShuffleMapStage.
  *
@@ -51,6 +54,7 @@ private class ShuffleStatus(numPartitions: Int) {
   // All accesses to the following state must be guarded with `this.synchronized`.
 
   /**
+   * 每个分区的MapStatus。数组的下标对应map分区的id。
    * MapStatus for each partition. The index of the array is the map partition id.
    * Each value in the array is the MapStatus for a partition, or null if the partition
    * is not available. Even though in theory a task may run multiple times (due to speculation,
@@ -78,6 +82,7 @@ private class ShuffleStatus(numPartitions: Int) {
   private[this] var cachedSerializedBroadcast: Broadcast[Array[Byte]] = _
 
   /**
+   * 用于追踪具有output的分区数量的计数器。这是为了避免计算mapStatuses数组中非null元素所带来的性能优化。
    * Counter tracking the number of partitions that have output. This is a performance optimization
    * to avoid having to count the number of non-null entries in the `mapStatuses` array and should
    * be equivalent to`mapStatuses.count(_ ne null)`.
@@ -237,6 +242,7 @@ private[spark] class MapOutputTrackerMasterEndpoint(
 }
 
 /**
+ * 用于追踪一个Stage的map out结果的location
  * Class that keeps track of the location of the map output of a stage. This is abstract because the
  * driver and executor have different versions of the MapOutputTracker. In principle the driver-
  * and executor-side classes don't need to share a common base class; the current shared base class
@@ -244,6 +250,8 @@ private[spark] class MapOutputTrackerMasterEndpoint(
  * test code.
 */
 private[spark] abstract class MapOutputTracker(conf: SparkConf) extends Logging {
+  // 在driver端，trackerEndpoint是MapOutputTrackerMasterEndpoint
+  // 那么，在executor端，trackerEndpoint应该就是是MapOutputTrackerMasterEndpoint的ref（引用）咯
   /** Set to the MapOutputTrackerMasterEndpoint living on the driver. */
   var trackerEndpoint: RpcEndpointRef = _
 
@@ -328,6 +336,7 @@ private[spark] class MapOutputTrackerMaster(
   private val minSizeForBroadcast =
     conf.getSizeAsBytes("spark.shuffle.mapOutput.minSizeForBroadcast", "512k").toInt
 
+  // 是否在本地执行reduce task,默认为true
   /** Whether to compute locality preferences for reduce tasks */
   private val shuffleLocalityEnabled = conf.getBoolean("spark.shuffle.reduceLocality.enabled", true)
 
@@ -348,16 +357,19 @@ private[spark] class MapOutputTrackerMaster(
   // HashMap for storing shuffleStatuses in the driver.
   // Statuses are dropped only by explicit de-registering.
   // Exposed for testing
+  // 存储ShuffleMapStage的statuses， Stage被划分为多个task，所以对应多个ShuffleStatus
   val shuffleStatuses = new ConcurrentHashMap[Int, ShuffleStatus]().asScala
 
+  // 最大的rpc消息大小，默认128MB
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
 
   // requests for map output statuses
+  // 获取map output状态的请求
   private val mapOutputRequests = new LinkedBlockingQueue[GetMapOutputMessage]
 
   // Thread pool used for handling map output status requests. This is a separate thread pool
   // to ensure we don't block the normal dispatcher threads.
-  // dispatcher threads就是指threadpool运行的线程吧（看配置的名字就知道咯）
+  // dispatcher threads就是指threadpool运行的线程（runnable）吧（看配置的名字就知道咯）
   private val threadpool: ThreadPoolExecutor = {
     val numThreads = conf.getInt("spark.shuffle.mapOutput.dispatcher.numThreads", 8)
     val pool = ThreadUtils.newDaemonFixedThreadPool(numThreads, "map-output-dispatcher")
@@ -420,12 +432,13 @@ private[spark] class MapOutputTrackerMaster(
     shuffleStatuses.valuesIterator.count(_.hasCachedSerializedBroadcast)
   }
 
+  // 注册shuffle
   def registerShuffle(shuffleId: Int, numMaps: Int) {
     if (shuffleStatuses.put(shuffleId, new ShuffleStatus(numMaps)).isDefined) {
       throw new IllegalArgumentException("Shuffle ID " + shuffleId + " registered twice")
     }
   }
-
+  // 注册map output
   def registerMapOutput(shuffleId: Int, mapId: Int, status: MapStatus) {
     shuffleStatuses(shuffleId).addMapOutput(mapId, status)
   }
