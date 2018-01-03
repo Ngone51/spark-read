@@ -58,8 +58,12 @@ object Partitioner {
     val rdds = (Seq(rdd) ++ others)
     val hasPartitioner = rdds.filter(_.partitioner.exists(_.numPartitions > 0))
     if (hasPartitioner.nonEmpty) {
+      // 如果rdd中已经存在partitioner，则选择分区个数最大（尽量避免oom发生）的那一个rdd的partitioner
       hasPartitioner.maxBy(_.partitions.length).partitioner.get
     } else {
+      // 如果没有，则定义默认的HashPartitioner，
+      // 其中，HashPartitioner的partition个数，如果配置设置了，则用配置值；
+      // 否则，用所有rdd中，分区个数最大的值
       if (rdd.context.conf.contains("spark.default.parallelism")) {
         new HashPartitioner(rdd.context.defaultParallelism)
       } else {
