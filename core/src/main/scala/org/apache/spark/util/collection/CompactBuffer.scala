@@ -89,6 +89,7 @@ private[spark] class CompactBuffer[T: ClassTag] extends Seq[T] with Serializable
         // Copy the other buffer's size and elements to local variables in case it is equal to us
         val itsSize = compactBuf.curSize
         val itsElements = compactBuf.otherElements
+        // 首先调整size
         growToSize(curSize + itsSize)
         if (itsSize == 1) {
           this(oldSize) = compactBuf.element0

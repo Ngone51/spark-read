@@ -719,6 +719,9 @@ abstract class RDD[T: ClassTag](
       : RDD[(K, Iterable[T])] = withScope {
     val cleanF = sc.clean(f)
     // groupBy的真实实现：map+groupByKey
+    // map()返回MapPartitionsRDD，在调用groupByKey()时，
+    // 发生隐式类型转换（见RDD的伴生类的implicit方法），
+    // 返回PairRDDFunctions
     this.map(t => (cleanF(t), t)).groupByKey(p)
   }
 
