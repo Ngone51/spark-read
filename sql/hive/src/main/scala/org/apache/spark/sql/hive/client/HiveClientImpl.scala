@@ -226,6 +226,7 @@ private[hive] class HiveClientImpl(
 
   private def causedByThrift(e: Throwable): Boolean = {
     var target = e
+    e.printStackTrace()
     while (target != null) {
       val msg = target.getMessage()
       if (msg != null && msg.matches("(?s).*(TApplication|TProtocol|TTransport)Exception.*")) {

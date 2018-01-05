@@ -233,11 +233,16 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
     val needDefaultTableLocation = tableDefinition.tableType == MANAGED &&
       tableDefinition.storage.locationUri.isEmpty
 
-    val tableLocation = if (needDefaultTableLocation) {
+    var tableLocation = if (needDefaultTableLocation) {
       Some(CatalogUtils.stringToURI(defaultTablePath(tableDefinition.identifier)))
     } else {
       tableDefinition.storage.locationUri
     }
+
+//    if (tableLocation.get.getPath.startsWith("/D")) {
+//      tableLocation = Some(CatalogUtils.stringToURI(
+//        "file:/D:/workspace/IdeaProjects/spark/sql/hive/target/scala-2.11/test-classes/avroDecimal"))
+//    }
 
     if (DDLUtils.isDatasourceTable(tableDefinition)) {
       createDataSourceTable(

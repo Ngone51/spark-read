@@ -1030,6 +1030,7 @@ private[spark] object SparkSubmitUtils {
 
     val localM2 = new IBiblioResolver
     localM2.setM2compatible(true)
+    localM2.setRoot("http://maven.hikvision.com.cn/nexus/content/groups/public/")
     localM2.setRoot(m2Path.toURI.toString)
     localM2.setUsepoms(true)
     localM2.setName("local-m2-cache")
@@ -1053,12 +1054,14 @@ private[spark] object SparkSubmitUtils {
     br.setM2compatible(true)
     br.setUsepoms(true)
     br.setName("central")
+    br.setRoot("http://maven.hikvision.com.cn/nexus/content/groups/public/")
     cr.add(br)
 
     val sp: IBiblioResolver = new IBiblioResolver
     sp.setM2compatible(true)
     sp.setUsepoms(true)
-    sp.setRoot("http://dl.bintray.com/spark-packages/maven")
+//    sp.setRoot("http://dl.bintray.com/spark-packages/maven")
+    sp.setRoot("http://maven.hikvision.com.cn/nexus/content/groups/public/")
     sp.setName("spark-packages")
     cr.add(sp)
     cr

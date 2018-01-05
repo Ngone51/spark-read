@@ -41,6 +41,8 @@ import org.apache.spark.tags.ExtendedHiveTest
 import org.apache.spark.util.{MutableURLClassLoader, Utils}
 
 /**
+ * 一个调用HiveClient的简单测试集， 用于从maven中央仓库（WTF！！！）加载不同版本的hive。这些简单的测试大多数用来
+ * 测试确认反射调用不会抛出NoSuchMethod的异常，但是真正的功能性没有全部测试。
  * A simple set of tests that call the methods of a [[HiveClient]], loading different version
  * of hive from maven central.  These tests are simple in that they are mostly just testing to make
  * sure that reflective calls are not throwing NoSuchMethod error, but the actually functionality
