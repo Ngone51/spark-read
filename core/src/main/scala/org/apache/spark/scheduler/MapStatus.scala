@@ -50,6 +50,7 @@ private[spark] sealed trait MapStatus {
 private[spark] object MapStatus {
 
   def apply(loc: BlockManagerId, uncompressedSizes: Array[Long]): MapStatus = {
+    // 未压缩的大小超过2000，就创建HighlyCompressedMapStatus（2000个分区？？？）
     if (uncompressedSizes.length > 2000) {
       HighlyCompressedMapStatus(loc, uncompressedSizes)
     } else {
@@ -70,6 +71,9 @@ private[spark] object MapStatus {
     } else if (size <= 1L) {
       1
     } else {
+      // 什么意思啊？？？
+      // 2 ^ 8 = 256
+      // log(1.1)(size)
       math.min(255, math.ceil(math.log(size) / math.log(LOG_BASE)).toInt).toByte
     }
   }
@@ -81,6 +85,7 @@ private[spark] object MapStatus {
     if (compressedSize == 0) {
       0
     } else {
+      // 0xFF -> 11111111
       math.pow(LOG_BASE, compressedSize & 0xFF).toLong
     }
   }

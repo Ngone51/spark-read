@@ -38,6 +38,9 @@ import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
 import org.apache.spark.util._
 
 /**
+ * 注意：一个ShuffleMapStage对应一个ShuffleStatus， 一个ShuffleStatus中包含一个mapStatuses数组，该数组对应了该stage每个
+ * task所在分区（partition）的map out的输出信息。
+ *
  * 这是一个用于MapOutputTrackerMaster记录一个ShuffleMapStage的辅助类
  *
  * 该类维护了一个从mapId到MapStatus的映射。并且为了加快task获取map output statuses的请求速度, 还维护了一个序列化map的缓存。
@@ -389,6 +392,7 @@ private[spark] class MapOutputTrackerMaster(
     throw new IllegalArgumentException(msg)
   }
 
+  // （driver向executor）提交获取map out信息的消息请求
   def post(message: GetMapOutputMessage): Unit = {
     mapOutputRequests.offer(message)
   }
@@ -438,7 +442,7 @@ private[spark] class MapOutputTrackerMaster(
       throw new IllegalArgumentException("Shuffle ID " + shuffleId + " registered twice")
     }
   }
-  // 注册map output
+  // 向shuffleId对应的shuffleStatus注册map output信息
   def registerMapOutput(shuffleId: Int, mapId: Int, status: MapStatus) {
     shuffleStatuses(shuffleId).addMapOutput(mapId, status)
   }
@@ -454,9 +458,11 @@ private[spark] class MapOutputTrackerMaster(
     }
   }
 
+  // 不用清除mapStatus数组的注册的map output信息吗？？？
   /** Unregister shuffle data */
   def unregisterShuffle(shuffleId: Int) {
     shuffleStatuses.remove(shuffleId).foreach { shuffleStatus =>
+      // 该函数会清除缓存的序列化的map output的信息， 所有mapStatus数组的注册信息就不用清除了是吗？？？
       shuffleStatus.invalidateSerializedMapOutputStatusCache()
     }
   }
@@ -467,6 +473,7 @@ private[spark] class MapOutputTrackerMaster(
    */
   def removeOutputsOnHost(host: String): Unit = {
     shuffleStatuses.valuesIterator.foreach { _.removeOutputsOnHost(host) }
+    // TODO why here???
     incrementEpoch()
   }
 
@@ -503,6 +510,7 @@ private[spark] class MapOutputTrackerMaster(
     val start = range.start
     val step = range.step
     val end = range.end
+    // wow~
     for (i <- start.until(end, size * step)) yield {
       i.until(i + size * step, step)
     }
@@ -528,20 +536,28 @@ private[spark] class MapOutputTrackerMaster(
    * Return statistics about all of the outputs for a given shuffle.
    */
   def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
+    // withMapStatues加了synchronized关键字，保证mapStatus数组被线程安全的访问
     shuffleStatuses(dep.shuffleId).withMapStatuses { statuses =>
+      // 分区个数
       val totalSizes = new Array[Long](dep.partitioner.numPartitions)
+      // threshold ???（点进去，看看说明）
       val parallelAggThreshold = conf.get(
         SHUFFLE_MAP_OUTPUT_PARALLEL_AGGREGATION_THRESHOLD)
+      // 并行化的程度
+      // 计算公式：parallelism = mappers * shuffle-partitions / threshold + 1 （mappers个数？？？partitions个数？？？）
       val parallelism = math.min(
         Runtime.getRuntime.availableProcessors(),
         statuses.length.toLong * totalSizes.length / parallelAggThreshold + 1).toInt
+      // 如果mappers * shuffle-partitions大于threshold，就会使用多线程，也就是parallelism大于1的时候
       if (parallelism <= 1) {
+        // 单线程统计
         for (s <- statuses) {
           for (i <- 0 until totalSizes.length) {
             totalSizes(i) += s.getSizeForBlock(i)
           }
         }
       } else {
+        // 多线程统计
         val threadPool = ThreadUtils.newDaemonFixedThreadPool(parallelism, "map-output-aggregate")
         try {
           implicit val executionContext = ExecutionContext.fromExecutor(threadPool)
