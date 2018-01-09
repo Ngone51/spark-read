@@ -517,6 +517,9 @@ private[spark] class MapOutputTrackerMaster(
   }
 
   /**
+   * 举个例子，如果numElements是11，numBuckets是3
+   * 那么，该函数会划分成3个range：range(0, 4, 1), range(4, 8, 1), range(8，11，1)
+   * 然后返回一个数组seq[[0,1,2,3],[4,5,6,7],[8,9,10]]
    * To equally divide n elements into m buckets, basically each bucket should have n/m elements,
    * for the remaining n%m elements, add one more element to the first n%m buckets each.
    */
