@@ -571,6 +571,7 @@ private[spark] class MapOutputTrackerMaster(
               }
             }
           }
+          // 这个线程池的运行方式，看不懂???
           ThreadUtils.awaitResult(Future.sequence(mapStatusSubmitTasks), Duration.Inf)
         } finally {
           threadPool.shutdown()
@@ -590,6 +591,8 @@ private[spark] class MapOutputTrackerMaster(
    */
   def getPreferredLocationsForShuffle(dep: ShuffleDependency[_, _, _], partitionId: Int)
       : Seq[String] = {
+    // 注意：dep.rdd.partitions.length是rdd并行化的个数，也是map side的map output的个数，
+    // dep.partitioner.numPartitions是partitioner的个数，是reduce side的reducer个数
     if (shuffleLocalityEnabled && dep.rdd.partitions.length < SHUFFLE_PREF_MAP_THRESHOLD &&
         dep.partitioner.numPartitions < SHUFFLE_PREF_REDUCE_THRESHOLD) {
       val blockManagerIds = getLocationsWithLargestOutputs(dep.shuffleId, partitionId,
