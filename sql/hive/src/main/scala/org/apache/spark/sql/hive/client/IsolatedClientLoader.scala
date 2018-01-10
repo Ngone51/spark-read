@@ -197,6 +197,9 @@ private[hive] class IsolatedClientLoader(
     name.replaceAll("\\.", "/") + ".class"
 
   /**
+   * 这个classloader用于加载一个独立的某个版本的Hive。由于这个classloader暴露了addURL方法，
+   * 所以它是一个特殊的URLClassLoader。因此，当我们添加一个jar包，我们可以通过直接调用该方法
+   * 来添加，而不是在该classloader上栈存一个新的URLClassLoader。
    * The classloader that is used to load an isolated version of Hive.
    * This classloader is a special URLClassLoader that exposes the addURL method.
    * So, when we add jar, we can add this new jar directly through the addURL method
