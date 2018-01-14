@@ -700,7 +700,7 @@ private[spark] class MapOutputTrackerMaster(
 /**
  * Executor-side client for fetching map output info from the driver's MapOutputTrackerMaster.
  * Note that this is not used in local-mode; instead, local-mode Executors access the
- * MapOutputTrackerMaster directly (which is possible because the master and worker share a comon
+ * MapOutputTrackerMaster directly (which is possible because the master and worker share a common
  * superclass).
  */
 private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTracker(conf) {
@@ -749,7 +749,11 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
 
         // Either while we waited the fetch happened successfully, or
         // someone fetched it in between the get and the fetching.synchronized.
+        // 获取到statues有两种情况：
+        // 一：我们成功地等到了其它线程取回statues信息
+        // 二：其它线程已经在我们进入getStatues()方法之后和fetching.synchronized之前，取得了statues信息
         fetchedStatuses = mapStatuses.get(shuffleId).orNull
+        // 如果还是为null,那么，就得我们自己出马去取了，同时，要让其它线程等我们取完
         if (fetchedStatuses == null) {
           // We have to do the fetch, get others to wait for us.
           fetching += shuffleId
