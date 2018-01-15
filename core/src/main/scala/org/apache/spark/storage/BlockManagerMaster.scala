@@ -30,6 +30,9 @@ import org.apache.spark.util.{RpcUtils, ThreadUtils}
 private[spark]
 class BlockManagerMaster(
     // 如果是driver，则driverEndpoint是BlockManagerMasterEndPoint
+    // (不不不，这里理解有错误!!!在driver端，也是BlockManagerMasterEndPoint的引用，
+    // BlockManagerMasterEndPoint确实是在BlockManagerMaster创建的过程中被创建的，
+    // 然后注册在rpcenv的Dispatcher中，且master也能通过该引用和master自己通信，如getLocations()方法)
     // 如果是executor，则driverEndpoint是BlockManagerMasterEndPoint的引用，用于和driver通信
     var driverEndpoint: RpcEndpointRef,
     conf: SparkConf,
@@ -95,6 +98,8 @@ class BlockManagerMaster(
 
   /** Get locations of multiple blockIds from the driver */
   def getLocations(blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
+    // executor向driver发送获取任务位置信息的请求
+    // 此处driverEndpoint是BlockManagerMasterEndPoint的引用（ref）
     driverEndpoint.askSync[IndexedSeq[Seq[BlockManagerId]]](
       GetLocationsMultipleBlockIds(blockIds))
   }

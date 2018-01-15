@@ -34,6 +34,8 @@ import org.apache.spark.storage.BlockManagerMessages._
 import org.apache.spark.util.{ThreadUtils, Utils}
 
 /**
+ * BlockManagerMasterEndpoint是一个在master节点上的，用于追踪所有slave节点的Block Manager状态的线程安全的RpcEndpoint
+ *
  * BlockManagerMasterEndpoint is an [[ThreadSafeRpcEndpoint]] on the master node to track statuses
  * of all slaves' block managers.
  */
@@ -450,6 +452,7 @@ class BlockManagerMasterEndpoint(
   }
 
   private def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
+    // blockLocations是在什么时候初始化的啊？？？
     if (blockLocations.containsKey(blockId)) blockLocations.get(blockId).toSeq else Seq.empty
   }
 
@@ -464,7 +467,7 @@ class BlockManagerMasterEndpoint(
     }
   }
 
-  // 获取多个block id的location
+  // 根据block id，获取location
   private def getLocationsMultipleBlockIds(
       blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
     blockIds.map(blockId => getLocations(blockId))

@@ -298,8 +298,8 @@ object SparkEnv extends Logging {
     val closureSerializer = new JavaSerializer(conf)
 
     // (需要看下spark的rpc原理)
-    // 如果是driver，注册EndPoint
-    // 如果是executor，创建一个driver的EndPoint的引用(ref)
+    // 如果是driver，注册EndPoint，并返回该EndPoint的引用
+    // 如果是executor，则返回driver的EndPoint的引用(ref)
     def registerOrLookupEndpoint(
         name: String, endpointCreator: => RpcEndpoint):
       RpcEndpointRef = {
@@ -362,8 +362,8 @@ object SparkEnv extends Logging {
         blockManagerPort, numUsableCores)
 
     // 创建BlockManagerMaster
-    // 如果是driver，则第一个参数返回BlockManagerMasterEndpoint
-    // 如果是executor，则第一个参数返回BlockManagerMasterEndpoint的引用
+    // 如果是driver，则第一个参数会先创建BlockManagerMasterEndpoint，再返回其引用
+    // 如果是executor，则第一个参数直接返回BlockManagerMasterEndpoint的引用
     val blockManagerMaster = new BlockManagerMaster(registerOrLookupEndpoint(
       BlockManagerMaster.DRIVER_ENDPOINT_NAME,
       new BlockManagerMasterEndpoint(rpcEnv, isLocal, conf, listenerBus)),

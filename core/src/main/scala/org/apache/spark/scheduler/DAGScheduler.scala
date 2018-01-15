@@ -297,8 +297,11 @@ class DAGScheduler(
       val locs: IndexedSeq[Seq[TaskLocation]] = if (rdd.getStorageLevel == StorageLevel.NONE) {
         IndexedSeq.fill(rdd.partitions.length)(Nil)
       } else {
+        // 创建RDDBlockId
+        // RDDBlockId所包含的信息只是告知了这是哪个rdd，以及这是该rdd的哪个分片
         val blockIds =
           rdd.partitions.indices.map(index => RDDBlockId(rdd.id, index)).toArray[BlockId]
+        // 再通过请求master节点，获取location信息（这里的请求应该是master到master吧）
         blockManagerMaster.getLocations(blockIds).map { bms =>
           bms.map(bm => TaskLocation(bm.host, bm.executorId))
         }
@@ -1753,6 +1756,7 @@ class DAGScheduler(
   }
 
   /**
+   * 获取一个特定RDD的某个分片（分区,翻译有点乱了。。。）的位置(locality翻译为“位置”，而不是“本地化”)信息
    * Gets the locality information associated with a partition of a particular RDD.
    *
    * This method is thread-safe and is called from both DAGScheduler and SparkContext.
@@ -1784,6 +1788,8 @@ class DAGScheduler(
       return Nil
     }
     // If the partition is cached, return the cache locations
+    // getCacheLocs会返回所有分区的所有TaskLocation信息，然后再取partition这个分区的所有TaskLocation信息
+    // 注意，后面一个括号就是一个数组的取值操作
     val cached = getCacheLocs(rdd)(partition)
     if (cached.nonEmpty) {
       return cached
