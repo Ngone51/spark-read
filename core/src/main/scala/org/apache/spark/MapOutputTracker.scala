@@ -392,7 +392,7 @@ private[spark] class MapOutputTrackerMaster(
     throw new IllegalArgumentException(msg)
   }
 
-  // （driver向executor）提交获取map out信息的消息请求
+  // （executor向driver）提交的获取map out信息的消息请求
   def post(message: GetMapOutputMessage): Unit = {
     mapOutputRequests.offer(message)
   }

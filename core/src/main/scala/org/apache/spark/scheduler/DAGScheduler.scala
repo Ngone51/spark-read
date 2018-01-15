@@ -1043,7 +1043,7 @@ class DAGScheduler(
     logDebug("submitMissingTasks(" + stage + ")")
 
     // First figure out the indexes of partition ids to compute.
-    // 首先获取到需要计算的分区
+    // 首先获取到需要计算的(map端)分区（index或者说id吧）
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
 
     // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
