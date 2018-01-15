@@ -251,6 +251,7 @@ private[spark] class BlockManager(
     }
 
     // 初始化id，会先从缓存中尝试获取，如果没有，再创建新的BlockManagerId，并加入缓存
+    // ??? 如果缓存中存在，那么，该id会有可能还没向master注册吗？
     val id =
       BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
     // 向BlockManagerMaster注册该BlockManager
@@ -260,6 +261,7 @@ private[spark] class BlockManager(
       maxOffHeapMemory,
       slaveEndpoint)
 
+    // 如果是idFromMaster，不用更新缓存吗？？？（好吧，在register的时候，会更新缓存）
     blockManagerId = if (idFromMaster != null) idFromMaster else id
 
     shuffleServerId = if (externalShuffleServiceEnabled) {

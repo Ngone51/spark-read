@@ -139,6 +139,7 @@ private[spark] object BlockManagerId {
   val blockManagerIdCache = new ConcurrentHashMap[BlockManagerId, BlockManagerId]()
 
   def getCachedBlockManagerId(id: BlockManagerId): BlockManagerId = {
+    // 怎么比较两个BlockManagerId相等？？？
     blockManagerIdCache.putIfAbsent(id, id)
     blockManagerIdCache.get(id)
   }

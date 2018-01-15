@@ -50,9 +50,11 @@ class BlockManagerMasterEndpoint(
   // Mapping from block manager id to the block manager's information.
   private val blockManagerInfo = new mutable.HashMap[BlockManagerId, BlockManagerInfo]
 
+  // executor ID和block manager ID之间的映射
   // Mapping from executor ID to block manager ID.
   private val blockManagerIdByExecutor = new mutable.HashMap[String, BlockManagerId]
 
+  // 一个block可能会存在于多个block managers中（比如：有多个副本）
   // Mapping from block id to the set of block managers that have the block.
   private val blockLocations = new JHashMap[BlockId, mutable.HashSet[BlockManagerId]]
 
@@ -367,7 +369,7 @@ class BlockManagerMasterEndpoint(
       slaveEndpoint: RpcEndpointRef): BlockManagerId = {
     // the dummy id is not expected to contain the topology information.
     // we get that info here and respond back with a more fleshed out block manager id
-    // dummy(傀儡) BlockManagerId不包含拓扑信息（这个拓扑信息到底是啥？），
+    // dummy(傀儡) BlockManagerId不包含拓扑信息（这个拓扑信息到底是啥？-> 集群节点的拓扑信息），
     // 在这里，我们有拓扑信息，然后返回给slave一个更加具体（包含拓扑信息）的BlockManagerId
     val id = BlockManagerId(
       idWithoutTopologyInfo.executorId,
@@ -383,6 +385,7 @@ class BlockManagerMasterEndpoint(
           // 2.如果发现同一个executor上有第二个BlockManager注册（所有注册行为只有一次！！！），
           // 则直接删除该executor(基于该executor已经挂了的假设)
           // 3.哪种情况会发生二次注册？
+
           // A block manager of the same executor already exists, so remove it (assumed dead)
           logError("Got two different block manager registrations on same executor - "
               + s" will replace old one $oldId with new one $id")
@@ -406,6 +409,7 @@ class BlockManagerMasterEndpoint(
     id
   }
 
+  // 更新master endpoint的块信息
   private def updateBlockInfo(
       blockManagerId: BlockManagerId,
       blockId: BlockId,
@@ -438,12 +442,15 @@ class BlockManagerMasterEndpoint(
       blockLocations.put(blockId, locations)
     }
 
+    // 这里add或者remove操作后，是不是都会更新blockLocations对应的BlockManagerId集合？？？
+    // locations是那个集合的引用？？？不然其它地方没有更新操作后的值，说不通啊
     if (storageLevel.isValid) {
       locations.add(blockManagerId)
     } else {
       locations.remove(blockManagerId)
     }
 
+    // 如果在所有的slave节点上都没有该block了，那么，就从master的追踪目标中移除
     // Remove the block from master tracking if it has been removed on all slaves.
     if (locations.size == 0) {
       blockLocations.remove(blockId)
@@ -535,6 +542,7 @@ private[spark] class BlockManagerInfo(
     _lastSeenMs = System.currentTimeMillis()
   }
 
+  // 更新BlockManagerInfo对于的块信息
   def updateBlockInfo(
       blockId: BlockId,
       storageLevel: StorageLevel,
@@ -556,6 +564,7 @@ private[spark] class BlockManagerInfo(
       originalDiskSize = blockStatus.diskSize
 
       if (originalLevel.useMemory) {
+        // remaining为什么是+，不是-？？？
         _remainingMem += originalMemSize
       }
     }

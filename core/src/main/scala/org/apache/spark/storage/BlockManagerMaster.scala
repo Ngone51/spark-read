@@ -32,7 +32,7 @@ class BlockManagerMaster(
     // 如果是driver，则driverEndpoint是BlockManagerMasterEndPoint
     // (不不不，这里理解有错误!!!在driver端，也是BlockManagerMasterEndPoint的引用，
     // BlockManagerMasterEndPoint确实是在BlockManagerMaster创建的过程中被创建的，
-    // 然后注册在rpcenv的Dispatcher中，且master也能通过该引用和master自己通信，如getLocations()方法)
+    // 然后注册在rpcenv的Dispatcher中，且master也能通过该引用和master自己通信，如下面的getLocations()方法)
     // 如果是executor，则driverEndpoint是BlockManagerMasterEndPoint的引用，用于和driver通信
     var driverEndpoint: RpcEndpointRef,
     conf: SparkConf,
@@ -56,6 +56,8 @@ class BlockManagerMaster(
   }
 
   /**
+   * 向driver注册BlockManager的Id（BlockManagerId）。输入的BlockManagerId不包含（集群）拓扑信息。
+   * 该信息可以从master中获取，我们可以从master获得一个包含该信息的更新后的BlockManagerId。
    * Register the BlockManager's id with the driver. The input BlockManagerId does not contain
    * topology information. This information is obtained from the master and we respond with an
    * updated BlockManagerId fleshed out with this information.
