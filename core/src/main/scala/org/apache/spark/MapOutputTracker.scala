@@ -361,6 +361,8 @@ private[spark] class MapOutputTrackerMaster(
   // Statuses are dropped only by explicit de-registering.
   // Exposed for testing
   // 存储ShuffleMapStage的statuses， Stage被划分为多个task，所以对应多个ShuffleStatus
+  // 错！大错特错！ 这里，每个ShuffleMapStage对应一个ShuffleStatus，而在ShuffleStatus中，
+  // 有一个mapStatuses数组，用于记录每个在map端划分的task的状态
   val shuffleStatuses = new ConcurrentHashMap[Int, ShuffleStatus]().asScala
 
   // 最大的rpc消息大小，默认128MB
@@ -624,6 +626,8 @@ private[spark] class MapOutputTrackerMaster(
       fractionThreshold: Double)
     : Option[Array[BlockManagerId]] = {
 
+    // 那么，问题又来了，shuffleStatuses是什么时候被写入的？？？（在DAGScheduler#createShuffleMapStage()中）
+    // 首先获取该shuffleId对应的ShuffleStatue
     val shuffleStatus = shuffleStatuses.get(shuffleId).orNull
     if (shuffleStatus != null) {
       shuffleStatus.withMapStatuses { statuses =>
@@ -632,6 +636,7 @@ private[spark] class MapOutputTrackerMaster(
           val locs = new HashMap[BlockManagerId, Long]
           var totalOutputSize = 0L
           var mapIdx = 0
+          // statuses存储该shuffle的多个map output的status
           while (mapIdx < statuses.length) {
             val status = statuses(mapIdx)
             // status may be null here if we are called between registerShuffle, which creates an
