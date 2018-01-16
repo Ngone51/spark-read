@@ -26,6 +26,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.util.Utils
 
 /**
+ * 广播变量。广播变量允许程序员让每台机器都缓存一份只读的变量，而不是把该变量的副本绑定在task上一起传输。
+ * 例如，广播变量可以通过一种高效的方式给每个节点一份巨量的输入数据集的拷贝。Spark也试图使用高效的
+ * 广播算法来分布广播变量，以减少通信开销。
  * A broadcast variable. Broadcast variables allow the programmer to keep a read-only variable
  * cached on each machine rather than shipping a copy of it with tasks. They can be used, for
  * example, to give every node a copy of a large input dataset in an efficient manner. Spark also
@@ -45,6 +48,9 @@ import org.apache.spark.util.Utils
  * res0: Array[Int] = Array(1, 2, 3)
  * }}}
  *
+ * 广播变量建立后，就可以代替v变量在运行在集群上的任何方法中使用，所以，v变量传输给节点的过程
+ * 最多不超过一次。另外，为了保证所有的节点能拥有相同的广播变量（例如：在之后v变量将传输给一个新的节点），
+ * ，v变量在成为广播变量之后，不能被修改。
  * After the broadcast variable is created, it should be used instead of the value `v` in any
  * functions run on the cluster so that `v` is not shipped to the nodes more than once.
  * In addition, the object `v` should not be modified after it is broadcast in order to ensure

@@ -41,6 +41,7 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc.RpcTimeout
+import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
 import org.apache.spark.util._
@@ -184,6 +185,7 @@ class DAGScheduler(
 
   // A closure serializer that we reuse.
   // This is only safe because DAGScheduler runs in a single thread.
+  // 是JavaSerializerInstance类型的
   private val closureSerializer = SparkEnv.get.closureSerializer.newInstance()
 
   /** If enabled, FetchFailed will not cause stage retry, in order to surface the problem. */
@@ -293,6 +295,7 @@ class DAGScheduler(
   def getCacheLocs(rdd: RDD[_]): IndexedSeq[Seq[TaskLocation]] = cacheLocs.synchronized {
     // Note: this doesn't use `getOrElse()` because this method is called O(num tasks) times
     if (!cacheLocs.contains(rdd.id)) {
+      // 默认的StorageLevel是不是就是NONE??? see RDD#L1658
       // Note: if the storage level is NONE, we don't need to get locations from block manager.
       val locs: IndexedSeq[Seq[TaskLocation]] = if (rdd.getStorageLevel == StorageLevel.NONE) {
         IndexedSeq.fill(rdd.partitions.length)(Nil)
@@ -1069,6 +1072,8 @@ class DAGScheduler(
         outputCommitCoordinator.stageStart(
           stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
     }
+    // 在LearningExample这个例子中，得到的taskIdLocation是{(1, List()), (2, List())}
+    // 居然是空的？？？那么，task在哪里执行呢？
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
@@ -1088,6 +1093,7 @@ class DAGScheduler(
         return
     }
 
+    // 创建一个新的stage attempt
     stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
 
     // If there are tasks to execute, record the submission time of the stage. Otherwise,

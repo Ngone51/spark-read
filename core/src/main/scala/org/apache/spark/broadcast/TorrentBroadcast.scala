@@ -62,6 +62,8 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
    * which builds this value by reading blocks from the driver and/or other executors.
    *
    * On the driver, if the value is required, it is read lazily from the block manager.
+   *
+   * 在这里，transient的作用？？？
    */
   @transient private lazy val _value: T = readBroadcastBlock()
 
