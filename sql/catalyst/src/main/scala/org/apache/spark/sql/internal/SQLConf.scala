@@ -249,7 +249,7 @@ object SQLConf {
   val CONSTRAINT_PROPAGATION_ENABLED = buildConf("spark.sql.constraintPropagation.enabled")
     .internal()
     .doc("When true, the query optimizer will infer and propagate data constraints in the query " +
-      "plan to optimize them. Constraint propagation can sometimes be computationally expensive" +
+      "plan to optimize them. Constraint propagation can sometimes be computationally expensive " +
       "for certain kinds of query plans (such as those with a large number of predicates and " +
       "aliases) which might negatively impact overall runtime.")
     .booleanConf
@@ -262,6 +262,15 @@ object SQLConf {
       "prior to Spark 2.0.")
     .booleanConf
     .createWithDefault(false)
+
+  val FILE_COMRESSION_FACTOR = buildConf("spark.sql.sources.fileCompressionFactor")
+    .internal()
+    .doc("When estimating the output data size of a table scan, multiply the file size with this " +
+      "factor as the estimated data size, in case the data is compressed in the file and lead to" +
+      " a heavily underestimated result.")
+    .doubleConf
+    .checkValue(_ > 0, "the value of fileDataSizeFactor must be larger than 0")
+    .createWithDefault(1.0)
 
   val PARQUET_SCHEMA_MERGING_ENABLED = buildConf("spark.sql.parquet.mergeSchema")
     .doc("When true, the Parquet data source merges schemas collected from all data files, " +
@@ -385,6 +394,18 @@ object SQLConf {
     .stringConf
     .checkValues(Set("hive", "native"))
     .createWithDefault("native")
+
+  val ORC_VECTORIZED_READER_ENABLED = buildConf("spark.sql.orc.enableVectorizedReader")
+    .doc("Enables vectorized orc decoding.")
+    .booleanConf
+    .createWithDefault(true)
+
+  val ORC_COPY_BATCH_TO_SPARK = buildConf("spark.sql.orc.copyBatchToSpark")
+    .doc("Whether or not to copy the ORC columnar batch to Spark columnar batch in the " +
+      "vectorized ORC reader.")
+    .internal()
+    .booleanConf
+    .createWithDefault(false)
 
   val ORC_FILTER_PUSHDOWN_ENABLED = buildConf("spark.sql.orc.filterPushdown")
     .doc("When true, enable filter pushdown for ORC files.")
@@ -1183,6 +1204,8 @@ class SQLConf extends Serializable with Logging {
 
   def orcCompressionCodec: String = getConf(ORC_COMPRESSION)
 
+  def orcVectorizedReaderEnabled: Boolean = getConf(ORC_VECTORIZED_READER_ENABLED)
+
   def parquetCompressionCodec: String = getConf(PARQUET_COMPRESSION)
 
   def parquetVectorizedReaderEnabled: Boolean = getConf(PARQUET_VECTORIZED_READER_ENABLED)
@@ -1240,6 +1263,8 @@ class SQLConf extends Serializable with Logging {
   def constraintPropagationEnabled: Boolean = getConf(CONSTRAINT_PROPAGATION_ENABLED)
 
   def escapedStringLiterals: Boolean = getConf(ESCAPED_STRING_LITERALS)
+
+  def fileCompressionFactor: Double = getConf(FILE_COMRESSION_FACTOR)
 
   def stringRedationPattern: Option[Regex] = SQL_STRING_REDACTION_PATTERN.readFrom(reader)
 
