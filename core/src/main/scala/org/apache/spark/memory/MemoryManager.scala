@@ -29,8 +29,12 @@ import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.unsafe.memory.MemoryAllocator
 
 /**
+ * 1.6以前：StaticMemoryManager；1.6及之后：UnifiedMemoryManager
+ * 一个用于实现内存如何在执行和存储间共享的抽象的内存管理器。
  * An abstract memory manager that enforces how memory is shared between execution and storage.
  *
+ * 在该上下文中，执行内存是指用于shuffles、joins、sorts、aggregations计算的内存，而存储内存是指
+ * 用于缓存以及跨集群的内部数据传输（RDD缓存、广播变量存储）。每个JVM上有一个MemoryManager。
  * In this context, execution memory refers to that used for computation in shuffles, joins,
  * sorts and aggregations, while storage memory refers to that used for caching and propagating
  * internal data across the cluster. There exists one MemoryManager per JVM.
@@ -55,10 +59,13 @@ private[spark] abstract class MemoryManager(
   onHeapStorageMemoryPool.incrementPoolSize(onHeapStorageMemory)
   onHeapExecutionMemoryPool.incrementPoolSize(onHeapExecutionMemory)
 
+  // 默认为0，也就是默认不启用off-heap Memory
   protected[this] val maxOffHeapMemory = conf.get(MEMORY_OFFHEAP_SIZE)
+  // 堆外内存中storage memory的占比，默认0.5
   protected[this] val offHeapStorageMemory =
     (maxOffHeapMemory * conf.getDouble("spark.memory.storageFraction", 0.5)).toLong
 
+  // 初始化，各占0.5
   offHeapExecutionMemoryPool.incrementPoolSize(maxOffHeapMemory - offHeapStorageMemory)
   offHeapStorageMemoryPool.incrementPoolSize(offHeapStorageMemory)
 

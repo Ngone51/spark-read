@@ -494,6 +494,7 @@ private[spark] class BlockManager(
         case null =>
           BlockStatus.empty
         case level =>
+          // 更新当前block的StorageLevel
           val inMem = level.useMemory && memoryStore.contains(blockId)
           val onDisk = level.useDisk && diskStore.contains(blockId)
           val deserialized = if (inMem) level.deserialized else false
@@ -504,6 +505,7 @@ private[spark] class BlockManager(
             useOffHeap = level.useOffHeap,
             deserialized = deserialized,
             replication = replication)
+          // 更新当前block的占用内存大小或磁盘大小
           val memSize = if (inMem) memoryStore.getSize(blockId) else 0L
           val diskSize = if (onDisk) diskStore.getSize(blockId) else 0L
           BlockStatus(storageLevel, memSize, diskSize)
@@ -1019,10 +1021,14 @@ private[spark] class BlockManager(
 
     val putBlockInfo = {
       val newInfo = new BlockInfo(level, classTag, tellMaster)
+      // 如果成功获取到写锁，则返回刚刚创建的blockInfo（新的block的元数据）
       if (blockInfoManager.lockNewBlockForWriting(blockId, newInfo)) {
         newInfo
       } else {
+        // 反之，说明，block已经存在，不能重复创建
         logWarning(s"Block $blockId already exists on this machine; not re-adding it")
+        // 如果不要求继续持有读锁，那么，就释放掉（因为对于一个已经存在的block，
+        // lockNewBlockForWriting方法会返回一个读锁）
         if (!keepReadLock) {
           // lockNewBlockForWriting returned a read lock on the existing block, so we must free it:
           releaseLock(blockId)
@@ -1105,8 +1111,12 @@ private[spark] class BlockManager(
       // Size of the block in bytes
       var size = 0L
       if (level.useMemory) {
+        // 优先存储至内存，即使可以也使用磁盘存储。如果内存存储不下，
+        // 再存储（是全部存储到磁盘中，还是存不下的那部分存到磁盘中？？？）到磁盘中。
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
+
+        // 如果反序列化了，则直接存储value???
         if (level.deserialized) {
           memoryStore.putIteratorAsValues(blockId, iterator(), classTag) match {
             case Right(s) =>
@@ -1439,13 +1449,18 @@ private[spark] class BlockManager(
       blockId: BlockId,
       data: () => Either[Array[T], ChunkedByteBuffer]): StorageLevel = {
     logInfo(s"Dropping block $blockId from memory")
+    // 首先确认该block是否被写锁锁定，如果锁定，则返回其blockInfo
     val info = blockInfoManager.assertBlockIsLockedForWriting(blockId)
     var blockIsUpdated = false
     val level = info.level
 
+    // 如果该block可以使用磁盘存储，且diskStore不包含该block
     // Drop to disk, if storage level requires
     if (level.useDisk && !diskStore.contains(blockId)) {
       logInfo(s"Writing block $blockId to disk")
+      // 这个data()的语法又看不懂了???
+      // 将该block以字节流的形式（如果data是value，会先序列化为字节流）写入磁盘
+      // TODO read 磁盘写入操作
       data() match {
         case Left(elements) =>
           diskStore.put(blockId) { channel =>
@@ -1461,7 +1476,10 @@ private[spark] class BlockManager(
       blockIsUpdated = true
     }
 
+    // 执行真正的从内存中删除该block的操作！
     // Actually drop from memory store
+    // 那么问题来了，如果该block在之前没有写入磁盘，然后就直接从内存中删除了吗???
+    // (答：see detail：MemorySore#dropBlock#L540，如果storageLevel不支持使用磁盘的话，那么该Block就完全被删除了)
     val droppedMemorySize =
       if (memoryStore.contains(blockId)) memoryStore.getSize(blockId) else 0L
     val blockIsRemoved = memoryStore.remove(blockId)
@@ -1472,6 +1490,8 @@ private[spark] class BlockManager(
     }
 
     val status = getCurrentBlockStatus(blockId, info)
+    // whether state changes for this block should be reported to the master. This
+    // is true for most blocks, but is false for broadcast blocks.
     if (info.tellMaster) {
       reportBlockStatus(blockId, status, droppedMemorySize)
     }

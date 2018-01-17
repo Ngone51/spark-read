@@ -98,6 +98,7 @@ private[spark] class MemoryStore(
   private val offHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
 
   // Initial memory to request before unrolling any block
+  // 默认1M
   private val unrollMemoryThreshold: Long =
     conf.getLong("spark.storage.unrollMemoryThreshold", 1024 * 1024)
 
@@ -194,7 +195,7 @@ private[spark] class MemoryStore(
     val memoryCheckPeriod = conf.get(UNROLL_MEMORY_CHECK_PERIOD)
     // Memory currently reserved by this task for this particular unrolling operation
     var memoryThreshold = initialMemoryThreshold
-    // Memory to request as a multiple of current vector size
+    // Memory to request as a multiple of current vector size (乘数)
     val memoryGrowthFactor = conf.get(UNROLL_MEMORY_GROWTH_FACTOR)
     // Keep track of unroll memory used by this particular block / putIterator() operation
     var unrollMemoryUsedByThisBlock = 0L
@@ -494,7 +495,7 @@ private[spark] class MemoryStore(
    * RDDs that don't fit into memory that we want to avoid).
    *
    * @param blockId the ID of the block we are freeing space for, if any
-   * @param space the size of this block
+   * @param space the size of this block(不应该是需要free的内存大小吗???)
    * @param memoryMode the type of memory to free (on- or off-heap)
    * @return the amount of memory (in bytes) freed by eviction
    */
@@ -505,8 +506,10 @@ private[spark] class MemoryStore(
     assert(space > 0)
     memoryManager.synchronized {
       var freedMemory = 0L
+      // 如果是一个RDD block则返回对应的RDD id，反之为None
       val rddToAdd = blockId.flatMap(getRddId)
       val selectedBlocks = new ArrayBuffer[BlockId]
+      // block可以被驱逐的条件：memoryMode相同且（block不是RDD block类型的或者不是来自同一个RDD的其它block）
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
         entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId))
       }
@@ -520,11 +523,15 @@ private[spark] class MemoryStore(
           val blockId = pair.getKey
           val entry = pair.getValue
           if (blockIsEvictable(blockId, entry)) {
+            // 我们并不想驱逐那些正在被读的blocks，所以，我们需要把可以获得排它的写锁的blocks作为
+            // 候选的驱逐blocks。我们在这里尝试一个非阻塞的"tryLock"行为，是为了忽略哪些正在被读锁
+            // 定的blocks。
             // We don't want to evict blocks which are currently being read, so we need to obtain
             // an exclusive write lock on blocks which are candidates for eviction. We perform a
             // non-blocking "tryLock" here in order to ignore blocks which are locked for reading:
             if (blockInfoManager.lockForWriting(blockId, blocking = false).isDefined) {
               selectedBlocks += blockId
+              // 为不直接entry.size，这个有影响吗???
               freedMemory += pair.getValue.size
             }
           }
@@ -539,16 +546,21 @@ private[spark] class MemoryStore(
         val newEffectiveStorageLevel =
           blockEvictionHandler.dropFromMemory(blockId, () => data)(entry.classTag)
         if (newEffectiveStorageLevel.isValid) {
+          // 说明该block仍然在内存存储或磁盘存储其一之中，所以释放掉该block上的锁即可，
+          // 但是不要删除对应的block info
           // The block is still present in at least one store, so release the lock
           // but don't delete the block info
           blockInfoManager.unlock(blockId)
         } else {
+          // 该block已经不复存在了，所以删除对应的block info，以让该block重新存储
+          // (info都被删除了，就不用再释放锁了)
           // The block isn't present in any store, so delete the block info so that the
           // block can be stored again
           blockInfoManager.removeBlock(blockId)
         }
       }
 
+      // 如果可以释放的内存大于想要驱逐的内存（space）
       if (freedMemory >= space) {
         var lastSuccessfulBlock = -1
         try {
@@ -563,9 +575,12 @@ private[spark] class MemoryStore(
             // blocks and removing entries. However the check is still here for
             // future safety.
             if (entry != null) {
+              // 成功drop的block会在这里面释放锁
               dropBlock(blockId, entry)
               afterDropAction(blockId)
             }
+            // 不管entry是不是为null，没有异常抛出的情况下，
+            // 最终，lastSuccessfulBlock == selectedBlocks.size - 1
             lastSuccessfulBlock = idx
           }
           logInfo(s"After dropping ${selectedBlocks.size} blocks, " +
@@ -574,8 +589,10 @@ private[spark] class MemoryStore(
         } finally {
           // like BlockManager.doPut, we use a finally rather than a catch to avoid having to deal
           // with InterruptedException
+          // 当这个条件成立时，只能说明try{}有异常抛出
           if (lastSuccessfulBlock != selectedBlocks.size - 1) {
             // the blocks we didn't process successfully are still locked, so we have to unlock them
+            // 需要从第（lastSuccessfulBlock + 1）个block开始（也就是异常中断造成的），释放未被成功处理的Block的锁
             (lastSuccessfulBlock + 1 until selectedBlocks.size).foreach { idx =>
               val blockId = selectedBlocks(idx)
               blockInfoManager.unlock(blockId)

@@ -88,9 +88,13 @@ private[memory] class StorageMemoryPool(
     assert(numBytesToAcquire >= 0)
     assert(numBytesToFree >= 0)
     assert(memoryUsed <= poolSize)
+    // 如果需要，回收内存
     if (numBytesToFree > 0) {
       memoryStore.evictBlocksToFreeSpace(Some(blockId), numBytesToFree, memoryMode)
     }
+    // 注意：如果memorystore回收了若干block，那么这些回收会同步地调用StorageMemoryPool来释
+    // 放内存（see：BlockManager#dropFromMemory#L1485）。
+    // 因此，这些变量(memoryFree、memoryUsed)已经更新过了。所以，我们需要重新计算enoughMemory
     // NOTE: If the memory store evicts blocks, then those evictions will synchronously call
     // back into this StorageMemoryPool in order to free memory. Therefore, these variables
     // should have been updated.

@@ -68,6 +68,10 @@ private[storage] class BlockInfo(
   private[this] var _readerCount: Int = 0
 
   /**
+   * writeTask可以表示的三种情况：
+   * 1. 当前持有该block的写锁的task attempt id
+   * 2. 当前，非task的线程持有该block的写锁
+   * 3. 当前该block没有写锁
    * The task attempt id of the task which currently holds the write lock for this block, or
    * [[BlockInfo.NON_TASK_WRITER]] if the write lock is held by non-task code, or
    * [[BlockInfo.NO_WRITER]] if this block is not locked for writing.
@@ -168,6 +172,7 @@ private[storage] class BlockInfoManager extends Logging {
   /**
    * Lock a block for reading and return its metadata.
    *
+   * 典型的读写锁机制。一个block可以同时有多个读锁，但只能有一个写锁。
    * If another task has already locked this block for reading, then the read lock will be
    * immediately granted to the calling task and its lock count will be incremented.
    *
@@ -186,11 +191,15 @@ private[storage] class BlockInfoManager extends Logging {
   def lockForReading(
       blockId: BlockId,
       blocking: Boolean = true): Option[BlockInfo] = synchronized {
+                                                     // 注意：在进入BlockInfoManager的时候，就会加锁(synchronized)，
+                                                     // 以此维护BlockInfo的线程安全
     logTrace(s"Task $currentTaskAttemptId trying to acquire read lock for $blockId")
     do {
       infos.get(blockId) match {
+        // 如果block不存在或者被删除，则返回None
         case None => return None
         case Some(info) =>
+          // 获取读锁的条件：该block上没有写锁
           if (info.writerTask == BlockInfo.NO_WRITER) {
             info.readerCount += 1
             readLocksByTask(currentTaskAttemptId).add(blockId)
@@ -225,6 +234,7 @@ private[storage] class BlockInfoManager extends Logging {
       infos.get(blockId) match {
         case None => return None
         case Some(info) =>
+          // 获取写锁的条件：该block上没有写锁且没有读锁！
           if (info.writerTask == BlockInfo.NO_WRITER && info.readerCount == 0) {
             info.writerTask = currentTaskAttemptId
             writeLocksByTask.addBinding(currentTaskAttemptId, blockId)
@@ -292,14 +302,21 @@ private[storage] class BlockInfoManager extends Logging {
     val info = get(blockId).getOrElse {
       throw new IllegalStateException(s"Block $blockId not found")
     }
+    // 如果该block持有写锁，则释放写锁
     if (info.writerTask != BlockInfo.NO_WRITER) {
       info.writerTask = BlockInfo.NO_WRITER
       writeLocksByTask.removeBinding(taskId, blockId)
     } else {
+      // 反之，释放读锁
       assert(info.readerCount > 0, s"Block $blockId is not locked for reading")
+      // 先减少一个当前block对应的元数据的被持有的读锁
       info.readerCount -= 1
       val countsForTask = readLocksByTask(taskId)
-      val newPinCountForTask: Int = countsForTask.remove(blockId, 1) - 1
+      // 再减少BlockInfoManager中对应的读锁数量
+      // (multiset)remove操作返回该操作之前，set中指定元素的个数（所以我们需要在remove后再减去1）
+      // newPinCountForTask的值表示该task仍持有的读锁个数，如果小于0，则说明该task的释放次数
+      // 大于其持有的读锁个数，将会报错
+      val newPinCountForTask: Int = countsForTask.remove(blockId, 1) - 1 // 删除multiset中的blockId，只删除一个）
       assert(newPinCountForTask >= 0,
         s"Task $taskId release lock on block $blockId more times than it acquired it")
     }
@@ -321,6 +338,9 @@ private[storage] class BlockInfoManager extends Logging {
       blockId: BlockId,
       newBlockInfo: BlockInfo): Boolean = synchronized {
     logTrace(s"Task $currentTaskAttemptId trying to put $blockId")
+    // 先尝试获取读锁，如果返回some(info)(该blcok的元数据)，说明该block已经存在，则我们只需要持有该block的读锁，
+    // 读取它的数据即可，不能写入数据。反之，该block不存在，则我们可以向BlockInfoManager注册的新的block的
+    // BlockInfo（元数据），然后再去获取写锁。
     lockForReading(blockId) match {
       case Some(info) =>
         // Block already exists. This could happen if another thread races with us to compute

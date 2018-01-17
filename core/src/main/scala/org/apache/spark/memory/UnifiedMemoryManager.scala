@@ -31,7 +31,7 @@ import org.apache.spark.storage.BlockId
  *
  * Storage can borrow as much execution memory as is free until execution reclaims its space.
  * When this happens, cached blocks will be evicted from memory until sufficient borrowed
- * memory is released to satisfy the execution memory request.
+ * memory is released to satisfy the execution memory request.(只从借去的那部分内存里释放吗?如果借去的不够呢???)
  *
  * Similarly, execution can borrow as much storage memory as is free. However, execution
  * memory is *never* evicted by storage due to the complexities involved in implementing this.
