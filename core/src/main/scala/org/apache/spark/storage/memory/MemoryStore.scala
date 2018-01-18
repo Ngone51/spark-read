@@ -173,7 +173,8 @@ private[spark] class MemoryStore(
    * 下面的代码真的是让人叹为观止呐！！！
    * 简单说说，整个方法的思路：
    * 这个方法的目的是把一个block以数组变量的形式存储到内存中去。
-   * 首先，(它并没有一次性为这个数组在storage memory中申请一大片内存，因为这极有可能引发oom)，
+   * 首先，(它并没有一次性为这个数组在storage memory中申请一大片内存，因为这极有可能引发oom(好像
+   * 也不是这个原因，好像又确实是这个原因，putIteratorAsBytes方法的注释里就提到了))，
    * 它一个个遍历iterator(数组)中的元素，然后每隔memoryCheckPeriod元素(周期性)，就检查当前
    * 申请的unroll内存（注意！！！：所谓的unroll内存，其实本质上就是storage内存，只是在unroll
    * 该iterator(数组)的过程中，申请的内存称为unroll内存，其实是为了之后申请storage memory占坑。
@@ -182,6 +183,7 @@ private[spark] class MemoryStore(
    * 已经为我们占好坑了（这个过程就是transferUnrollToStorage()）。
    * 而如果有部分元素没有遍历，也就是unroll没成功，这意味着内存不够了。但是，此时有部分元素是已经unroll了，
    * 它们占用了unroll memory。所以，调用该方法的方法，如果发现put失败了，需要调用close，来释放已经占用的unroll memory。
+   *
    * Attempt to put the given block in memory store as values.
    *
    * It's possible that the iterator is too large to materialize and store in memory. To avoid
@@ -239,6 +241,16 @@ private[spark] class MemoryStore(
     // TODO ???有没有这种可能：其实如果一开始一次性申请，是有足够内存的，
     // 但是因为周期检查存在或在递进式的申请内存时被其它线程申请了很多内存，
     // 导致最后反而内存不够了???(虽说，其它线程抢内存也是合理的，因为其它线程也是需要的嘛)
+    // 但也有可能，如果一次性申请是不够的，随着递进申请内存的过程，中间有其它线程释放内存，才使得
+    // 最终能够申请足够的内存。
+    // 所以，问题的关键是为什么要递进地申请内存?可不可以一开始尝试申请一次性的，如果申请失败，再
+    // 慢慢的申请内存???
+    // 感觉上面说的两种情况，其实可能性是一样的...也就是没有本质的区别...
+    // 关键是递进式申请的内存目的是什么???看下面putIteratorAsBytes方法的注释，好像就是为了避免oom
+    // 如何避免呢？我的理解是这样的：如果一次性的申请一大块内存，那么，就又可能其它线程申请内存不够，导致oom；
+    // 我递进式地申请，可以给其它线程申请足够的内存，然后其它线程用完后释放，在下一次周期性检查的时候，就可以
+    // 申请更多的内存。这样就很好的解决了oom的问题，而且互不影响。唯一有影响的地方，可能就是put iterator的
+    // 性能了(可想而知的嘛)。
 
     // 安全地unroll(展开)该block，周期性地检查是否超过了阈值
     // Unroll this block safely, checking whether we have exceeded our threshold periodically
@@ -345,6 +357,7 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 对于一个给定的block以字节流的形式存储到内存
    * Attempt to put the given block in memory store as bytes.
    *
    * It's possible that the iterator is too large to materialize and store in memory. To avoid
