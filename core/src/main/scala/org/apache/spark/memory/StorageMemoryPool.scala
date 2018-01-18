@@ -128,6 +128,11 @@ private[memory] class StorageMemoryPool(
   def freeSpaceToShrinkPool(spaceToFree: Long): Long = lock.synchronized {
     val spaceFreedByReleasingUnusedMemory = math.min(spaceToFree, memoryFree)
     val remainingSpaceToFree = spaceToFree - spaceFreedByReleasingUnusedMemory
+    // >0: 说明storagePool里的空闲内存小于想要释放的内存大小spaceToFree，
+    // 那么，这个时候就要驱逐MemoryStore里的blocks，来释放内存。最后返回
+    // spaceFreedByReleasingUnusedMemory + spaceFreedByEviction（pool需要削减的大小）
+    // <=0: 说明storagePool里的空闲内存足够想要的释放内存大小spaceToFree，则直接返回
+    // spaceFreedByReleasingUnusedMemory(pool需要削减的大小)
     if (remainingSpaceToFree > 0) {
       // If reclaiming free memory did not adequately shrink the pool, begin evicting blocks:
       val spaceFreedByEviction =
