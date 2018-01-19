@@ -42,6 +42,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
   require(chunks != null, "chunks must not be null")
   require(chunks.forall(_.position() == 0), "chunks' positions must be 0")
 
+  // 默认64M
   // Chunk size in bytes
   private val bufferWriteChunkSize =
     Option(SparkEnv.get).map(_.conf.get(config.BUFFER_WRITE_CHUNK_SIZE))
