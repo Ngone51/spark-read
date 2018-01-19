@@ -27,6 +27,7 @@ class PrimitiveVector[@specialized(Long, Int, Double) V: ClassTag](initialSize: 
   private var _numElements = 0
   private var _array: Array[V] = _
 
+  // 意思是如果在声明的同时初始化，这个initialSize还是父类PrimitiveVector的值???
   // NB: This must be separate from the declaration, otherwise the specialized parent class
   // will get its own array with the same initial size.
   _array = new Array[V](initialSize)
@@ -37,6 +38,7 @@ class PrimitiveVector[@specialized(Long, Int, Double) V: ClassTag](initialSize: 
   }
 
   def +=(value: V): Unit = {
+    // 如果数组已满，则调整数组的size为之前的2倍
     if (_numElements == _array.length) {
       resize(_array.length * 2)
     }
@@ -72,6 +74,7 @@ class PrimitiveVector[@specialized(Long, Int, Double) V: ClassTag](initialSize: 
   /** Resizes the array, dropping elements if the total length decreases. */
   def resize(newLength: Int): PrimitiveVector[V] = {
     _array = copyArrayWithLength(newLength)
+    // 超过array长度的元素会被抛弃掉
     if (newLength < _numElements) {
       _numElements = newLength
     }

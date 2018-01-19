@@ -865,6 +865,7 @@ private[spark] class BlockManager(
       case Some(iter) =>
         // Caller doesn't care about the iterator values, so we can close the iterator here
         // to free resources earlier
+        // 释放占用的unroll memory
         iter.close()
         false
     }
@@ -1431,6 +1432,7 @@ private[spark] class BlockManager(
       value: T,
       level: StorageLevel,
       tellMaster: Boolean = true): Boolean = {
+    // 把value转换成一个Iterator，以适用putIterator()
     putIterator(blockId, Iterator(value), level, tellMaster)
   }
 

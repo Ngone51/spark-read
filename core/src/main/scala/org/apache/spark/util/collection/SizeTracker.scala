@@ -29,7 +29,7 @@ import org.apache.spark.util.SizeEstimator
 private[spark] trait SizeTracker {
 
   import SizeTracker._
-
+  // TODO read
   /**
    * Controls the base of the exponential which governs the rate of sampling.
    * E.g., a value of 2 would mean we sample at 1, 2, 4, 8, ... elements.
