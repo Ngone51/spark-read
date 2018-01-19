@@ -29,7 +29,7 @@ import org.apache.spark.util.SizeEstimator
 private[spark] trait SizeTracker {
 
   import SizeTracker._
-  // TODO read
+
   /**
    * Controls the base of the exponential which governs the rate of sampling.
    * E.g., a value of 2 would mean we sample at 1, 2, 4, 8, ... elements.
@@ -53,6 +53,7 @@ private[spark] trait SizeTracker {
   /**
    * Reset samples collected so far.
    * This should be called after the collection undergoes a dramatic change in size.
+   * 比如resize()的时候
    */
   protected def resetSamples(): Unit = {
     numUpdates = 1
@@ -81,6 +82,8 @@ private[spark] trait SizeTracker {
       samples.dequeue()
     }
     val bytesDelta = samples.toList.reverse match {
+      // 注意：tail是指除了元素latest和previous之外的所有其它元素(List(x, y, ...))，而不是最后一个元素
+      // 但是，介于对samples的size的大小控制在2个，所以，这里的tail应该为List()
       case latest :: previous :: tail =>
         (latest.size - previous.size).toDouble / (latest.numUpdates - previous.numUpdates)
       // If fewer than 2 samples, assume no change
