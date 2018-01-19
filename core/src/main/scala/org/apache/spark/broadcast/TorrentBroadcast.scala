@@ -112,6 +112,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   }
 
   /**
+   * 把一个对象分成多个blcok，并通过block manager存储起来
    * Divide the object into multiple blocks and put those blocks in the block manager.
    *
    * @param value the object to divide
