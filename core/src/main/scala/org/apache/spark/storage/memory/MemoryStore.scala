@@ -305,6 +305,10 @@ private[spark] class MemoryStore(
       val enoughStorageMemory = {
         // 因为反序列对象size计算的不精确性，我们需要进一步比较unrollMemoryUsedByThisBlock和size，
         // 以确定是否需要申请更多的内存
+        // (上面两句话理解的不对)之所以还要比较，是考虑这样一种情况：上面循环中，unroll会周期性（默认每16个元素）地
+        // 检查申请的内存。假设，我们现在只有2个元素，显然，只会做一次检查。那么，此时，unrollMemoryUsedByThisBlock也
+        // 只是包含了第一个元素申请的内存。显然，第二个元素也需要申请内存。因此，这里还需要与size（包含了所有unroll的
+        // 元素（例如，包括第二个元素））比较。
         if (unrollMemoryUsedByThisBlock <= size) {
           val acquiredExtra =
             memoryManager.acquireStorageMemory(
