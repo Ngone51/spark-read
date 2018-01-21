@@ -88,7 +88,7 @@ object SizeEstimator extends Logging {
   private val ALIGN_SIZE = 8
 
   // A cache of ClassInfo objects for each class
-  // We use weakKeys to allow GC of dynamically created classes
+  // We use weakKeys to allow GC of dynamically created(哈???) classes
   private val classInfos = new MapMaker().weakKeys().makeMap[Class[_], ClassInfo]()
 
   // Object and pointer sizes are arch dependent
@@ -120,6 +120,7 @@ object SizeEstimator extends Logging {
     }
     pointerSize = if (is64bit && !isCompressedOops) 8 else 4
     classInfos.clear()
+    // 我就知道这里一定会初始化，不然getClassInfo()要死循环了
     classInfos.put(classOf[Object], new ClassInfo(objectSize, Nil))
   }
 
@@ -169,8 +170,11 @@ object SizeEstimator extends Logging {
     val stack = new ArrayBuffer[AnyRef]
     var size = 0L
 
+    // 入队
     def enqueue(obj: AnyRef) {
       if (obj != null && !visited.containsKey(obj)) {
+        // 下面两行代码看起来好奇怪...虽然我理解了它的意思
+        // visited存储访问过的object，stack存储将要去访问的object。
         visited.put(obj, null)
         stack += obj
       }
@@ -178,8 +182,10 @@ object SizeEstimator extends Logging {
 
     def isFinished(): Boolean = stack.isEmpty
 
+    // 出队，并返回值
     def dequeue(): AnyRef = {
       val elem = stack.last
+      // 删除最后一个元素
       stack.trimEnd(1)
       elem
     }
@@ -196,6 +202,7 @@ object SizeEstimator extends Logging {
 
   private def estimate(obj: AnyRef, visited: IdentityHashMap[AnyRef, AnyRef]): Long = {
     val state = new SearchState(visited)
+    // obj是我们要计算的占用内存大小的目标对象
     state.enqueue(obj)
     while (!state.isFinished) {
       visitSingleObject(state.dequeue(), state)
@@ -324,17 +331,24 @@ object SizeEstimator extends Logging {
     val parent = getClassInfo(cls.getSuperclass)
     var shellSize = parent.shellSize
     var pointerFields = parent.pointerFields
+    // 初始化后：[0, 0, 0, 0, 0, 0, 0, 0, 0]
     val sizeCount = Array.fill(fieldSizes.max + 1)(0)
 
     // iterate through the fields of this class and gather information.
     for (field <- cls.getDeclaredFields) {
+      // 只计算非静态的属性(java基础: 静态属性不属于一个实例对象嘛)
       if (!Modifier.isStatic(field.getModifiers)) {
+        // 获取属性的类型
         val fieldClass = field.getType
+        // 如果是基础类型,基础类似的size大小已经在L72-79初始化了(数据来源：
+        //  * http://www.javaworld.com/javaworld/javaqa/2003-12/02-qa-1226-sizeof.html)
         if (fieldClass.isPrimitive) {
+          // 统计不同size(8、4、2、1)的个数
           sizeCount(primitiveSize(fieldClass)) += 1
         } else {
           field.setAccessible(true) // Enable future get()'s on this field
           sizeCount(pointerSize) += 1
+          // 从list的头部插入数据
           pointerFields = field :: pointerFields
         }
       }
