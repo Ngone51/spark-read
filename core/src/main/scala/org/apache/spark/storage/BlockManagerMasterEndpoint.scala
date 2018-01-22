@@ -409,7 +409,7 @@ class BlockManagerMasterEndpoint(
     id
   }
 
-  // 更新master endpoint的块信息
+  // 更新block信息
   private def updateBlockInfo(
       blockManagerId: BlockManagerId,
       blockId: BlockId,
@@ -419,10 +419,12 @@ class BlockManagerMasterEndpoint(
 
     if (!blockManagerInfo.contains(blockManagerId)) {
       if (blockManagerId.isDriver && !isLocal) {
+        // 在集群模式下，我们不需要向master注册driver的blockManager
         // We intentionally do not register the master (except in local mode),
         // so we should not indicate failure.
         return true
       } else {
+        // 此时，可能需要re-register
         return false
       }
     }
@@ -432,8 +434,11 @@ class BlockManagerMasterEndpoint(
       return true
     }
 
+    // 有可能是更新blockInfo(其实看updateBlockInfo代码，似乎是
+    // BlockStatus更为确切)，也有可能是新增BlockInfo
     blockManagerInfo(blockManagerId).updateBlockInfo(blockId, storageLevel, memSize, diskSize)
 
+    // 更新locations，slave节点可以通过master得知自己想要的block存储在哪些节点(BlockManagerId)上
     var locations: mutable.HashSet[BlockManagerId] = null
     if (blockLocations.containsKey(blockId)) {
       locations = blockLocations.get(blockId)
@@ -445,6 +450,7 @@ class BlockManagerMasterEndpoint(
     // 这里add或者remove操作后，是不是都会更新blockLocations对应的BlockManagerId集合？？？
     // locations是那个集合的引用？？？不然其它地方没有更新操作后的值，说不通啊
     if (storageLevel.isValid) {
+      // 新增
       locations.add(blockManagerId)
     } else {
       locations.remove(blockManagerId)
@@ -484,6 +490,7 @@ class BlockManagerMasterEndpoint(
   private def getPeers(blockManagerId: BlockManagerId): Seq[BlockManagerId] = {
     val blockManagerIds = blockManagerInfo.keySet
     if (blockManagerIds.contains(blockManagerId)) {
+      // 只要blockManagerId不是driver的，且不是自己，就是peers???
       blockManagerIds.filterNot { _.isDriver }.filterNot { _ == blockManagerId }.toSeq
     } else {
       Seq.empty
@@ -542,7 +549,7 @@ private[spark] class BlockManagerInfo(
     _lastSeenMs = System.currentTimeMillis()
   }
 
-  // 更新BlockManagerInfo对于的块信息
+  // 更新BlockManagerInfo中的block信息，有可能是更新，也有可能是添加
   def updateBlockInfo(
       blockId: BlockId,
       storageLevel: StorageLevel,
@@ -565,6 +572,8 @@ private[spark] class BlockManagerInfo(
 
       if (originalLevel.useMemory) {
         // remaining为什么是+，不是-？？？
+        // 答：这样的，因为现在的memory使用已经从originalMemSize变为更新后的memSize
+        // 所以，我们现在这里把originalMemSize还回去，然后再在下面减去memSize
         _remainingMem += originalMemSize
       }
     }

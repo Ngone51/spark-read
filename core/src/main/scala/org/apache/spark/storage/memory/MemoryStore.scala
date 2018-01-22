@@ -293,7 +293,7 @@ private[spark] class MemoryStore(
       val size = entry.size
       def transferUnrollToStorage(amount: Long): Unit = {
         // Synchronize so that transfer is atomic
-        // 原子的好处是：在我为该task释放unroll memmory时，不会有其它的task来抢我刚刚释放的内存，
+        // 原子的好处是：在我为该task释放unroll memory时，不会有其它的task来抢我刚刚释放的内存，
         // 紧接着，我才能确保成功申请storage memory
         memoryManager.synchronized {
           releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, amount)

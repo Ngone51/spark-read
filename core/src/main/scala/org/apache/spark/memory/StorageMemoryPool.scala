@@ -88,7 +88,7 @@ private[memory] class StorageMemoryPool(
     assert(numBytesToAcquire >= 0)
     assert(numBytesToFree >= 0)
     assert(memoryUsed <= poolSize)
-    // 如果需要，回收内存
+    // 如果需要，驱逐已经存在的block
     if (numBytesToFree > 0) {
       memoryStore.evictBlocksToFreeSpace(Some(blockId), numBytesToFree, memoryMode)
     }

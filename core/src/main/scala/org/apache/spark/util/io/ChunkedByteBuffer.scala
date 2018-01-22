@@ -42,6 +42,10 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
   require(chunks != null, "chunks must not be null")
   require(chunks.forall(_.position() == 0), "chunks' positions must be 0")
 
+  // 在ChunkedByteBufferOutputSream里有个chunkSize(默认是4M)，它们是什么关系???
+  // 如果它们不一样会怎么样???
+  // 答：chunkSize是每个chunk的大小，而bufferWriteChunkSize是
+  // 每次写入channel时最大的字节数(见writeFully)
   // 默认64M
   // Chunk size in bytes
   private val bufferWriteChunkSize =
@@ -65,6 +69,8 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
   def writeFully(channel: WritableByteChannel): Unit = {
     for (bytes <- getChunks()) {
       while (bytes.remaining() > 0) {
+        // 也就是说，每一次向channel写入(channel.write)的字节数
+        // 最多不超过bufferWriteChunkSize(默认64M)
         val ioSize = Math.min(bytes.remaining(), bufferWriteChunkSize)
         bytes.limit(bytes.position() + ioSize)
         channel.write(bytes)
@@ -126,6 +132,9 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
    * Get duplicates of the ByteBuffers backing this ChunkedByteBuffer.
    */
   def getChunks(): Array[ByteBuffer] = {
+    // 生成chunk(ByteBuffer)的副本
+    // 注意：对源ByteBuffer会副本Bytebuffer的内容修改，都会影响到对方的内容。
+    // 但是，它们的limit、position、mark又是各自独立的。
     chunks.map(_.duplicate())
   }
 

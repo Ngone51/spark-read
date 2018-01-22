@@ -240,7 +240,7 @@ private[spark] class BlockManager(
     // 初始化shuffleClient
     shuffleClient.init(appId)
 
-    // 初始化块赋值策略
+    // 初始化块赋值策略，默认是随机块复制策略
     blockReplicationPolicy = {
       val priorityClass = conf.get(
         "spark.storage.replication.policy", classOf[RandomBlockReplicationPolicy].getName)
@@ -323,6 +323,8 @@ private[spark] class BlockManager(
    * by the BlockManager and come back or if we become capable of recovering blocks on disk after
    * an executor crash.
    *
+   * 该方法在master返回false(暗示slave需要重新注册BlockManager)后，故意得悄悄失败(不抛出异常)。这是因为这个error
+   * 会在下一次心跳检测或者有信息的block向master注册时，会重新注册BlockManager(以及所有的blocks).
    * This function deliberately fails silently if the master returns false (indicating that
    * the slave needs to re-register). The error condition will be detected again by the next
    * heart beat attempt or new block registration and another try to re-register all blocks
@@ -333,6 +335,7 @@ private[spark] class BlockManager(
     for ((blockId, info) <- blockInfoManager.entries) {
       val status = getCurrentBlockStatus(blockId, info)
       if (info.tellMaster && !tryToReportBlockStatus(blockId, status)) {
+        // fails silently,不抛出异常
         logError(s"Failed to report $blockId to master; giving up.")
         return
       }
@@ -349,6 +352,7 @@ private[spark] class BlockManager(
     // TODO: We might need to rate limit re-registering.
     logInfo(s"BlockManager $blockManagerId re-registering with master")
     master.registerBlockManager(blockManagerId, maxOnHeapMemory, maxOffHeapMemory, slaveEndpoint)
+    // 向master节点报告所有block的情况
     reportAllBlocks()
   }
 
@@ -927,6 +931,8 @@ private[spark] class BlockManager(
       keepReadLock: Boolean = false): Boolean = {
     doPut(blockId, level, classTag, tellMaster = tellMaster, keepReadLock = keepReadLock) { info =>
       val startTimeMs = System.currentTimeMillis
+      // 由于我们正在存储bytes类型的数据，所以在存储数据到本地之前，先开始副本分发。
+      // 这个过程是比较快的，因为数据已经序列化并且已经可以发送了。
       // Since we're storing bytes, initiate the replication before storing them locally.
       // This is faster as data is already serialized and ready to send.
       val replicationFuture = if (level.replication > 1) {
@@ -934,6 +940,7 @@ private[spark] class BlockManager(
           // This is a blocking action and should run in futureExecutionContext which is a cached
           // thread pool. The ByteBufferBlockData wrapper is not disposed of to avoid releasing
           // buffers that are owned by the caller.
+          // 会一直阻塞，直到复制完成
           replicate(blockId, new ByteBufferBlockData(bytes, false), level, classTag)
         }(futureExecutionContext)
       } else {
@@ -975,6 +982,7 @@ private[spark] class BlockManager(
         diskStore.putBytes(blockId, bytes)
       }
 
+      // 获取Block当前的BlockStatus
       val putBlockStatus = getCurrentBlockStatus(blockId, info)
       val blockWasSuccessfullyStored = putBlockStatus.storageLevel.isValid
       if (blockWasSuccessfullyStored) {
@@ -982,6 +990,7 @@ private[spark] class BlockManager(
         // tell the master about it.
         info.size = size
         if (tellMaster && info.tellMaster) {
+          // 通知master有关该block的当前存储状态
           reportBlockStatus(blockId, putBlockStatus)
         }
         addUpdatedBlockStatusToTaskMetrics(blockId, putBlockStatus)
@@ -1331,6 +1340,8 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 复制block到其它的节点。注意：这是一个阻塞的调用，直到block复制完成才会返回。
+   * 阻塞是不是为了保证数据的一致性呢???
    * Replicate block to another node. Note that this is a blocking call that returns after
    * the block has been replicated.
    */
@@ -1349,15 +1360,21 @@ private[spark] class BlockManager(
       deserialized = level.deserialized,
       replication = 1)
 
+    // 需要复制的peer的个数(也就是副本的个数减去本地的那一份)
     val numPeersToReplicateTo = level.replication - 1
     val startTime = System.nanoTime
 
+    // 已经复制了该block的peer
     val peersReplicatedTo = mutable.HashSet.empty ++ existingReplicas
     val peersFailedToReplicateTo = mutable.HashSet.empty[BlockManagerId]
     var numFailures = 0
 
+    // 获取同为peer的BlockManagerIds，且过滤掉已经由该blcok副本的BlockManagerIds
     val initialPeers = getPeers(false).filterNot(existingReplicas.contains)
 
+    // 根据块复制策略(默认随机块复制策略)选择哪些BlockManager作为复制的目标BlockManager。因为peers
+    // 是除了自己即driver外的所有BlockManager(显然，绝大多数时候大于副本的个数)，所以我们需要通过
+    // 块复制策略，挑几个BlockManager进行复制
     var peersForReplication = blockReplicationPolicy.prioritize(
       blockManagerId,
       initialPeers,
@@ -1372,6 +1389,8 @@ private[spark] class BlockManager(
       try {
         val onePeerStartTime = System.nanoTime
         logTrace(s"Trying to replicate $blockId of ${data.size} bytes to $peer")
+        // 通过blockTransferService把block复制到目标peer
+        // TODO read blockTransferService
         blockTransferService.uploadBlockSync(
           peer.host,
           peer.port,
@@ -1396,6 +1415,7 @@ private[spark] class BlockManager(
           }
 
           numFailures += 1
+          // 如果失败一次，会重新获取peers
           peersForReplication = blockReplicationPolicy.prioritize(
             blockManagerId,
             filteredPeers,

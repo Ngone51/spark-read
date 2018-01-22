@@ -112,7 +112,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   }
 
   /**
-   * 把一个对象分成多个blcok，并通过block manager存储起来
+   * 把一个对象分成多个block，并通过block manager存储起来
    * Divide the object into multiple blocks and put those blocks in the block manager.
    *
    * @param value the object to divide
@@ -123,6 +123,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
     // Store a copy of the broadcast variable in the driver so that tasks run on the driver
     // do not create a duplicate copy of the broadcast variable's value.
     val blockManager = SparkEnv.get.blockManager
+    // 现在driver上通过blockManager存储一份broadcast variable
     if (!blockManager.putSingle(broadcastId, value, MEMORY_AND_DISK, tellMaster = false)) {
       throw new SparkException(s"Failed to store $broadcastId in BlockManager")
     }
@@ -286,6 +287,7 @@ private object TorrentBroadcast extends Logging {
       blockSize: Int,
       serializer: Serializer,
       compressionCodec: Option[CompressionCodec]): Array[ByteBuffer] = {
+    // allocate会返回HeapByteBuffer类型的ByteBuffer
     val cbbos = new ChunkedByteBufferOutputStream(blockSize, ByteBuffer.allocate)
     val out = compressionCodec.map(c => c.compressedOutputStream(cbbos)).getOrElse(cbbos)
     val ser = serializer.newInstance()

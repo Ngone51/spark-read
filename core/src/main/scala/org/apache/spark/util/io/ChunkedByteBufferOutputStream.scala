@@ -25,6 +25,11 @@ import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.storage.StorageUtils
 
 /**
+ * 这部分代码也很牛逼啊。ChunkedByteBufferOutputStream能够以分散的多个chunk来构建ChunkedByteBuffer，
+ * 而不是申请一个连续存储的Array[ByteBuffer]。Array[ByteBuffer]需要一片连续的内存空间，不仅对内存的
+ * 占用多，而且利用率低。而用分散的多个chunk存储，可以有效提升内存的利用率。之所以说chunks(虽然它本身
+ * 是一个Array)是分散的，是因为，我们再申请ByteBuffer不是一次性就申请好的，而是根据需要，一个一个申请
+ * 的(see allocateNewChunkIfNeeded())。
  * An OutputStream that writes to fixed-size chunks of byte arrays.
  *
  * @param chunkSize size of each chunk, in bytes.
@@ -60,11 +65,15 @@ private[spark] class ChunkedByteBufferOutputStream(
     }
   }
 
+  // 把一个Int类型转换成一个Byte存储到ByteBuffer中去
+  // 但是，一个Byte最多只能表示+127,不然就溢出了。是否需要assert(b < 128)呢???
   override def write(b: Int): Unit = {
     require(!closed, "cannot write to a closed ChunkedByteBufferOutputStream")
     allocateNewChunkIfNeeded()
     chunks(lastChunkIndex).put(b.toByte)
+    // 当前chunk字节数+1
     position += 1
+    // 总字节数+1
     _size += 1
   }
 
@@ -73,6 +82,7 @@ private[spark] class ChunkedByteBufferOutputStream(
     var written = 0
     while (written < len) {
       allocateNewChunkIfNeeded()
+      // 在当前chunk的剩余可存储字节大小和bytes的未写入的字节数中取小的那一个
       val thisBatch = math.min(chunkSize - position, len - written)
       chunks(lastChunkIndex).put(bytes, written + off, thisBatch)
       written += thisBatch
@@ -83,6 +93,7 @@ private[spark] class ChunkedByteBufferOutputStream(
 
   @inline
   private def allocateNewChunkIfNeeded(): Unit = {
+    // 如果position == chunkSize，则新申请一个chunkSize大小的ByteBuffer
     if (position == chunkSize) {
       chunks += allocator(chunkSize)
       lastChunkIndex += 1
@@ -98,6 +109,7 @@ private[spark] class ChunkedByteBufferOutputStream(
       new ChunkedByteBuffer(Array.empty[ByteBuffer])
     } else {
       // Copy the first n-1 chunks to the output, and then create an array that fits the last chunk.
+      // 哈，什么意思???
       // An alternative would have been returning an array of ByteBuffers, with the last buffer
       // bounded to only the last chunk's position. However, given our use case in Spark (to put
       // the chunks in block manager), only limiting the view bound of the buffer would still
@@ -107,14 +119,18 @@ private[spark] class ChunkedByteBufferOutputStream(
         ret(i) = chunks(i)
         ret(i).flip()
       }
+      // 如果最后一个chunk刚好是一个写满的chunk，那么，整个拷贝到ret(lastChunkIndex)中去
       if (position == chunkSize) {
         ret(lastChunkIndex) = chunks(lastChunkIndex)
         ret(lastChunkIndex).flip()
       } else {
+        // 最后一个chunk未写满，为了节省存储空间，我们只申请
+        // 实际空间占用大小的ByteBuffer，并拷贝给ret
         ret(lastChunkIndex) = allocator(position)
         chunks(lastChunkIndex).flip()
         ret(lastChunkIndex).put(chunks(lastChunkIndex))
         ret(lastChunkIndex).flip()
+        // TODO 为什么最后一个chunk需要dispose,而其它的chunk不需要???
         StorageUtils.dispose(chunks(lastChunkIndex))
       }
       new ChunkedByteBuffer(ret)
