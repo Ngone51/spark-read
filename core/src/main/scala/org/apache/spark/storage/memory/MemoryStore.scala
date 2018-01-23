@@ -496,6 +496,7 @@ private[spark] class MemoryStore(
     }
   }
 
+  // 根据BlockId获取对应的bytes（只用于序列化存储的Block）
   def getBytes(blockId: BlockId): Option[ChunkedByteBuffer] = {
     val entry = entries.synchronized { entries.get(blockId) }
     entry match {
@@ -506,6 +507,7 @@ private[spark] class MemoryStore(
     }
   }
 
+  // 根据BlockId获取对应的value值(只用于反序列化存储的Block)，并返回其Iterator
   def getValues(blockId: BlockId): Option[Iterator[_]] = {
     val entry = entries.synchronized { entries.get(blockId) }
     entry match {

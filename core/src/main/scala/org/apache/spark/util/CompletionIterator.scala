@@ -32,6 +32,7 @@ abstract class CompletionIterator[ +A, +I <: Iterator[A]](sub: I) extends Iterat
     val r = sub.hasNext
     if (!r && !completed) {
       completed = true
+      // 当遍历完成时，会执行completion方法
       completion()
     }
     r

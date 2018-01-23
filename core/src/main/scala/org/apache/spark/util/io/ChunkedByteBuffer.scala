@@ -178,6 +178,7 @@ private[spark] class ChunkedByteBufferInputStream(
     dispose: Boolean)
   extends InputStream {
 
+  // TODO read
   private[this] var chunks = chunkedByteBuffer.getChunks().iterator
   private[this] var currentChunk: ByteBuffer = {
     if (chunks.hasNext) {

@@ -539,39 +539,53 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 从本地BlockManager中获取java对象迭代器形式的Block
    * Get block from local block manager as an iterator of Java objects.
    */
   def getLocalValues(blockId: BlockId): Option[BlockResult] = {
     logDebug(s"Getting local block $blockId")
+    // 申请获取该Block的读锁
     blockInfoManager.lockForReading(blockId) match {
+      // 读锁申请失败，该Block不存在
       case None =>
         logDebug(s"Block $blockId was not found")
         None
+      // 读锁申请成功，返回该Block的BlockInfo
       case Some(info) =>
+        // 通过BlockInfo获取该Block的StorageLevel
         val level = info.level
         logDebug(s"Level for block $blockId is $level")
+        // 获取当前task的attemptId
         val taskAttemptId = Option(TaskContext.get()).map(_.taskAttemptId())
+        // 从内存中获取该Block
         if (level.useMemory && memoryStore.contains(blockId)) {
           val iter: Iterator[Any] = if (level.deserialized) {
+            // 如果该Block是以value形式存储的，则直接获取对应的value，并返回迭代器
             memoryStore.getValues(blockId).get
           } else {
+            // 如果该Block是以序列化的形式存储，则反序列其值后，返回迭代器
             serializerManager.dataDeserializeStream(
               blockId, memoryStore.getBytes(blockId).get.toInputStream())(info.classTag)
           }
+          // 哈???
           // We need to capture the current taskId in case the iterator completion is triggered
           // from a different thread which does not have TaskContext set; see SPARK-18406 for
           // discussion.
           val ci = CompletionIterator[Any, Iterator[Any]](iter, {
+            // 当iter遍历完成之后，会执行releaseLock方法()
             releaseLock(blockId, taskAttemptId)
           })
+          // 返回BlockResult
           Some(new BlockResult(ci, DataReadMethod.Memory, info.size))
-        } else if (level.useDisk && diskStore.contains(blockId)) {
+        } else if (level.useDisk && diskStore.contains(blockId)) { // 从磁盘中获取该Block
           val diskData = diskStore.getBytes(blockId)
           val iterToReturn: Iterator[Any] = {
             if (level.deserialized) {
               val diskValues = serializerManager.dataDeserializeStream(
                 blockId,
                 diskData.toInputStream())(info.classTag)
+              // 如果有足够的内存空间，则把刚从磁盘读取的Block缓存到内存中，
+              // 以加速之后对该Block的读取
               maybeCacheDiskValuesInMemory(info, blockId, level, diskValues)
             } else {
               val stream = maybeCacheDiskBytesInMemory(info, blockId, level, diskData)
@@ -581,6 +595,10 @@ private[spark] class BlockManager(
             }
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, {
+            // 从磁盘中读取完数据后不仅要释放锁，
+            // 还要dispose数据，而从内存中读取就不用dipose数据，why???
+            // 答：因为现在已经有该block的两份数据了(内存和磁盘)，
+            // 显然，我们不需要磁盘里的了(内存里的读取更快啊)
             releaseLockAndDispose(blockId, diskData, taskAttemptId)
           })
           Some(new BlockResult(ci, DataReadMethod.Disk, info.size))
@@ -1254,6 +1272,7 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 尝试把从磁盘读取的溢出值缓存到memoryStore中去，以加速之后的读操作。
    * Attempts to cache spilled values read from disk into the MemoryStore in order to speed up
    * subsequent reads. This method requires the caller to hold a read lock on the block.
    *
@@ -1277,6 +1296,8 @@ private[spark] class BlockManager(
         } else {
           memoryStore.putIteratorAsValues(blockId, diskIterator, classTag) match {
             case Left(iter) =>
+              // TODO 失败不应该释放unroll memory吗?
+              // 答：如果后面有对iter遍历，那么，等iter的urolled元素遍历完成时，也会释放的
               // The memory store put() failed, so it returned the iterator back to us:
               iter
             case Right(_) =>

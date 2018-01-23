@@ -132,6 +132,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
     if (checksumEnabled) {
       checksums = new Array[Int](blocks.length)
     }
+    // 然后再把每个chunk通过BlockManage存储起来
     blocks.zipWithIndex.foreach { case (block, i) =>
       if (checksumEnabled) {
         checksums(i) = calcChecksum(block)
@@ -212,15 +213,19 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
     TorrentBroadcast.synchronized {
       val broadcastCache = SparkEnv.get.broadcastManager.cachedValues
 
+      // 先尝试从本地的缓存中获取BroadCastBlock
       Option(broadcastCache.get(broadcastId)).map(_.asInstanceOf[T]).getOrElse {
+        // 如果缓存中没有，再尝试从本地的BlockManager获取
         setConf(SparkEnv.get.conf)
         val blockManager = SparkEnv.get.blockManager
         blockManager.getLocalValues(broadcastId) match {
-          case Some(blockResult) =>
+          case Some(blockResult) => // 成功从本地读取Broadcast variable
             if (blockResult.data.hasNext) {
+              // TODO 只有next() ??????
               val x = blockResult.data.next().asInstanceOf[T]
               releaseLock(broadcastId)
 
+              // 此时，更新缓存
               if (x != null) {
                 broadcastCache.put(broadcastId, x)
               }
@@ -229,7 +234,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
             } else {
               throw new SparkException(s"Failed to get locally stored broadcast data: $broadcastId")
             }
-          case None =>
+          case None => // 本地读取失败，尝试从driver或executor获取
             logInfo("Started reading broadcast variable " + id)
             val startTimeMs = System.currentTimeMillis()
             val blocks = readBlocks()
@@ -282,6 +287,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
 
 private object TorrentBroadcast extends Logging {
 
+  // 该方法会把一个obj分成多个chunk存储起来
   def blockifyObject[T: ClassTag](
       obj: T,
       blockSize: Int,
