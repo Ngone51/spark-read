@@ -46,6 +46,7 @@ private[spark] class DiskStore(
   private val minMemoryMapBytes = conf.getSizeAsBytes("spark.storage.memoryMapThreshold", "2m")
   private val maxMemoryMapBytes = conf.getSizeAsBytes("spark.storage.memoryMapLimitForTests",
     Int.MaxValue.toString)
+  // 存储每个block对应的磁盘占用大小
   private val blockSizes = new ConcurrentHashMap[BlockId, Long]()
 
   def getSize(blockId: BlockId): Long = blockSizes.get(blockId)
@@ -56,12 +57,14 @@ private[spark] class DiskStore(
    * @throws IllegalStateException if the block already exists in the disk store.
    */
   def put(blockId: BlockId)(writeFunc: WritableByteChannel => Unit): Unit = {
+    // 如果磁盘中已经包含该block，则抛出异常
     if (contains(blockId)) {
       throw new IllegalStateException(s"Block $blockId is already present in the disk store")
     }
     logDebug(s"Attempting to put block $blockId")
     val startTime = System.currentTimeMillis
     val file = diskManager.getFile(blockId)
+    // 打开文件写入通道
     val out = new CountingWritableChannel(openForWrite(file))
     var threwException: Boolean = true
     try {
@@ -125,8 +128,11 @@ private[spark] class DiskStore(
     }
   }
 
+  // 判断磁盘上是否存在该block
   def contains(blockId: BlockId): Boolean = {
+    // 先通过diskManager获取该文件抽象(包含其存储位置)
     val file = diskManager.getFile(blockId.name)
+    // 然后再判断该文件是否已经存在
     file.exists()
   }
 

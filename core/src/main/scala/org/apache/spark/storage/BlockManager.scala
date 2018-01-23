@@ -1486,7 +1486,9 @@ private[spark] class BlockManager(
       data() match {
         case Left(elements) =>
           diskStore.put(blockId) { channel =>
+            // TODO 很多这种channel啊，stream啊，bytebuffer啊都不会应用
             val out = Channels.newOutputStream(channel)
+            // 因为要写入磁盘，所以要把value序列化成流
             serializerManager.dataSerializeStream(
               blockId,
               out,
