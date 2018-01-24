@@ -150,29 +150,43 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   private def readBlocks(): Array[BlockData] = {
     // Fetch chunks of data. Note that all these chunks are stored in the BlockManager and reported
     // to the driver, so other executors can pull these chunks from this executor as well.
+
+    // ???
+    // 如果是一个executor在调用readBlocks,它怎么知道numBlocks???
+    // 嗯...driver肯是会发送这部分代码给executor的，不然executor也不能调用readBlocks()，
+    // 还没看过executor代码，不清楚啊(这样想来，就可以解释TorrentBroadcast的变量_value
+    // 为什么用@transient修饰了。因为_value我们是不随之发送的(考虑到网络带宽等因素)，而
+    // 是通过广播的方式传送，但TorrentBroadcast的其它变量以及它的方法是要发送给executor的。
+    // 那么，事实是不是这样的呢？
     val blocks = new Array[BlockData](numBlocks)
     val bm = SparkEnv.get.blockManager
 
+    // 先打乱Broadcast variable的每个分片(因为说不定是哪个分片先拿到呢)
     for (pid <- Random.shuffle(Seq.range(0, numBlocks))) {
       val pieceId = BroadcastBlockId(id, "piece" + pid)
       logDebug(s"Reading piece $pieceId of $broadcastId")
       // First try getLocalBytes because there is a chance that previous attempts to fetch the
       // broadcast blocks have already fetched some of the blocks. In that case, some blocks
       // would be available locally (on this executor).
+      // bm这边之所以要获取bytes，是因为broadcast是网络传输过来的，所以是经过序列化的
       bm.getLocalBytes(pieceId) match {
         case Some(block) =>
           blocks(pid) = block
+          // 成功之后，在这里再释放锁
           releaseLock(pieceId)
         case None =>
+          // 本地获取失败，尝试从driver或executor远程获取
           bm.getRemoteBytes(pieceId) match {
             case Some(b) =>
               if (checksumEnabled) {
+                // 0 -> 意思该ChunkedByteBuffer只会有一个chunk???
                 val sum = calcChecksum(b.chunks(0))
                 if (sum != checksums(pid)) {
                   throw new SparkException(s"corrupt remote block $pieceId of $broadcastId:" +
                     s" $sum != ${checksums(pid)}")
                 }
               }
+              // 从远程获取block，就把它存储到本地的BlockManager中去
               // We found the block from remote executors/driver's BlockManager, so put the block
               // in this executor's BlockManager.
               if (!bm.putBytes(pieceId, b, StorageLevel.MEMORY_AND_DISK_SER, tellMaster = true)) {
@@ -215,14 +229,21 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
 
       // 先尝试从本地的缓存中获取BroadCastBlock
       Option(broadcastCache.get(broadcastId)).map(_.asInstanceOf[T]).getOrElse {
-        // 如果缓存中没有，再尝试从本地的BlockManager获取
         setConf(SparkEnv.get.conf)
         val blockManager = SparkEnv.get.blockManager
+        // 如果缓存中没有，再尝试从本地的BlockManager获取
         blockManager.getLocalValues(broadcastId) match {
           case Some(blockResult) => // 成功从本地读取Broadcast variable
             if (blockResult.data.hasNext) {
               // TODO 只有next() ??????
+              // 我去，终于看明白了，不然还以为是一个bug!!!解释一下：
+              // 在Broadcast变量初始化的时候，会调用writeBlocks(),其中，会首先通过BlockManager存储
+              // 一份value到本地，调用的是blockManager.putSingle()方法(see L127)。因此，如果value是
+              // 一个List的话，例如List(1, 2, 3)。那么，List(1,2,3)会被当做一个元素看待，而不是"1,2,3"
+              // 三个元素(see BlockManager#putSingle's comment for detail)。因此，data.next()会返回完整
+              // 的一个List()元素(如果Broadcast的value是一个List，或者其他Seq类型等)，而不是List的第一个元素。
               val x = blockResult.data.next().asInstanceOf[T]
+
               releaseLock(broadcastId)
 
               // 此时，更新缓存

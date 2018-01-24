@@ -516,6 +516,7 @@ private[spark] class MemoryStore(
         throw new IllegalArgumentException("should only call getValues on deserialized blocks")
       case DeserializedMemoryEntry(values, _, _) =>
         val x = Some(values)
+        // 注意，这里的_表示values,也就是Some里的元素,而不是values里的元素
         x.map(_.iterator)
     }
   }

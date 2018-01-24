@@ -215,7 +215,7 @@ private[spark] class BlockManager(
   // 块复制策略
   private var blockReplicationPolicy: BlockReplicationPolicy = _
 
-  // 一个用来跟踪所有超出指定内存阈值的远程块（为什么是跟踪远程的？？？）上的文件。这些文件会通过若引用的方式自动删除。
+  // 一个用来跟踪所有超出指定内存阈值的远程块（为什么是跟踪远程的？？？）上的文件。这些文件会通过弱引用的方式自动删除。
   // A TempFileManager used to track all the files of remote blocks which above the
   // specified memory threshold. Files will be deleted automatically based on weak reference.
   // Exposed for test
@@ -636,28 +636,43 @@ private[spark] class BlockManager(
   private def doGetLocalBytes(blockId: BlockId, info: BlockInfo): BlockData = {
     val level = info.level
     logDebug(s"Level for block $blockId is $level")
+    // TODO 修改注释
+    // 这个注释说的order是level.deserialize == false的情况吧
     // In order, try to read the serialized bytes from memory, then from disk, then fall back to
     // serializing in-memory objects, and, finally, throw an exception if the block does not exist.
+    // 如果level指明block是非序列化存储的，那么优先查找磁盘，再查找内存。之所以优先
+    // 查找磁盘，是因为如果内存中有该Block，那么，我们还要对其序列化（这部分开销大于
+    // 访问磁盘带来的开销）。而如果磁盘里有该block，则肯定是序列化过的。
     if (level.deserialized) {
+      // 通过读取来自磁盘的预先序列化的副本来尽量避免昂贵的序列化操作
       // Try to avoid expensive serialization by reading a pre-serialized copy from disk:
+      // 虽然level说了是deserialized，但是如果存到了磁盘上，那肯定是序列化过的
       if (level.useDisk && diskStore.contains(blockId)) {
+        // 之所以在这边没有磁盘里读取的block缓存到内存中，是因为：首先该if分支处理的是反序列化存储
+        // 的block，所以，极有可能在内存中已经有该value对象(且没有以bytes存储的对象)。而调用者却想要
+        // bytes对象(说明内存中没有bytes对象嘛)。而你却要缓存一个value对象（强调：人家要的是bytes）对
+        // 象。所以，这样的缓存很可能不会带来任何效益。
         // Note: we purposely do not try to put the block back into memory here. Since this branch
         // handles deserialized blocks, this block may only be cached in memory as objects, not
         // serialized bytes. Because the caller only requested bytes, it doesn't make sense to
         // cache the block's deserialized objects since that caching may not have a payoff.
         diskStore.getBytes(blockId)
       } else if (level.useMemory && memoryStore.contains(blockId)) {
+        // 如果在内存中，则序列化之
         // The block was not found on disk, so serialize an in-memory copy:
         new ByteBufferBlockData(serializerManager.dataSerializeWithExplicitClassTag(
           blockId, memoryStore.getValues(blockId).get, info.classTag), true)
       } else {
+        // 抛出异常（会释放锁）
         handleLocalReadFailure(blockId)
       }
     } else {  // storage level is serialized
+      // 如果level指明block是序列化存储的，那么优先查找内存，再查找磁盘
       if (level.useMemory && memoryStore.contains(blockId)) {
         new ByteBufferBlockData(memoryStore.getBytes(blockId).get, false)
       } else if (level.useDisk && diskStore.contains(blockId)) {
         val diskData = diskStore.getBytes(blockId)
+        // 尝试缓存到磁盘
         maybeCacheDiskBytesInMemory(info, blockId, level, diskData)
           .map(new ByteBufferBlockData(_, false))
           .getOrElse(diskData)
@@ -682,6 +697,7 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 按照同一主机、同一机架、其它机架的先后顺序，对location(BlockManageId)进行排序。
    * Return a list of locations for the given block, prioritizing the local machine since
    * multiple block managers can share the same host, followed by hosts on the same rack.
    */
@@ -709,15 +725,19 @@ private[spark] class BlockManager(
 
     // Because all the remote blocks are registered in driver, it is not necessary to ask
     // all the slave executors to get block status.
+    // 获取Block的Location和Status(by rpc)
     val locationsAndStatus = master.getLocationsAndStatus(blockId)
+    // 获取disk size和 memory size中较大的那个为block size
     val blockSize = locationsAndStatus.map { b =>
       b.status.diskSize.max(b.status.memSize)
     }.getOrElse(0L)
+    // 获取存有该block的所有location(其实就是BlockManagerId)
     val blockLocations = locationsAndStatus.map(_.locations).getOrElse(Seq.empty)
 
     // If the block size is above the threshold, we should pass our FileManger to
     // BlockTransferService, which will leverage it to spill the block; if not, then passed-in
     // null value means the block will be persisted in memory.
+    // TODO read
     val tempFileManager = if (blockSize > maxRemoteBlockToMem) {
       remoteBlockTempFileManager
     } else {
@@ -731,6 +751,7 @@ private[spark] class BlockManager(
       val loc = locationIterator.next()
       logDebug(s"Getting remote block $blockId from $loc")
       val data = try {
+        // TODO read blockTransferService
         blockTransferService.fetchBlockSync(
           loc.host, loc.port, loc.executorId, blockId.toString, tempFileManager).nioByteBuffer()
       } catch {
@@ -750,11 +771,14 @@ private[spark] class BlockManager(
           logWarning(s"Failed to fetch remote block $blockId " +
             s"from $loc (failed attempt $runningFailureCount)", e)
 
+          // stale entries是指那些过时的location吗???
           // If there is a large number of executors then locations list can contain a
           // large number of stale entries causing a large number of retries that may
           // take a significant amount of time. To get rid of these stale entries
           // we refresh the block locations after a certain number of fetch failures
           if (runningFailureCount >= maxFailuresBeforeLocationRefresh) {
+            // TODO maybe可以改进
+            // refresh后的location是否会包含之前failure的那些个locations???
             locationIterator = sortLocations(master.getLocations(blockId)).iterator
             logDebug(s"Refreshed locations from the driver " +
               s"after ${runningFailureCount} fetch failures.")
@@ -764,7 +788,7 @@ private[spark] class BlockManager(
           // This location failed, so we retry fetch from a different one by returning null here
           null
       }
-
+      // 只要我们从某个location上获取了该block，该循环就终止了
       if (data != null) {
         return Some(new ChunkedByteBuffer(data))
       }
@@ -1474,6 +1498,10 @@ private[spark] class BlockManager(
       level: StorageLevel,
       tellMaster: Boolean = true): Boolean = {
     // 把value转换成一个Iterator，以适用putIterator()
+    // 注意：Iterator(List(1,2,3))返回的iterator只包含一个元素: List(1,2,3)
+    // 而： List(1,2,3).iterator返回的iterator包含三个元素：1,2,3
+    // TODO 那么，如果传进来的是一个List(或Seq)类型的value，却把它当做一个元素看待，
+    // 则对于之后的unroll操作其实是不起作用的。这里是否可以优化一下???
     putIterator(blockId, Iterator(value), level, tellMaster)
   }
 
