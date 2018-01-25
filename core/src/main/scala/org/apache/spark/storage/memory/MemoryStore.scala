@@ -38,6 +38,8 @@ import org.apache.spark.util.{SizeEstimator, Utils}
 import org.apache.spark.util.collection.SizeTrackingVector
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+// spark block数据在内存存储中的实体，可以提供快速读操作(缓存)。
+// 分为序列化存储的内存实体和反序列化存储的内存实体。
 private sealed trait MemoryEntry[T] {
   def size: Long
   def memoryMode: MemoryMode
@@ -404,6 +406,7 @@ private[spark] class MemoryStore(
     var unrollMemoryUsedByThisBlock = 0L
     // Underlying buffer for unrolling the block
     val redirectableStream = new RedirectableOutputStream
+    // 默认也是1M
     val chunkSize = if (initialMemoryThreshold > Int.MaxValue) {
       logWarning(s"Initial memory threshold of ${Utils.bytesToString(initialMemoryThreshold)} " +
         s"is too large to be set as chunk size. Chunk size has been capped to " +
@@ -412,14 +415,19 @@ private[spark] class MemoryStore(
     } else {
       initialMemoryThreshold.toInt
     }
+    // 构建ChunkedByteBufferOutputStream，最终写object会调用该输出流的write方法
+    // 下面的其它流(重定向流、序列化流、压缩流)都是对该流的封装
     val bbos = new ChunkedByteBufferOutputStream(chunkSize, allocator)
+    // 重定向redirectableStream的输出流为bbos，这样我就可以用chunks来存储bytes啦
     redirectableStream.setOutputStream(bbos)
+    // 构建序列化流，用来写object
     val serializationStream: SerializationStream = {
       val autoPick = !blockId.isInstanceOf[StreamBlockId]
       val ser = serializerManager.getSerializer(classTag, autoPick).newInstance()
       ser.serializeStream(serializerManager.wrapForCompression(blockId, redirectableStream))
     }
 
+    // 第一次试探性的申请(initialMemoryThreshold大小的)内存
     // Request enough memory to begin unrolling
     keepUnrolling = reserveUnrollMemoryForThisTask(blockId, initialMemoryThreshold, memoryMode)
 
@@ -432,6 +440,14 @@ private[spark] class MemoryStore(
 
     def reserveAdditionalMemoryIfNecessary(): Unit = {
       if (bbos.size > unrollMemoryUsedByThisBlock) {
+        // TODO 这里有一个可能的优化是：如果在该函数调用之后没有其它value了(也就是
+        // 迭代完成了，那么，我们可能不需要bbos.size * memoryGrowthFactor，因为
+        // 这样肯定是多的，之后也会释放掉)。用处在于，可能恰巧存在这样一种情况：申请
+        // 最后一(或少数几)个时，单单申请这几个，内存是够的，但如果要乘以
+        // memoryGrowthFactor(为了之后unroll其它values预留)，可能就不够了。关键
+        // 在于，这样做，是否有很大的区别？如果刚刚好内存够，再预留一点就不够了，那么，
+        // 整个系统的内存其实就已经不够了，那么，这一点点的优化，又是否必要???毕竟在
+        // 内存充足的情况下，之后也是会释放多余的内存的。
         val amountToRequest = (bbos.size * memoryGrowthFactor - unrollMemoryUsedByThisBlock).toLong
         keepUnrolling = reserveUnrollMemoryForThisTask(blockId, amountToRequest, memoryMode)
         if (keepUnrolling) {
@@ -442,6 +458,8 @@ private[spark] class MemoryStore(
 
     // Unroll this block safely, checking whether we have exceeded our threshold
     while (values.hasNext && keepUnrolling) {
+      // 调用wtireObject()最终都会调用bbos的write()方法，因为serializationStream
+      // 封装了bbos流，对象最终也是被写入bbos输出流(它的chunks)。
       serializationStream.writeObject(values.next())(classTag)
       elementsUnrolled += 1
       if (elementsUnrolled % memoryCheckPeriod == 0) {
