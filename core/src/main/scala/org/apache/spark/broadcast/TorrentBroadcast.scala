@@ -255,18 +255,21 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
             } else {
               throw new SparkException(s"Failed to get locally stored broadcast data: $broadcastId")
             }
-          case None => // 本地读取失败，尝试从driver或executor获取
+          case None =>
             logInfo("Started reading broadcast variable " + id)
             val startTimeMs = System.currentTimeMillis()
+            // 本地读取失败，尝试从driver或executor获取
             val blocks = readBlocks()
             logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
 
             try {
+              // 把多个blocks反序列化后合成一个对象(这个厉害了！)
               val obj = TorrentBroadcast.unBlockifyObject[T](
                 blocks.map(_.toInputStream()), SparkEnv.get.serializer, compressionCodec)
               // Store the merged copy in BlockManager so other tasks on this executor don't
               // need to re-fetch it.
               val storageLevel = StorageLevel.MEMORY_AND_DISK
+              // 把从远程获取的broadcast变量存储到本地(这样，如果其它的task有需要，就可以在本地读取啦！)
               if (!blockManager.putSingle(broadcastId, obj, storageLevel, tellMaster = false)) {
                 throw new SparkException(s"Failed to store $broadcastId in BlockManager")
               }
@@ -277,6 +280,7 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
 
               obj
             } finally {
+              // 释放ByteBuffer
               blocks.foreach(_.dispose())
             }
         }
@@ -327,6 +331,7 @@ private object TorrentBroadcast extends Logging {
     cbbos.toChunkedByteBuffer.getChunks()
   }
 
+  // TODO read
   def unBlockifyObject[T: ClassTag](
       blocks: Array[InputStream],
       serializer: Serializer,

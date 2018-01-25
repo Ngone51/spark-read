@@ -567,7 +567,6 @@ private[spark] class BlockManager(
             serializerManager.dataDeserializeStream(
               blockId, memoryStore.getBytes(blockId).get.toInputStream())(info.classTag)
           }
-          // 哈???
           // We need to capture the current taskId in case the iterator completion is triggered
           // from a different thread which does not have TaskContext set; see SPARK-18406 for
           // discussion.
@@ -577,7 +576,7 @@ private[spark] class BlockManager(
           })
           // 返回BlockResult
           Some(new BlockResult(ci, DataReadMethod.Memory, info.size))
-        } else if (level.useDisk && diskStore.contains(blockId)) { // 从磁盘中获取该Block
+        } else if (level.useDisk && diskStore.contains(blockId)) { // 从本地磁盘中获取该Block
           val diskData = diskStore.getBytes(blockId)
           val iterToReturn: Iterator[Any] = {
             if (level.deserialized) {
