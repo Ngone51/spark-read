@@ -400,7 +400,8 @@ class DAGScheduler(
       partitions: Array[Int],
       jobId: Int,
       callSite: CallSite): ResultStage = {
-    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，没有ShuffleDependency啊（为什么debug断点进不来: 重新编译一下源码，恢复正常）
+    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，
+    // 没有ShuffleDependency啊（为什么debug断点进不来: 重新编译一下源码，恢复正常）
     // debug后发现，对于SparkPi，parents确实为Nil
     /**
      * getOrCreateParentStages()只会返回该rdd一层关系内(或直接)的stage依赖
@@ -1046,6 +1047,7 @@ class DAGScheduler(
     }
   }
 
+  // TODO 修改注释
   /** Called when stage's parents are（not吧？？？）available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {
     logDebug("submitMissingTasks(" + stage + ")")
@@ -1065,6 +1067,7 @@ class DAGScheduler(
     // serializable. If tasks are not serializable, a SparkListenerStageCompleted event
     // will be posted, which should always come after a corresponding SparkListenerStageSubmitted
     // event.
+    // TODO read outputCommitCoordinator
     stage match {
       case s: ShuffleMapStage =>
         outputCommitCoordinator.stageStart(stage = s.id, maxPartitionId = s.numPartitions - 1)
@@ -1072,6 +1075,7 @@ class DAGScheduler(
         outputCommitCoordinator.stageStart(
           stage = s.id, maxPartitionId = s.rdd.partitions.length - 1)
     }
+    // TODO re-read very important here
     // 在LearningExample这个例子中，得到的taskIdLocation是{(1, List()), (2, List())}
     // 居然是空的？？？那么，task在哪里执行呢？
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
@@ -1123,11 +1127,13 @@ class DAGScheduler(
         case stage: ResultStage =>
           JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
       }
-
+      // 时隔近半个月，终于又回到了这里！！！(讲道理，上面看过的都有点忘了...还好打了注释)
+      // 一个短短的sc.broadcast()暗藏了多少玄机啊！！！叹为观止！
       taskBinary = sc.broadcast(taskBinaryBytes)
     } catch {
       // In the case of a failure during serialization, abort the stage.
       case e: NotSerializableException =>
+        // TODO read abortStage()
         abortStage(stage, "Task not serializable: " + e.toString, Some(e))
         runningStages -= stage
 
@@ -1139,15 +1145,23 @@ class DAGScheduler(
         return
     }
 
+    // 根据不同的类型的stage生成ShuffleMapTask或ResultTask
+    // task的个数等于map端partition的个数
     val tasks: Seq[Task[_]] = try {
+      // 序列化Task的统计信息
       val serializedTaskMetrics = closureSerializer.serialize(stage.latestInfo.taskMetrics).array()
       stage match {
         case stage: ShuffleMapStage =>
           stage.pendingPartitions.clear()
           partitionsToCompute.map { id =>
+            // taskIdToLocations可能为空啊
+            // locs是集群节点的位置（host、port）信息
             val locs = taskIdToLocations(id)
+            // part是rdd的某个partitions
             val part = stage.rdd.partitions(id)
+            // 更新pendingPartitions，说明该id对于的part正在计算中
             stage.pendingPartitions += id
+            // 构建ShuffleMapTask
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
               Option(sc.applicationId), sc.applicationAttemptId)
@@ -1155,9 +1169,11 @@ class DAGScheduler(
 
         case stage: ResultStage =>
           partitionsToCompute.map { id =>
+            // 注意：stage.partitions???stage.rdd.partitions???
             val p: Int = stage.partitions(id)
             val part = stage.rdd.partitions(p)
             val locs = taskIdToLocations(id)
+            //构建ResultTask
             new ResultTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, id, properties, serializedTaskMetrics,
               Option(jobId), Option(sc.applicationId), sc.applicationAttemptId)
@@ -1173,6 +1189,7 @@ class DAGScheduler(
     if (tasks.size > 0) {
       logInfo(s"Submitting ${tasks.size} missing tasks from $stage (${stage.rdd}) (first 15 " +
         s"tasks are for partitions ${tasks.take(15).map(_.partitionId)})")
+      // 最终通过TaskScheduler提交Task(多个Task封装成一个TaskSet)
       taskScheduler.submitTasks(new TaskSet(
         tasks.toArray, stage.id, stage.latestInfo.attemptNumber, jobId, properties))
     } else {
@@ -1190,7 +1207,7 @@ class DAGScheduler(
           s"Stage ${stage} is actually done; (partitions: ${stage.numPartitions})"
       }
       logDebug(debugString)
-
+      // 如果没有task需要执行，且该stage结束，则检查其它需要被执行的stage
       submitWaitingChildStages(stage)
     }
   }
