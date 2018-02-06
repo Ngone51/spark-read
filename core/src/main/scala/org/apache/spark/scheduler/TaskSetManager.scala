@@ -33,6 +33,9 @@ import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
 import org.apache.spark.util.collection.MedianHeap
 
 /**
+ * 用于调度在TaskSchedulerImpl中的单个TaskSet。该类跟踪了每个任务，任务重试次数，以及通过延迟调度(?)来执行本地化调度。
+ * 该类主要有两个接口，一个是resourceOffer，用于询问TaskSet，是否需要在某个节点上执行一个任务；另一个是statusUpdate，
+ * 用于告诉TaskSet，其中的某个任务的状态发生了变化(例如：任务结束)。
  * Schedules the tasks within a single TaskSet in the TaskSchedulerImpl. This class keeps track of
  * each task, retries tasks if they fail (up to a limited number of times), and
  * handles locality-aware scheduling for this TaskSet via delay scheduling. The main interfaces
@@ -57,9 +60,11 @@ private[spark] class TaskSetManager(
   private val conf = sched.sc.conf
 
   // SPARK-21563 make a copy of the jars/files so they are consistent across the TaskSet
+  // scala语法：_* ???
   private val addedJars = HashMap[String, Long](sched.sc.addedJars.toSeq: _*)
   private val addedFiles = HashMap[String, Long](sched.sc.addedFiles.toSeq: _*)
 
+  // task推测执行策略相关参数
   // Quantile of tasks at which to start speculation
   val SPECULATION_QUANTILE = conf.getDouble("spark.speculation.quantile", 0.75)
   val SPECULATION_MULTIPLIER = conf.getDouble("spark.speculation.multiplier", 1.5)
@@ -67,8 +72,10 @@ private[spark] class TaskSetManager(
   // Limit of bytes for total size of results (default is 1GB)
   val maxResultSize = Utils.getMaxResultSize(conf)
 
+  // 是否开启任务的推测执行策略
   val speculationEnabled = conf.getBoolean("spark.speculation", false)
 
+  // 这个closures到底是个啥???
   // Serializer for closures and tasks.
   val env = SparkEnv.get
   val ser = env.closureSerializer.newInstance()
@@ -77,6 +84,8 @@ private[spark] class TaskSetManager(
   val numTasks = tasks.length
   val copiesRunning = new Array[Int](numTasks)
 
+  // 对于每个任务，记录是否有任务的某个副本执行成功。如果某个任务因fetch failure而执行失败，也有可能被
+  // 标记为"succeeded"，在这种情况下，该任务不能被重新执行，因为我们需要先重新生成丢失的map数据。(什么意思???)
   // For each task, tracks whether a copy of the task has succeeded. A task will also be
   // marked as "succeeded" if it failed with a fetch failure, in which case it should not
   // be re-run because the missing map data needs to be regenerated first.
@@ -93,6 +102,7 @@ private[spark] class TaskSetManager(
 
   val weight = 1
   val minShare = 0
+  // 对应JobId
   var priority = taskSet.priority
   var stageId = taskSet.stageId
   val name = "TaskSet_" + taskSet.id
@@ -114,6 +124,9 @@ private[spark] class TaskSetManager(
     successful(taskInfos(tid).index)
   }
 
+  // 一旦该TaskSetManager没有其它任务发起，则isZombie会变为true。如果每个task至少有一次attempt执行成功了，或者，
+  // TaskSet终止了(例如：被kill掉了)，那么，TaskSetManagers就会进入僵尸状态。TaskSetManagers会保持僵尸状态，
+  // 直到所有的任务运行结束。我们之所以让TaskSetManagers一直保持在僵尸状态，是为了持续追踪且统计正在运行的任务。
   // True once no more tasks should be launched for this task set manager. TaskSetManagers enter
   // the zombie state once at least one attempt of each task has completed successfully, or if the
   // task set is aborted (for example, because it was killed).  TaskSetManagers remain in the zombie
@@ -122,6 +135,15 @@ private[spark] class TaskSetManager(
   // TODO: We should kill any running task attempts when the task set manager becomes a zombie.
   private[scheduler] var isZombie = false
 
+  // 存储每个executor对应的等待执行的(多个)任务。事实上，这些集合被当作栈来对待，新的
+  // tasks会加入到ArrayBuffer的末端，然后又从末端删除。这样有利于快速地发现那些重复
+  // 失败的任务，因为无论何时一个任务失败，该任务又会被压入栈顶。这些集合相互直接可能会
+  // 包含重复的任务，基于以下两个理由：
+  // 1）任务是惰性删除的：当一个任务发起的时候，除了发起该任务的pending栈，其它的pending
+  // 栈上还会有该任务(因为惰性删除的原因嘛)（所以，一个任务会在所有executor上pending???）
+  // 2) 由于任务执行失败的关系，任务可能会多次重复添加到这些pending栈中去。
+  // 重复的任务会通过dequeueTaskFromList来处理，它能够保证一个任务在还没有开始运行时，才能
+  // 被发起。
   // Set of pending tasks for each executor. These collections are actually
   // treated as stacks, in which new tasks are added to the end of the
   // ArrayBuffer and removed from the end. This makes it faster to detect
@@ -146,6 +168,7 @@ private[spark] class TaskSetManager(
   // Set containing pending tasks with no locality preferences.
   private[scheduler] var pendingTasksWithNoPrefs = new ArrayBuffer[Int]
 
+  // 也是被当作栈来看待，和上面一样
   // Set containing all pending tasks (also used as a stack, as above).
   private val allPendingTasks = new ArrayBuffer[Int]
 
@@ -156,6 +179,7 @@ private[spark] class TaskSetManager(
   // Task index, start and finish time for each task attempt (indexed by task ID)
   private val taskInfos = new HashMap[Long, TaskInfo]
 
+  // 用于记录所有成功执行的任务的运行时间的中位数
   // Use a MedianHeap to record durations of successful tasks so we know when to launch
   // speculative tasks. This is only used when speculation is enabled, to avoid the overhead
   // of inserting into the heap when the heap won't be used.
@@ -165,15 +189,19 @@ private[spark] class TaskSetManager(
   val EXCEPTION_PRINT_INTERVAL =
     conf.getLong("spark.logging.exceptionPrintInterval", 10000)
 
+  // 记录最近的异常和异常重复次数以及上次打印完整异常时间之间的映射关系
   // Map of recent exceptions (identified by string representation and top stack frame) to
   // duplicate count (how many times the same exception has appeared) and time the full exception
   // was printed. This should ideally be an LRU map that can drop old exceptions automatically.
+  // 那为什么不用LinkedHashMap呢???
   private val recentExceptions = HashMap[String, (Int, Long)]()
 
+  // So，epoch的作用???
   // Figure out the current map output tracker epoch and set it on all tasks
   val epoch = sched.mapOutputTracker.getEpoch
   logDebug("Epoch for " + taskSet + ": " + epoch)
   for (t <- tasks) {
+    // 和mapOutputTracker的epoch对上了???
     t.epoch = epoch
   }
 
@@ -206,17 +234,22 @@ private[spark] class TaskSetManager(
 
   private[scheduler] var emittedTaskSizeWarning = false
 
+  // 将一个任务添加到对应的所有(注意：是对应的所有)pending队列中去
   /** Add a task to all the pending-task lists that it should be on. */
   private[spark] def addPendingTask(index: Int) {
     for (loc <- tasks(index).preferredLocations) {
       loc match {
         case e: ExecutorCacheTaskLocation =>
+          // 如果是一个ExecutorCacheTaskLocation，则更新对应的executor的pending队列
           pendingTasksForExecutor.getOrElseUpdate(e.executorId, new ArrayBuffer) += index
         case e: HDFSCacheTaskLocation =>
+          // 如果是一个HDFSCacheTaskLocation，则先根据主机的host地址，获取该主机上的所有executors
           val exe = sched.getExecutorsAliveOnHost(loc.host)
           exe match {
             case Some(set) =>
               for (e <- set) {
+                // 把该任务添加到该主机(host)的所有executor的pending队列中(所以在
+                // pendingTasksForExecutor中，任务是有可能重复的嘛)
                 pendingTasksForExecutor.getOrElseUpdate(e, new ArrayBuffer) += index
               }
               logInfo(s"Pending task $index has a cached location at ${e.host} " +
@@ -226,16 +259,22 @@ private[spark] class TaskSetManager(
           }
         case _ =>
       }
+      // 更新对应的主机(host)的pending队列
       pendingTasksForHost.getOrElseUpdate(loc.host, new ArrayBuffer) += index
+      // 如果sched的实现是TaskSchedulerImpl，那么，getRackForHost()总返回None
+      // 如果有该主机对应的机架信息，则更新机架对应的pending队列
       for (rack <- sched.getRackForHost(loc.host)) {
         pendingTasksForRack.getOrElseUpdate(rack, new ArrayBuffer) += index
       }
     }
 
+    // 对于LearningExample这个例子，preferredLocations就是Nil啊，所以就添加到
+    // pendingTasksWithNoPrefs里去了??? 感觉是。
     if (tasks(index).preferredLocations == Nil) {
       pendingTasksWithNoPrefs += index
     }
 
+    // 更新allPendingTasks
     allPendingTasks += index  // No point scanning this whole list to find the old task there
   }
 
