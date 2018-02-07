@@ -93,6 +93,8 @@ private[spark] class TaskSchedulerImpl(
   // TODO read：TaskSetManager seems especially important
   // TaskSetManagers are not thread safe, so any access to one should be synchronized
   // on this class.
+  // 一个stage可以对应多个attempt的TaskSet，但是处于active状态的taskSet只能有一个！
+  // 第一个Int表示stage id，第二个Int表示stageAttemptId
   private val taskSetsByStageIdAndAttempt = new HashMap[Int, HashMap[Int, TaskSetManager]]
 
   // Protected by `this`
@@ -199,6 +201,7 @@ private[spark] class TaskSchedulerImpl(
     this.synchronized {
       // 创建TaskSetManager
       val manager = createTaskSetManager(taskSet, maxTaskFailures)
+      // 获取该taskSet对应的stage id
       val stage = taskSet.stageId
       val stageTaskSets =
         taskSetsByStageIdAndAttempt.getOrElseUpdate(stage, new HashMap[Int, TaskSetManager])
@@ -206,6 +209,7 @@ private[spark] class TaskSchedulerImpl(
       val conflictingTaskSet = stageTaskSets.exists { case (_, ts) =>
         ts.taskSet != taskSet && !ts.isZombie
       }
+      // 在一个stage多个attempt的taskSet中，处于active状态的taskSet只能有一个
       if (conflictingTaskSet) {
         throw new IllegalStateException(s"more than one active taskSet for stage $stage:" +
           s" ${stageTaskSets.toSeq.map{_._2.taskSet.id}.mkString(",")}")
