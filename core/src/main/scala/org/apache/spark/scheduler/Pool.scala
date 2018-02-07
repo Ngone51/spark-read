@@ -59,18 +59,24 @@ private[spark] class Pool(
     }
   }
 
+  // 添加一个调度器
   override def addSchedulable(schedulable: Schedulable) {
     require(schedulable != null)
+    // 先在schedulableQueue里添加该调度器
     schedulableQueue.add(schedulable)
+    // 然后存储该调度器和它的名称之间的映射关系
     schedulableNameToSchedulable.put(schedulable.name, schedulable)
+    // 注意：设置该调度器的parent为该Pool调度器
     schedulable.parent = this
   }
 
+  // 删除一个调度器
   override def removeSchedulable(schedulable: Schedulable) {
     schedulableQueue.remove(schedulable)
     schedulableNameToSchedulable.remove(schedulable.name)
   }
 
+  // 根据调度器的名字，递归查找该调度器
   override def getSchedulableByName(schedulableName: String): Schedulable = {
     if (schedulableNameToSchedulable.containsKey(schedulableName)) {
       return schedulableNameToSchedulable.get(schedulableName)
@@ -85,17 +91,21 @@ private[spark] class Pool(
   }
 
   override def executorLost(executorId: String, host: String, reason: ExecutorLossReason) {
+    // 当某个executor失联时，通知该Pool调度器下的所有子调度器：该executor失联，并做相应处理
     schedulableQueue.asScala.foreach(_.executorLost(executorId, host, reason))
   }
 
   override def checkSpeculatableTasks(minTimeToSpeculation: Int): Boolean = {
     var shouldRevive = false
+    // 同样的，当需要检查是否有推测执行任务时，该Pool调度器会通知它所有的子调度器(一般就是TaskSetManager
+    // 吧)去执行真正的检查。而该Pool调度器只告诉caller是否要执行推测任务。
     for (schedulable <- schedulableQueue.asScala) {
       shouldRevive |= schedulable.checkSpeculatableTasks(minTimeToSpeculation)
     }
     shouldRevive
   }
 
+  // 原理同上
   override def getSortedTaskSetQueue: ArrayBuffer[TaskSetManager] = {
     val sortedTaskSetQueue = new ArrayBuffer[TaskSetManager]
     val sortedSchedulableQueue =
