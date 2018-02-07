@@ -24,18 +24,22 @@ import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 
 /**
+ * 调度器接口。有两种调度器类型：Pool和TaskSetManager
  * An interface for schedulable entities.
  * there are two type of Schedulable entities(Pools and TaskSetManagers)
  */
 private[spark] trait Schedulable {
   var parent: Pool
+  // 注意：child是一个调度器队列
   // child queues
   def schedulableQueue: ConcurrentLinkedQueue[Schedulable]
+  // 调度模式：FAIR、FIFO、None
   def schedulingMode: SchedulingMode
   def weight: Int
   def minShare: Int
   def runningTasks: Int
   def priority: Int
+  // 注意：调度器和stage id相关联
   def stageId: Int
   def name: String
 
