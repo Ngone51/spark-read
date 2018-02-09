@@ -214,6 +214,7 @@ private[spark] class TaskSchedulerImpl(
         throw new IllegalStateException(s"more than one active taskSet for stage $stage:" +
           s" ${stageTaskSets.toSeq.map{_._2.taskSet.id}.mkString(",")}")
       }
+      // 添加该TaskSetManager到调度树中
       schedulableBuilder.addTaskSetManager(manager, manager.taskSet.properties)
 
       if (!isLocal && !hasReceivedTask) {
@@ -297,11 +298,14 @@ private[spark] class TaskSchedulerImpl(
       availableCpus: Array[Int],
       tasks: IndexedSeq[ArrayBuffer[TaskDescription]]) : Boolean = {
     var launchedTask = false
+    // 到此为止，整个应用中，加入黑名单的节点或executor已经过滤掉了
     // nodes and executors that are blacklisted for the entire application have already been
     // filtered out by this point
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
+      // 该work offer的可用cpu核数至少大于等于CPUS_PER_TASK，
+      // 这样可以保证至少能够分配一个任务
       if (availableCpus(i) >= CPUS_PER_TASK) {
         try {
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
@@ -327,6 +331,8 @@ private[spark] class TaskSchedulerImpl(
   }
 
   /**
+   * 集群管理者调用该方法来为slave节点提供资源。我们通过以任务的优先级顺序询问我们处于active状态的task sets来作
+   * 为响应。我们通过轮询的方式，让每个节点都能分配到任务，以此来平衡整个集群的负载。
    * Called by cluster manager to offer resources on slaves. We respond by asking our active task
    * sets for tasks in order of priority. We fill each node with tasks in a round-robin manner so
    * that tasks are balanced across the cluster.
@@ -339,13 +345,19 @@ private[spark] class TaskSchedulerImpl(
       if (!hostToExecutors.contains(o.host)) {
         hostToExecutors(o.host) = new HashSet[String]()
       }
+      // 如果executorIdToRunningTaskIds不包含该executorId，说明有
+      // 新的executor("新"是相对于TaskSchedulerImpl来说的，并不是说
+      // 该executor刚刚才创建)
       if (!executorIdToRunningTaskIds.contains(o.executorId)) {
         hostToExecutors(o.host) += o.executorId
+        // 通知DAGScheduler有新的executor添加，并做相应处理
         executorAdded(o.executorId, o.host)
         executorIdToHost(o.executorId) = o.host
         executorIdToRunningTaskIds(o.executorId) = HashSet[Long]()
+        // 确认有新的executor添加
         newExecAvail = true
       }
+      // 根据host的机架信息，更新hostsByRack
       for (rack <- getRackForHost(o.host)) {
         hostsByRack.getOrElseUpdate(rack, new HashSet[String]()) += o.host
       }
@@ -354,8 +366,10 @@ private[spark] class TaskSchedulerImpl(
     // Before making any offers, remove any nodes from the blacklist whose blacklist has expired. Do
     // this here to avoid a separate thread and added synchronization overhead, and also because
     // updating the blacklist is only relevant when task offers are being made.
+    // TODO read
     blacklistTrackerOpt.foreach(_.applyBlacklistTimeout())
 
+    // 过滤黑名单中的节点或executor
     val filteredOffers = blacklistTrackerOpt.map { blacklistTracker =>
       offers.filter { offer =>
         !blacklistTracker.isNodeBlacklisted(offer.host) &&
@@ -363,14 +377,20 @@ private[spark] class TaskSchedulerImpl(
       }
     }.getOrElse(offers)
 
+    // 随机打乱offers，避免重复在同一个节点上分配任务，以达到集群整体的负载均衡
     val shuffledOffers = shuffleOffers(filteredOffers)
     // Build a list of tasks to assign to each worker.
+    // o.cores / CPUS_PER_TASK表示每个节点最多能分配的任务个数(那么，有可能等于0咯)
+    // So，tasks.size就是shuffledOffers的size
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
+    // sorted -> FIFO???FAIR???
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
     for (taskSet <- sortedTaskSets) {
       logDebug("parentName: %s, name: %s, runningTasks: %s".format(
         taskSet.parent.name, taskSet.name, taskSet.runningTasks))
+      // 如果发现有新的executor可用，需要重新计算locality
+      // TODO read
       if (newExecAvail) {
         taskSet.executorAdded()
       }
@@ -394,6 +414,7 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
+    // tasks初始化后，它的size不就是大于0的吗???
     if (tasks.size > 0) {
       hasLaunchedTask = true
     }
@@ -760,6 +781,7 @@ private[spark] object TaskSchedulerImpl {
     retval.toList
   }
 
+  // TODO read
   private def maybeCreateBlacklistTracker(sc: SparkContext): Option[BlacklistTracker] = {
     if (BlacklistTracker.isBlacklistEnabled(sc.conf)) {
       val executorAllocClient: Option[ExecutorAllocationClient] = sc.schedulerBackend match {
