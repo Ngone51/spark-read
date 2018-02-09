@@ -39,6 +39,9 @@ private case class KillTask(taskId: Long, interruptThread: Boolean, reason: Stri
 private case class StopExecutor()
 
 /**
+ * 在LocalSchedulerBackend上的调用，都会通过LocalEndpoint来序列化。使用一个RpcEndpoint能够使得在
+ * LocalSchedulerBackend上的调用异步化，这是防止在LocalSchedulerBackend和TaskSchedulerImpl之间
+ * 发生死锁的必要举措。
  * Calls to [[LocalSchedulerBackend]] are all serialized through LocalEndpoint. Using an
  * RpcEndpoint makes the calls on [[LocalSchedulerBackend]] asynchronous, which is necessary
  * to prevent deadlock between [[LocalSchedulerBackend]] and the [[TaskSchedulerImpl]].
@@ -53,9 +56,11 @@ private[spark] class LocalEndpoint(
 
   private var freeCores = totalCores
 
+  // 本地的executor的id是"driver"
   val localExecutorId = SparkContext.DRIVER_IDENTIFIER
   val localExecutorHostname = "localhost"
 
+  // 创建一个Executor!!!(第一次接触到Executor的代码!)
   private val executor = new Executor(
     localExecutorId, localExecutorHostname, SparkEnv.get, userClassPath, isLocal = true)
 
@@ -81,9 +86,12 @@ private[spark] class LocalEndpoint(
   }
 
   def reviveOffers() {
+    // 由于是本地运行spark，所以只有一个WorkerOffer
     val offers = IndexedSeq(new WorkerOffer(localExecutorId, localExecutorHostname, freeCores))
     for (task <- scheduler.resourceOffers(offers).flatten) {
       freeCores -= scheduler.CPUS_PER_TASK
+      // 整一个resourceOffers的过程都是在申请task(多个从pending队列取出来的tasks)运行的资源，
+      // 直到launchTask，才是真正的开始执行task
       executor.launchTask(executorBackend, task)
     }
   }
@@ -100,11 +108,13 @@ private[spark] class LocalSchedulerBackend(
     val totalCores: Int)
   extends SchedulerBackend with ExecutorBackend with Logging {
 
+  // 这个属性么有override的吗???
   private val appId = "local-" + System.currentTimeMillis
   private var localEndpoint: RpcEndpointRef = null
   private val userClassPath = getUserClasspath(conf)
   private val listenerBus = scheduler.sc.listenerBus
   // TODO 先不管这个LauncherBackend
+  // TODO read 跟Launcher有关，现在还不了解Launcher
   private val launcherBackend = new LauncherBackend() {
     override def conf: SparkConf = LocalSchedulerBackend.this.conf
     override def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
@@ -116,6 +126,7 @@ private[spark] class LocalSchedulerBackend(
    * @param conf Spark configuration.
    */
   def getUserClasspath(conf: SparkConf): Seq[URL] = {
+    // 索噶，原来会在这边导入spark.executor.extraClassPath参数配置的class
     val userClassPathStr = conf.getOption("spark.executor.extraClassPath")
     userClassPathStr.map(_.split(File.pathSeparator)).toSeq.flatten.map(new File(_).toURI.toURL)
   }
@@ -124,16 +135,19 @@ private[spark] class LocalSchedulerBackend(
 
   override def start() {
     val rpcEnv = SparkEnv.get.rpcEnv
-    // (为driver)创建一个本地的EndPoint(server)
+    // (为driver)创建一个本地的EndPoint(server)，相当于是driver和executor通信的桥梁
+    // 在创建LocalEndpoint的里面会创建一个Executor，请看源码!!!
     val executorEndpoint = new LocalEndpoint(rpcEnv, userClassPath, scheduler, this, totalCores)
     localEndpoint = rpcEnv.setupEndpoint("LocalSchedulerBackendEndpoint", executorEndpoint)
     // 添加executor事件（此时，app还没start啊，但是此时bus也还启动啊，事件只是缓存在eventQueue里面，So，这个
-    // 添加事件的先后顺序有关系吗？？？）：其实这里是创建了一个driver，但是driver也被spark内部视为executor来对待
+    // 添加事件的先后顺序有关系吗？？？）：其实这里是创建了一个driver，但是driver也被spark内部视为executor来
+    // 对待(或者是因为local模式运行，所以既是driver，又是executor???对的，应该这样理解。driver其实不用创建的。)
     // 会通过先前创建的AppStatusListener存储该executor的信息
     listenerBus.post(SparkListenerExecutorAdded(
       System.currentTimeMillis,
       executorEndpoint.localExecutorId, // 'driver'
       new ExecutorInfo(executorEndpoint.localExecutorHostname, totalCores, Map.empty)))
+    // 我记得其它地方也有setAppId...
     launcherBackend.setAppId(appId)
     launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
