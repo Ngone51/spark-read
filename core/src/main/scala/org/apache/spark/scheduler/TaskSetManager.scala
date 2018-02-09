@@ -314,11 +314,16 @@ private[spark] class TaskSetManager(
       list: ArrayBuffer[Int]): Option[Int] = {
     var indexOffset = list.size
     while (indexOffset > 0) {
+      // 又是倒着来的，因为要模拟栈
       indexOffset -= 1
       val index = list(indexOffset)
+      // 又要先确认executor或host没有加入黑名单
       if (!isTaskBlacklistedOnExecOrNode(index, execId, host)) {
+        // 这里的remove相当于trimEnd(1),也就删除列表尾部的一个元素(因为模拟了栈)
         // This should almost always be list.trimEnd(1) to remove tail
         list.remove(indexOffset)
+        // 这边又要检查(不重复??? 可能有些调用不是按我现在看的顺序，一路调用过来的(比如单元测试)，
+        // 所以可能先前没有检查)
         if (copiesRunning(index) == 0 && !successful(index)) {
           return Some(index)
         }
@@ -426,10 +431,16 @@ private[spark] class TaskSetManager(
   private def dequeueTask(execId: String, host: String, maxLocality: TaskLocality.Value)
     : Option[(Int, TaskLocality.Value, Boolean)] =
   {
+    // 因为maxLocality最小就等于PROCESS_LOCAL，所以它肯定满足大于等于PROCESS_LOCAL，所以这边
+    // 不需要isAllowed判断。
     for (index <- dequeueTaskFromList(execId, host, getPendingTasksForExecutor(execId))) {
+      // 因为是从executor的pending队列中，出队的task，所以locality是PROCESS_LOCAL
       return Some((index, TaskLocality.PROCESS_LOCAL, false))
     }
 
+    // 假设maxLocality=PROCESS_LOCAL，所以，我们肯定不能在Host的pending tasks中来出队一个task啊，
+    // 因为它不满足PROCESS_LOCAL的需求。
+    // isAllowed -> NODE_LOCAL <= maxLocality
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.NODE_LOCAL)) {
       for (index <- dequeueTaskFromList(execId, host, getPendingTasksForHost(host))) {
         return Some((index, TaskLocality.NODE_LOCAL, false))
@@ -458,6 +469,8 @@ private[spark] class TaskSetManager(
       }
     }
 
+    // TODO read
+    // 如果所有其它任务都已经被调度过了，那么，尝试找一个推测执行的任务
     // find a speculative task if all others tasks have been scheduled
     dequeueSpeculativeTask(execId, host, maxLocality).map {
       case (taskIndex, allowedLocality) => (taskIndex, allowedLocality, true)}
@@ -481,33 +494,44 @@ private[spark] class TaskSetManager(
       maxLocality: TaskLocality.TaskLocality)
     : Option[TaskDescription] =
   {
+    // 从TaskSchedulerImpl.resourceOfferSingleTaskSet()过来的时候不是已经
+    // 过滤黑名单了吗???（除非是为了测试，再过滤一遍）
     val offerBlacklisted = taskSetBlacklistHelperOpt.exists { blacklist =>
       blacklist.isNodeBlacklistedForTaskSet(host) ||
         blacklist.isExecutorBlacklistedForTaskSet(execId)
     }
     if (!isZombie && !offerBlacklisted) {
+      // 准备launch任务的开始时间
       val curTime = clock.getTimeMillis()
 
       var allowedLocality = maxLocality
 
+      // NO_PREF不需要被调整
       if (maxLocality != TaskLocality.NO_PREF) {
         allowedLocality = getAllowedLocalityLevel(curTime)
+        // 说明之前的locality超时了
         if (allowedLocality > maxLocality) {
+          // 我们不允许去搜索更远的任务???
           // We're not allowed to search for farther-away tasks
           allowedLocality = maxLocality
         }
       }
 
+      // 从task的pending队列中，出队(取出)一个task出来
       dequeueTask(execId, host, allowedLocality).map { case ((index, taskLocality, speculative)) =>
         // Found a task; do some bookkeeping and return a task description
         val task = tasks(index)
         val taskId = sched.newTaskId()
+        // 该task的运行副本+1
         // Do various bookkeeping
         copiesRunning(index) += 1
         val attemptNum = taskAttempts(index).size
+        // 注意区分这里的taskId和attemptNum：taskId应该是全局(整个application中的所有task)唯一的，
+        // 而attemptNum是指在某个TaskSet中，同一个task的第attempt(从0开始)次执行
         val info = new TaskInfo(taskId, index, attemptNum, curTime,
           execId, host, taskLocality, speculative)
         taskInfos(taskId) = info
+        // 从头部加入该taskAttempts队列(实现：整个队列依次往后移位???)
         taskAttempts(index) = info :: taskAttempts(index)
         // Update our locality level for delay scheduling
         // NO_PREF will not affect the variables related to delay scheduling
@@ -515,6 +539,7 @@ private[spark] class TaskSetManager(
           currentLocalityIndex = getLocalityIndex(taskLocality)
           lastLaunchTime = curTime
         }
+        // 又要序列化task??? 这是哪里的task，我已经晕了...
         // Serialize and return the task
         val serializedTask: ByteBuffer = try {
           ser.serialize(task)
@@ -527,6 +552,7 @@ private[spark] class TaskSetManager(
             abort(s"$msg Exception during serialization: $e")
             throw new TaskNotSerializableException(e)
         }
+        // 检查单个task的size大小是否超过了建议的大小
         if (serializedTask.limit() > TaskSetManager.TASK_SIZE_TO_WARN_KB * 1024 &&
           !emittedTaskSizeWarning) {
           emittedTaskSizeWarning = true
@@ -534,8 +560,10 @@ private[spark] class TaskSetManager(
             s"(${serializedTask.limit() / 1024} KB). The maximum recommended task size is " +
             s"${TaskSetManager.TASK_SIZE_TO_WARN_KB} KB.")
         }
+        // 为TaskSetManager添加一个running task
         addRunningTask(taskId)
 
+        // 我们之前会记录一个任务序列化所花费的时间，但是任务序列化后的size已经是序列化时间很好的说明了。
         // We used to log the time it takes to serialize the task, but task size is already
         // a good proxy to task serialization time.
         // val timeTaken = clock.getTime() - startTime
@@ -543,6 +571,7 @@ private[spark] class TaskSetManager(
         logInfo(s"Starting $taskName (TID $taskId, $host, executor ${info.executorId}, " +
           s"partition ${task.partitionId}, $taskLocality, ${serializedTask.limit()} bytes)")
 
+        // 通过dagScheduler通知ListenerBus，有新的task启动
         sched.dagScheduler.taskStarted(task, info)
         new TaskDescription(
           taskId,
@@ -580,11 +609,15 @@ private[spark] class TaskSetManager(
     def tasksNeedToBeScheduledFrom(pendingTaskIds: ArrayBuffer[Int]): Boolean = {
       var indexOffset = pendingTaskIds.size
       while (indexOffset > 0) {
+        // 到着来的发现没，这样pending tasks队列就像一个栈一样了
         indexOffset -= 1
         val index = pendingTaskIds(indexOffset)
+        // 如果该task(index是task在TaskSet中的索引)的运行副本为0，且从未记录成功，
+        // 说明有还未被调度执行的task，则返回true
         if (copiesRunning(index) == 0 && !successful(index)) {
           return true
         } else {
+          // 反之，该task已经被调度执行了，或者已经执行成功了，则pending队列中删除(这里体现了惰性删除)
           pendingTaskIds.remove(indexOffset)
         }
       }
@@ -604,6 +637,7 @@ private[spark] class TaskSetManager(
             false
           }
       }
+      // 说明该executor或host或rack对应的pending队列里的task都已经被调度执行或执行成功了
       // The key could be executorId, host or rackId
       emptyKeys.foreach(id => pendingTasks.remove(id))
       hasTasks
