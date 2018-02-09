@@ -29,6 +29,9 @@ import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.util.Utils
 
 /**
+ * 构建调度树(???)接口。
+ * buildPools()用于构建树的非叶子节点(pool)
+ * addTaskSetManager()用于构建树的叶子节点(TaskSetManagers)
  * An interface to build Schedulable tree
  * buildPools: build the tree nodes(pools)
  * addTaskSetManager: build the leaf nodes(TaskSetManagers)
@@ -55,6 +58,7 @@ private[spark] class FIFOSchedulableBuilder(val rootPool: Pool)
   }
 }
 
+// TODO read 看不懂啊看不懂
 private[spark] class FairSchedulableBuilder(val rootPool: Pool, conf: SparkConf)
   extends SchedulableBuilder with Logging {
 
