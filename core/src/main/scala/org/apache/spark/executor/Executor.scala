@@ -70,14 +70,17 @@ private[spark] class Executor(
 
   private val conf = env.conf
 
+  // executorHostname只需要包含主机名，不需要包含端口号，不用ip地址
   // No ip or host:port - just hostname
   Utils.checkHost(executorHostname)
+  // 不能指定端口号
   // must not have port specified.
   assert (0 == Utils.parseHostPort(executorHostname)._2)
 
   // Make sure the local hostname we report matches the cluster scheduler's name for this host
   Utils.setCustomHostname(executorHostname)
 
+  // TODO read setDefaultUncaughtExceptionHandler()
   if (!isLocal) {
     // Setup an uncaught exception handler for non-local mode.
     // Make any thread terminations due to uncaught exceptions kill the entire
@@ -85,6 +88,7 @@ private[spark] class Executor(
     Thread.setDefaultUncaughtExceptionHandler(uncaughtExceptionHandler)
   }
 
+  // 启动工作线程池
   // Start worker thread pool
   private val threadPool = {
     val threadFactory = new ThreadFactoryBuilder()
@@ -92,6 +96,8 @@ private[spark] class Executor(
       .setNameFormat("Executor task launch worker-%d")
       .setThreadFactory(new ThreadFactory {
         override def newThread(r: Runnable): Thread =
+          // 使用UninterruptibleThread来运行任务，这样我们就能避免在运行代码时，被Thread.interrupt()中断。有些
+          // 问题，如KAFKA-1894, HADOOP-10622，会因为一些方法被中断而一直挂起。
           // Use UninterruptibleThread to run tasks so that we can allow running codes without being
           // interrupted by `Thread.interrupt()`. Some issues, such as KAFKA-1894, HADOOP-10622,
           // will hang forever if some methods are interrupted.
@@ -101,6 +107,7 @@ private[spark] class Executor(
     Executors.newCachedThreadPool(threadFactory).asInstanceOf[ThreadPoolExecutor]
   }
   private val executorSource = new ExecutorSource(threadPool, executorId)
+  // 一个用于监控任务杀死或撤销的线程池
   // Pool used for threads that supervise task killing / cancellation
   private val taskReaperPool = ThreadUtils.newDaemonCachedThreadPool("Task reaper")
   // For tasks which are in the process of being killed, this map holds the most recently created
@@ -110,23 +117,35 @@ private[spark] class Executor(
   // of a separate TaskReaper for every killTask() of a given task. Instead, this map allows us to
   // track whether an existing TaskReaper fulfills the role of a TaskReaper that we would otherwise
   // create. The map key is a task id.
+  // Reaper: 死神、收割者
+  // TaskReaper是一个Runnable对象
   private val taskReaperForTask: HashMap[Long, TaskReaper] = HashMap[Long, TaskReaper]()
 
+  // 如果不是本地模式运行spark
   if (!isLocal) {
+    // 每个Executor需要initialize BlockManager(还记得么??? very important)
+    // 本地模式会在SparkContext中初始化driver端的BlockManager，所以此处不需要再初始化
     env.blockManager.initialize(conf.getAppId)
+    // TODO read
+    // 向统计系统注册executor source
     env.metricsSystem.registerSource(executorSource)
+    // 向统计系统注册shuffle metrics source
     env.metricsSystem.registerSource(env.blockManager.shuffleMetricsSource)
   }
 
+  // 是否在加载Spark自带的jar包的classes之前加载用户的jar包中的classes
   // Whether to load classes in user jars before those in Spark jars
   private val userClassPathFirst = conf.getBoolean("spark.executor.userClassPathFirst", false)
 
+  // 是否监控杀死或中断的任务
   // Whether to monitor killed / interrupted tasks
   private val taskReaperEnabled = conf.getBoolean("spark.task.reaper.enabled", false)
 
   // Create our ClassLoader
   // do this after SparkEnv creation so can access the SecurityManager
+  // TODO 注意：在这里也会创建URLClassLoader，可能和SPARK-12216、SPARK-8333有关(windows下temp文件无法删除)
   private val urlClassLoader = createClassLoader()
+  // TODO read
   private val replClassLoader = addReplClassLoaderIfNeeded(urlClassLoader)
 
   // Set the classloader for serializer
@@ -147,6 +166,7 @@ private[spark] class Executor(
   // Maintains the list of running tasks.
   private val runningTasks = new ConcurrentHashMap[Long, TaskRunner]
 
+  // 用于执行心跳任务的executor
   // Executor for the heartbeat task.
   private val heartbeater = ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-heartbeater")
 
@@ -155,6 +175,7 @@ private[spark] class Executor(
     RpcUtils.makeDriverRef(HeartbeatReceiver.ENDPOINT_NAME, conf, env.rpcEnv)
 
   /**
+   * 心跳发送最多失败次数，默认60，大约10分钟。如果一个executor在尝试60次心跳发送失败后，就会kill掉自己。
    * When an executor is unable to send heartbeats to the driver more than `HEARTBEAT_MAX_FAILURES`
    * times, it should kill itself. The default value is 60. It means we will retry to send
    * heartbeats about 10 minutes because the heartbeat interval is 10s.
@@ -167,10 +188,13 @@ private[spark] class Executor(
    */
   private var heartbeatFailures = 0
 
+  // 启动一个心跳发送任务，用于向driver发送心跳(包含一些task的统计信息)
   startDriverHeartbeater()
 
+  // 该executor上，正在运行的任务的个数
   private[executor] def numRunningTasks: Int = runningTasks.size()
 
+  // 发起一个任务(by TaskRunner)
   def launchTask(context: ExecutorBackend, taskDescription: TaskDescription): Unit = {
     val tr = new TaskRunner(context, taskDescription)
     runningTasks.put(taskDescription.taskId, tr)
@@ -766,6 +790,7 @@ private[spark] class Executor(
     }
   }
 
+  // TODO read 发送心跳
   /** Reports heartbeat and metrics for active tasks to the driver. */
   private def reportHeartBeat(): Unit = {
     // list of (task id, accumUpdates) to send back to the driver
@@ -802,17 +827,24 @@ private[spark] class Executor(
   }
 
   /**
+   * 安排一个任务用于向driver发送心跳和一些处于活跃状态的任务的部分统计信息
    * Schedules a task to report heartbeat and partial metrics for active tasks to driver.
    */
   private def startDriverHeartbeater(): Unit = {
+    // 获取心跳发送时间周期
     val intervalMs = conf.getTimeAsMs("spark.executor.heartbeatInterval", "10s")
 
+    // 第一次执行心跳任务需要等待的时间
+    // 时间周期加上一个随机的时间，这样心跳就不会在同步中结束???啥意思???(这样是不是就可以
+    // 错开各个executor向driver发送心跳的时机，以让driver减轻并发处理的压力???)
     // Wait a random interval so the heartbeats don't end up in sync
     val initialDelay = intervalMs + (math.random * intervalMs).asInstanceOf[Int]
 
+    // 执行心跳发送的线程
     val heartbeatTask = new Runnable() {
       override def run(): Unit = Utils.logUncaughtExceptions(reportHeartBeat())
     }
+    // 以固定的时间周期，执行心跳任务
     heartbeater.scheduleAtFixedRate(heartbeatTask, initialDelay, intervalMs, TimeUnit.MILLISECONDS)
   }
 }
