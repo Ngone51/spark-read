@@ -279,6 +279,9 @@ private[spark] class Executor(
     @volatile var startGCTime: Long = _
 
     /**
+     * 需要执行的任务。该变量会在run()中，通过反序列化来自driver端task binary来赋值。一旦被赋值，就不会被改变。
+     * 注意：这里的task binary和DAGScheduler里的taskBinary(broadcast变量)不是一回事！这里的task binary
+     * 应该就是指在TaskSetManager中序列化的Task对象(详见TaskSetManager#resourceOffers#L546)。
      * The task to run. This will be set in run() by deserializing the task binary coming
      * from the driver. Once it is set, it will never be changed.
      */
@@ -315,6 +318,7 @@ private[spark] class Executor(
       threadId = Thread.currentThread.getId
       Thread.currentThread.setName(threadName)
       val threadMXBean = ManagementFactory.getThreadMXBean
+      // 创建任务内存管理器
       val taskMemoryManager = new TaskMemoryManager(env.memoryManager, taskId)
       val deserializeStartTime = System.currentTimeMillis()
       val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
@@ -323,9 +327,11 @@ private[spark] class Executor(
       Thread.currentThread.setContextClassLoader(replClassLoader)
       val ser = env.closureSerializer.newInstance()
       logInfo(s"Running $taskName (TID $taskId)")
+      // 更新该任务的状态为RUNNING，会通过endpoint通知driver端的TaskSchedulerImpl
       execBackend.statusUpdate(taskId, TaskState.RUNNING, EMPTY_BYTE_BUFFER)
       var taskStart: Long = 0
       var taskStartCpu: Long = 0
+      // 计算gc耗时
       startGCTime = computeTotalGcTime()
 
       try {
@@ -333,7 +339,10 @@ private[spark] class Executor(
         // requires access to properties contained within (e.g. for access control).
         Executor.taskDeserializationProps.set(taskDescription.properties)
 
+        // TODO read
         updateDependencies(taskDescription.addedFiles, taskDescription.addedJars)
+        // 反序列化task!!!
+        // 注意：这里反序列化的是在TaskSetManager中被序列化的Task对象，反序列化得到Task对象
         task = ser.deserialize[Task[Any]](
           taskDescription.serializedTask, Thread.currentThread.getContextClassLoader)
         task.localProperties = taskDescription.properties
