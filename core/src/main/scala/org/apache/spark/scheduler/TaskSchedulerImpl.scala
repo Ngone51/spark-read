@@ -291,6 +291,9 @@ private[spark] class TaskSchedulerImpl(
       s" ${manager.parent.name}")
   }
 
+  // 这个函数的作用：把一个TaskSet均衡地分布到各个offer上，
+  // 但一次调用可能只有若干个任务成功分配，之后会多次调用该函数，
+  // 来尝试任务分配(但应该不能保证TaskSet的所有任务都分配成功)
   private def resourceOfferSingleTaskSet(
       taskSet: TaskSetManager,
       maxLocality: TaskLocality,
@@ -301,6 +304,8 @@ private[spark] class TaskSchedulerImpl(
     // 到此为止，整个应用中，加入黑名单的节点或executor已经过滤掉了
     // nodes and executors that are blacklisted for the entire application have already been
     // filtered out by this point
+
+    // 依次遍历每个offer，尝试在该offer分配一个任务
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
@@ -308,6 +313,10 @@ private[spark] class TaskSchedulerImpl(
       // 这样可以保证至少能够分配一个任务
       if (availableCpus(i) >= CPUS_PER_TASK) {
         try {
+          // 应该是...每次最多只返回一个Task，有可能返回空(比如,TaskSet中所有task都
+          // 已经分配到了各自的offer，而还有多余的offers)
+          // TODO 可不可以这样优化：当TaskSet已经分配完所有任务后，而offer还没遍历完，
+          // 则提前跳出循环???
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
             tasks(i) += task
             val tid = task.taskId
@@ -326,7 +335,8 @@ private[spark] class TaskSchedulerImpl(
             return launchedTask
         }
       }
-    }
+    } // end for: 一次for循环最多成功分配shuffledOffers.size个任务到每个offer上
+    // 那么，如果TaskSet.size大于shuffledOffers.size(即还有未分配完的任务)...
     return launchedTask
   }
 
@@ -384,7 +394,7 @@ private[spark] class TaskSchedulerImpl(
     // So，tasks.size就是shuffledOffers的size
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
-    // sorted -> FIFO???FAIR???
+    // sorted -> FIFO or FAIR
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
     for (taskSet <- sortedTaskSets) {
       logDebug("parentName: %s, name: %s, runningTasks: %s".format(
@@ -396,19 +406,29 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
+    // 按照我们的调度顺序依次遍历每个TaskSet，然后以locality level的递增顺序来提供给它每个节点(这个翻译...还是
+    // 看英文的吧...)，由此让它能有机会在所有节点上发起本地任务。
     // Take each TaskSet in our scheduling order, and then offer it each node in increasing order
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
+    // 首先按照调度策略(FIFO FAIR)遍历每个TaskSet
     for (taskSet <- sortedTaskSets) {
       var launchedAnyTask = false
       var launchedTaskAtCurrentMaxLocality = false
+      // 然后遍历该TaskSet的myLocalityLevels
+      // TODO 可能的优化：如果TaskSet已经在某个locality分配完了所有任务，
+      // 就可以提前跳出循环了吧
       for (currentMaxLocality <- taskSet.myLocalityLevels) {
         do {
+          // 在当前Locality下，resourceOfferSingleTaskSet尝试把TaskSet的任务
+          // 分配到shuffledOffers上；如果在当前Locality下，已经没有可以分配的任务，
+          // 则尝试下一个Locality，重复上一步操作。
           launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(
             taskSet, currentMaxLocality, shuffledOffers, availableCpus, tasks)
           launchedAnyTask |= launchedTaskAtCurrentMaxLocality
         } while (launchedTaskAtCurrentMaxLocality)
-      }
+      } // end for：这个for循环加里面的while循环，能保证成功分配完
+      // TaskSet中的所有任务到offers上吗???(貌似不能啊)
       if (!launchedAnyTask) {
         taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
       }
