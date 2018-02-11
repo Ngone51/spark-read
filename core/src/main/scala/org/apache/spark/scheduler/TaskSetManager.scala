@@ -477,6 +477,7 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 该函数作用：为单个executor提供的offer(资源)，匹配一个任务。
    * Respond to an offer of a single executor from the scheduler by finding a task
    *
    * NOTE: this function is either called with a maxLocality which
@@ -517,7 +518,8 @@ private[spark] class TaskSetManager(
         }
       }
 
-      // 从task的pending队列中，出队(取出)一个task出来
+      // 在allowedLocality约束下，从task的pending队列中，
+      // 取出一个task来，并生成该task的TaskDescription
       dequeueTask(execId, host, allowedLocality).map { case ((index, taskLocality, speculative)) =>
         // Found a task; do some bookkeeping and return a task description
         val task = tasks(index)
@@ -573,6 +575,7 @@ private[spark] class TaskSetManager(
 
         // 通过dagScheduler通知ListenerBus，有新的task启动
         sched.dagScheduler.taskStarted(task, info)
+        // 为该Task创建TaskDescription
         new TaskDescription(
           taskId,
           attemptNum,
