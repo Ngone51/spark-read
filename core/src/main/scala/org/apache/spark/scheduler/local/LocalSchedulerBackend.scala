@@ -89,6 +89,7 @@ private[spark] class LocalEndpoint(
     // 由于是本地运行spark，所以只有一个WorkerOffer
     val offers = IndexedSeq(new WorkerOffer(localExecutorId, localExecutorHostname, freeCores))
     for (task <- scheduler.resourceOffers(offers).flatten) {
+      // 每执行一个任务，可用资源(cpu核数)就减少CPUS_PER_TASK个
       freeCores -= scheduler.CPUS_PER_TASK
       // 整一个resourceOffers的过程都是在申请task(多个从pending队列取出来的tasks)运行的资源，
       // 直到launchTask，才是真正的开始执行task
