@@ -68,6 +68,8 @@ private[spark] abstract class Task[T](
   /**
    * Called by [[org.apache.spark.executor.Executor]] to run this task.
    *
+   * taskAttemptId：在SparkContext中，该任务尝试的唯一id
+   * attemptNumber：表示该任务第几次尝试(0表示第一次尝试)
    * @param taskAttemptId an identifier for this task attempt that is unique within a SparkContext.
    * @param attemptNumber how many times this task has been attempted (0 for the first attempt)
    * @return the result of the task along with updates of Accumulators.
@@ -76,7 +78,9 @@ private[spark] abstract class Task[T](
       taskAttemptId: Long,
       attemptNumber: Int,
       metricsSystem: MetricsSystem): T = {
+    // 向BlockInfoManager注册该task
     SparkEnv.get.blockManager.registerTask(taskAttemptId)
+    // 创建TaskContext
     context = new TaskContextImpl(
       stageId,
       stageAttemptId, // stageAttemptId and stageAttemptNumber are semantically equal
@@ -87,13 +91,17 @@ private[spark] abstract class Task[T](
       localProperties,
       metricsSystem,
       metrics)
+    // (通过ThreadLocal变量)设置当前环境的TaskContext
     TaskContext.setTaskContext(context)
+    // 当前任务运行线程
     taskThread = Thread.currentThread()
 
+    // 如果_reasonIfKilled不为null，则kill该任务
     if (_reasonIfKilled != null) {
       kill(interruptThread = false, _reasonIfKilled)
     }
 
+    // 创建CallerContext(啥玩意儿???)
     new CallerContext(
       "TASK",
       SparkEnv.get.conf.get(APP_CALLER_CONTEXT),
@@ -106,6 +114,7 @@ private[spark] abstract class Task[T](
       Option(attemptNumber)).setCurrentContext()
 
     try {
+      // 不同的任务类型实现不同的runTask()来执行任务
       runTask(context)
     } catch {
       case e: Throwable =>
