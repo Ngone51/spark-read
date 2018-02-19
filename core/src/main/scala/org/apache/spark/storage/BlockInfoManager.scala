@@ -137,6 +137,8 @@ private[storage] class BlockInfoManager extends Logging {
       with mutable.MultiMap[TaskAttemptId, BlockId]
 
   /**
+   * 记录每个任务用于读而锁定的那些块，同时(通过ConcurrentHashMultiset)记录
+   * 每个块加了几个读锁(因为我们的读锁是可重入的)
    * Tracks the set of blocks that each task has locked for reading, along with the number of times
    * that a block has been locked (since our read locks are re-entrant).
    */
@@ -156,6 +158,7 @@ private[storage] class BlockInfoManager extends Logging {
    * This must be called prior to calling any other BlockInfoManager methods from that task.
    */
   def registerTask(taskAttemptId: TaskAttemptId): Unit = synchronized {
+    // task只能注册一次
     require(!readLocksByTask.contains(taskAttemptId),
       s"Task attempt $taskAttemptId is already registered")
     readLocksByTask(taskAttemptId) = ConcurrentHashMultiset.create()
