@@ -345,7 +345,9 @@ private[spark] class Executor(
         // 注意：这里反序列化的是在TaskSetManager中被序列化的Task对象，反序列化得到Task对象
         task = ser.deserialize[Task[Any]](
           taskDescription.serializedTask, Thread.currentThread.getContextClassLoader)
+        // 设置task的localProperties(来自driver端通过user配置)
         task.localProperties = taskDescription.properties
+        // 设置任务的内存管理器
         task.setTaskMemoryManager(taskMemoryManager)
 
         // If this task has been killed before we deserialized it, let's quit now. Otherwise,
@@ -375,6 +377,11 @@ private[spark] class Executor(
         } else 0L
         var threwException = true
         val value = try {
+          // 调用task的run()方法
+          // 这个taskAttemptId和attemptNumber真是乱啊...(见run()方法的注释，
+          // 感觉说的还是很明确的)
+          // taskAttemptId是taskId，在SparkContext中全局唯一
+          // attemptNumber表示是该task的第几次尝试(从0开始)
           val res = task.run(
             taskAttemptId = taskId,
             attemptNumber = taskDescription.attemptNumber,
