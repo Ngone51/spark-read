@@ -725,6 +725,8 @@ private[spark] class BlockManager(
 
     // Because all the remote blocks are registered in driver, it is not necessary to ask
     // all the slave executors to get block status.
+    // 因为所有的远程块都会向driver注册，所以，我们不必要去询问所奴隶executor来获取该块的信息(只需要
+    // 询问driver就可以啦)
     // 获取Block的Location和Status(by rpc)
     val locationsAndStatus = master.getLocationsAndStatus(blockId)
     // 获取disk size和 memory size中较大的那个为block size
@@ -744,6 +746,7 @@ private[spark] class BlockManager(
       null
     }
 
+    // 对location按本地性高低进行排序
     val locations = sortLocations(blockLocations)
     val maxFetchFailures = locations.size
     var locationIterator = locations.iterator
@@ -799,18 +802,23 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 从block manager获取一个block(本地或远程)
    * Get a block from the block manager (either local or remote).
    *
+   * 如果该block存储在本地，则需要先在该block上获取一个读锁。而如果是从远程的block manager上获取的，
+   * 则不需要加读锁。一旦block result中的data迭代完毕，则读锁就会自动释放。
    * This acquires a read lock on the block if the block was stored locally and does not acquire
    * any locks if the block was fetched from a remote block manager. The read lock will
    * automatically be freed once the result's `data` iterator is fully consumed.
    */
   def get[T: ClassTag](blockId: BlockId): Option[BlockResult] = {
+    // 先尝试从本地获取该block
     val local = getLocalValues(blockId)
     if (local.isDefined) {
       logInfo(s"Found block $blockId locally")
       return local
     }
+    // 如果本地没有，再从远程获取该block
     val remote = getRemoteValues[T](blockId)
     if (remote.isDefined) {
       logInfo(s"Found block $blockId remotely")
