@@ -542,6 +542,8 @@ private[spark] class TaskSetManager(
           lastLaunchTime = curTime
         }
         // 又要序列化task??? 这是哪里的task，我已经晕了...
+        // 我猜到时候会把这个序列化的task对象发送到executor(TaskSetManager的
+        // 所有准备工作应该是在driver端完成的)
         // Serialize and return the task
         val serializedTask: ByteBuffer = try {
           ser.serialize(task)
