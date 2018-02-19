@@ -75,6 +75,7 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
   }
 
   /**
+   * shuffle id和写入该shuffle的mappers的数目(相当于map端partition个数)之间的映射
    * A mapping from shuffle ids to the number of mappers producing output for those shuffles.
    */
   private[this] val numMapsForShuffle = new ConcurrentHashMap[Int, Int]()
@@ -82,6 +83,7 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
   override val shuffleBlockResolver = new IndexShuffleBlockResolver(conf)
 
   /**
+   * (Dependency)通过向ShuffleManager注册一个Shuffle，来获取一个ShuffleHandle，用于传递给task
    * Obtains a [[ShuffleHandle]] to pass to tasks.
    */
   override def registerShuffle[K, V, C](
@@ -115,15 +117,16 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
       startPartition: Int,
       endPartition: Int,
       context: TaskContext): ShuffleReader[K, C] = {
-    new BlockStoreShuffleReader(
+    new BlockStoreShuffleReader(å
       handle.asInstanceOf[BaseShuffleHandle[K, _, C]], startPartition, endPartition, context)
   }
 
   /** Get a writer for a given partition. Called on executors by map tasks. */
   override def getWriter[K, V](
       handle: ShuffleHandle,
-      mapId: Int,
+      mapId: Int, // 对于map端的partition id
       context: TaskContext): ShuffleWriter[K, V] = {
+    // 更新numMapsForShuffle
     numMapsForShuffle.putIfAbsent(
       handle.shuffleId, handle.asInstanceOf[BaseShuffleHandle[_, _, _]].numMaps)
     val env = SparkEnv.get

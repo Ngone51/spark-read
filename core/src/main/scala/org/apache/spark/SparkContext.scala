@@ -2404,10 +2404,12 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def defaultMinPartitions: Int = math.min(defaultParallelism, 2)
 
+  // 在整个SparkContext范围内，给定唯一的shuffle id
   private val nextShuffleId = new AtomicInteger(0)
 
   private[spark] def newShuffleId(): Int = nextShuffleId.getAndIncrement()
 
+  // 在整个SparkContext范围内，给定唯一的rdd id
   private val nextRddId = new AtomicInteger(0)
 
   /** Register a new RDD, returning its RDD ID */
