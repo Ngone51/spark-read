@@ -176,7 +176,7 @@ private[spark] class TaskSchedulerImpl(
 
   def newTaskId(): Long = nextTaskId.getAndIncrement()
 
-  // 在local模式下，相当于只启动backend
+  // 在local模式下，相当于只启动backend(start()会在SparkContext中被调用)
   override def start() {
     backend.start()
 
