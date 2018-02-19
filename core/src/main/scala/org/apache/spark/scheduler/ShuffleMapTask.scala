@@ -74,6 +74,7 @@ private[spark] class ShuffleMapTask(
     if (locs == null) Nil else locs.toSet.toSeq
   }
 
+  // 注意返回类型：对于ShuffleMapTask，必然是MapStatus
   override def runTask(context: TaskContext): MapStatus = {
     // Deserialize the RDD using the broadcast variable.
     val threadMXBean = ManagementFactory.getThreadMXBean
@@ -82,15 +83,21 @@ private[spark] class ShuffleMapTask(
       threadMXBean.getCurrentThreadCpuTime
     } else 0L
     val ser = SparkEnv.get.closureSerializer.newInstance()
+    // 思考：这里的ContextClassLoader是哪个呢???
+    // 先获取在DAGScheduler#submitMissingTask中创建的taskBinary的value，
+    // 再反序列化该value，得到RDD和ShuffleDependency
     val (rdd, dep) = ser.deserialize[(RDD[_], ShuffleDependency[_, _, _])](
       ByteBuffer.wrap(taskBinary.value), Thread.currentThread.getContextClassLoader)
+    // 记录executor反序列化耗时
     _executorDeserializeTime = System.currentTimeMillis() - deserializeStartTime
+    // 记录executor反序列cpu耗时
     _executorDeserializeCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
       threadMXBean.getCurrentThreadCpuTime - deserializeStartCpuTime
     } else 0L
 
     var writer: ShuffleWriter[Any, Any] = null
     try {
+      // 通过spark的env，获取shuffleManager
       val manager = SparkEnv.get.shuffleManager
       writer = manager.getWriter[Any, Any](dep.shuffleHandle, partitionId, context)
       writer.write(rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
