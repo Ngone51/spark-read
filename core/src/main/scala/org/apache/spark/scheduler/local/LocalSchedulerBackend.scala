@@ -39,9 +39,9 @@ private case class KillTask(taskId: Long, interruptThread: Boolean, reason: Stri
 private case class StopExecutor()
 
 /**
- * 在LocalSchedulerBackend上的调用，都会通过LocalEndpoint来序列化。使用一个RpcEndpoint能够使得在
- * LocalSchedulerBackend上的调用异步化，这是防止在LocalSchedulerBackend和TaskSchedulerImpl之间
- * 发生死锁的必要举措。
+ * 在LocalSchedulerBackend上的调用，都会通过LocalEndpoint来序列化(该调用)。使用一个RpcEndpoint能
+ * 够使得在LocalSchedulerBackend上的调用异步化，这是防止在LocalSchedulerBackend和TaskSchedulerImpl
+ * 之间发生死锁的必要举措。
  * Calls to [[LocalSchedulerBackend]] are all serialized through LocalEndpoint. Using an
  * RpcEndpoint makes the calls on [[LocalSchedulerBackend]] asynchronous, which is necessary
  * to prevent deadlock between [[LocalSchedulerBackend]] and the [[TaskSchedulerImpl]].
