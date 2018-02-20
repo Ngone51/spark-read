@@ -74,6 +74,7 @@ class UnionRDD[T: ClassTag](
     rdds.length > conf.getInt("spark.rdd.parallelListingThreshold", 10)
 
   override def getPartitions: Array[Partition] = {
+    // isPartitionListingParallel??? 并发性???
     val parRDDs = if (isPartitionListingParallel) {
       val parArray = rdds.par
       parArray.tasksupport = UnionRDD.partitionEvalTaskSupport
@@ -81,9 +82,17 @@ class UnionRDD[T: ClassTag](
     } else {
       rdds
     }
+    // 计算所有parent rdd的partitions个数的总和，作为Array[Partition]数组的大小
+    // 这个数组将要存储的就是我们自己这个UnionRDD的Partition
     val array = new Array[Partition](parRDDs.map(_.partitions.length).seq.sum)
     var pos = 0
+    // 注意语法：相当于两个for循环
     for ((rdd, rddIndex) <- rdds.zipWithIndex; split <- rdd.partitions) {
+      // 就是说，我这个UnionPartition对应了第rddIndex个parent rdd的第split.index个分区
+      // 有点绕，看看UnionPartition的注释就明白了
+      // 注意：UnionRDD相当于是把所有的parent rdd当作一个整体的RDD来看待，不用管parent rdd的
+      // 类型是否一样，因为不同类型的rdd又会有各自的compute()方法。UnionRDD的partition只需要把
+      // 所有parent rdd的partition依次对应上即可。
       array(pos) = new UnionPartition(pos, rdd, rddIndex, split.index)
       pos += 1
     }
@@ -94,6 +103,7 @@ class UnionRDD[T: ClassTag](
     val deps = new ArrayBuffer[Dependency[_]]
     var pos = 0
     for (rdd <- rdds) {
+      // 在[pos, pos+rdd.partitions.length)这个范围内，都是同一个parent rdd
       deps += new RangeDependency(rdd, 0, pos, rdd.partitions.length)
       pos += rdd.partitions.length
     }
