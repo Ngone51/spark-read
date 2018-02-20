@@ -116,8 +116,12 @@ class OneToOneDependency[T](rdd: RDD[T]) extends NarrowDependency[T](rdd) {
 class RangeDependency[T](rdd: RDD[T], inStart: Int, outStart: Int, length: Int)
   extends NarrowDependency[T](rdd) {
 
+  // 获取该child rdd partition所依赖的parent rdd的partitions
+  // 假设有一个RangeDependency(rdd, 0, 5, 5), 参数partitionId = 7,
+  // 那么，getParents(7)返回2，表示parent rdd的第3个partition(从第0个开始)
   override def getParents(partitionId: Int): List[Int] = {
     if (partitionId >= outStart && partitionId < outStart + length) {
+      // 所以，这里List就只返回一个元素???
       List(partitionId - outStart + inStart)
     } else {
       Nil
