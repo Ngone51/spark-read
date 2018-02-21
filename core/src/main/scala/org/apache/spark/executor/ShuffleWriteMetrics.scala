@@ -28,8 +28,11 @@ import org.apache.spark.util.LongAccumulator
  */
 @DeveloperApi
 class ShuffleWriteMetrics private[spark] () extends Serializable {
+  // 统计写入的字节总数
   private[executor] val _bytesWritten = new LongAccumulator
+  // 统计写入的记录个数
   private[executor] val _recordsWritten = new LongAccumulator
+  // 统计写入过程的耗时
   private[executor] val _writeTime = new LongAccumulator
 
   /**
