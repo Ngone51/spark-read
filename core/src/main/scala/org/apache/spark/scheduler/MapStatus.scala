@@ -61,6 +61,7 @@ private[spark] object MapStatus {
   private[this] val LOG_BASE = 1.1
 
   /**
+   * 为了高效的报告map output的大小，我们把以字节为单位的大小压缩成用8个bit(一个字节)来表示
    * Compress a size in bytes to 8 bits for efficient reporting of map output sizes.
    * We do this by encoding the log base 1.1 of the size as an integer, which can support
    * sizes up to 35 GB with at most 10% error.
