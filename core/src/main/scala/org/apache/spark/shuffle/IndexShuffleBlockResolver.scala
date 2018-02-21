@@ -51,11 +51,15 @@ private[spark] class IndexShuffleBlockResolver(
 
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle")
 
+  // 获取shuffle的数据文件
   def getDataFile(shuffleId: Int, mapId: Int): File = {
     blockManager.diskBlockManager.getFile(ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
   }
 
+  // 货物shuffle的索引文件
   private def getIndexFile(shuffleId: Int, mapId: Int): File = {
+    // 通过DiskBlockManager来获取或创建索引文件(File对象)
+    // 根据shuffleId、mapId、NOOP_REDUCE_ID创建ShuffleIndexBlockId，来获取对应的索引文件
     blockManager.diskBlockManager.getFile(ShuffleIndexBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
   }
 
@@ -79,10 +83,13 @@ private[spark] class IndexShuffleBlockResolver(
   }
 
   /**
+   * 检查给定的索引文件和数据文件是否相互匹配。
+   * 如果匹配，则返回数据文件中，该分区(map端某个分区)的大小。反之，返回null。
    * Check whether the given index and data files match each other.
    * If so, return the partition lengths in the data file. Otherwise return null.
    */
   private def checkIndexAndDataFile(index: File, data: File, blocks: Int): Array[Long] = {
+    // 看writeIndexFileAndCommit()的L157的注释就知道为什么是这样的了。
     // the index file should have `block + 1` longs as offset.
     if (index.length() != (blocks + 1) * 8) {
       return null
@@ -96,8 +103,11 @@ private[spark] class IndexShuffleBlockResolver(
         return null
     }
     try {
+      // 将偏移量转换成每个block的大小
       // Convert the offsets into lengths of each block
       var offset = in.readLong()
+      // 因为第一个写入的offset就是0啊
+      // 不等于0，很有可能说明，这是该task第一次执行，indexFIle还为未初始化。
       if (offset != 0L) {
         return null
       }
@@ -115,6 +125,7 @@ private[spark] class IndexShuffleBlockResolver(
       in.close()
     }
 
+    // 数据文件的大小和索引文件记录的大小需要相互匹配！
     // the size of data file should match with index file
     if (data.length() == lengths.sum) {
       lengths
@@ -124,6 +135,12 @@ private[spark] class IndexShuffleBlockResolver(
   }
 
   /**
+   * 将每个block的偏移量写入一个索引文件，并在文件末尾增加一个最终的偏移量。getBlockData将会使用该文件来定位
+   * 每个block的起始位置。
+   *
+   * 该方法会以一个原子操作提交数据文件和索引文件，要么使用已经存在的那个，或者用新的替换。
+   *
+   * 注意：如果要使用已经存在的索引文件，则'lengths'会被更新为和已经存在的索引文件匹配。
    * Write an index file with the offsets of each block, plus a final offset at the end for the
    * end of the output file. This will be used by getBlockData to figure out where each block
    * begins and ends.
@@ -138,13 +155,21 @@ private[spark] class IndexShuffleBlockResolver(
       mapId: Int,
       lengths: Array[Long],
       dataTmp: File): Unit = {
+    // 获取索引文件
     val indexFile = getIndexFile(shuffleId, mapId)
+    // 再创建一个临时索引???(看完下面的代码，就知道为什么还要创建一个临时索引文件了)
     val indexTmp = Utils.tempFileWith(indexFile)
     try {
+      // 这个I/O流为什么要这么封装???我是真的不懂，需要多多学习。
       val out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(indexTmp)))
       Utils.tryWithSafeFinally {
+        // 我们依次遍历每个block的大小(字节), 并将其转换为偏移量(offsets).
         // We take in lengths of each block, need to convert it to offsets.
         var offset = 0L
+        // writeLong()会用8个byte来存储一个offset(long型，在jvm中，long就是用8个字节存储的),
+        // 所以，整个index文件最终的length是:
+        // (lengths.length + 1) * 8
+        // 之所以要+1，是因为一开始写入了offset = 0L(因为第一个block的偏移量肯定是0咯),也占用了8个字节。
         out.writeLong(offset)
         for (length <- lengths) {
           offset += length
@@ -154,20 +179,34 @@ private[spark] class IndexShuffleBlockResolver(
         out.close()
       }
 
+      // 获取shuffle的数据文件
       val dataFile = getDataFile(shuffleId, mapId)
+      // 每个executor上只有一个IndexShuffleBlockResolver，所以，synchronized能够保证
+      // 接下来的检查和重命名是原子操作。
       // There is only one IndexShuffleBlockResolver per executor, this synchronization make sure
       // the following check and rename are atomic.
       synchronized {
+        // 检查数据文件和索引文件是否相互匹配
+        // (注意：这里检查的是indexFile，不是indexTmp；是dataFile，不是dataTmp)
         val existingLengths = checkIndexAndDataFile(indexFile, dataFile, lengths.length)
+        // 不为null，说明数据文件和索引文件相互匹配(一切ok)
         if (existingLengths != null) {
+          // 说明之前有相同task的另一次尝试执行，已经成功地把map outputs写好了。所以，只需要使用
+          // 已经存在的分区大小且删除我们临时的map outputs(指传进来的dataTmp)。
+          // 也就该方法注释的note里提到的：the `lengths` will be updated to match the
+          // existing index file if use the existing ones.
           // Another attempt for the same task has already written our map outputs successfully,
           // so just use the existing partition lengths and delete our temporary map outputs.
           System.arraycopy(existingLengths, 0, lengths, 0, lengths.length)
+          // 删除临时的map outputs
           if (dataTmp != null && dataTmp.exists()) {
             dataTmp.delete()
           }
+          // 删除临时的索引文件
           indexTmp.delete()
         } else {
+          // 如果不匹配，说明这是该task第一次成功地尝试执行，写好了map outputs。则，用我们
+          // 新的写入(indexTmp和dataTmp)覆盖任何已经存在的数据文件和索引文件。
           // This is the first successful attempt in writing the map outputs for this task,
           // so override any existing index and data files with the ones we wrote.
           if (indexFile.exists()) {
@@ -176,15 +215,18 @@ private[spark] class IndexShuffleBlockResolver(
           if (dataFile.exists()) {
             dataFile.delete()
           }
+          // 将indexTmp重命名为indexFile(以实现覆盖)
           if (!indexTmp.renameTo(indexFile)) {
             throw new IOException("fail to rename file " + indexTmp + " to " + indexFile)
           }
+          // 将dataTmp重命名为dataFile(以实现覆盖)
           if (dataTmp != null && dataTmp.exists() && !dataTmp.renameTo(dataFile)) {
             throw new IOException("fail to rename file " + dataTmp + " to " + dataFile)
           }
         }
       }
     } finally {
+      // 删除临时索引文件
       if (indexTmp.exists() && !indexTmp.delete()) {
         logError(s"Failed to delete temporary index file at ${indexTmp.getAbsolutePath}")
       }
@@ -228,6 +270,7 @@ private[spark] class IndexShuffleBlockResolver(
 }
 
 private[spark] object IndexShuffleBlockResolver {
+  // 这个reduce id始终为0，这个注释什么意思???
   // No-op reduce ID used in interactions with disk store.
   // The disk store currently expects puts to relate to a (map, reduce) pair, but in the sort
   // shuffle outputs for several reduces are glommed into a single file.
