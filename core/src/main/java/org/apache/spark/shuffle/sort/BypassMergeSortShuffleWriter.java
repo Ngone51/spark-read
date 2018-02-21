@@ -105,14 +105,18 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       int mapId,
       TaskContext taskContext,
       SparkConf conf) {
+    // 文件缓存大小，默认32k
     // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
     this.fileBufferSize = (int) conf.getSizeAsKb("spark.shuffle.file.buffer", "32k") * 1024;
+    // transferTo???啥玩意儿???
     this.transferToEnabled = conf.getBoolean("spark.file.transferTo", true);
     this.blockManager = blockManager;
     final ShuffleDependency<K, V, V> dep = handle.dependency();
     this.mapId = mapId;
     this.shuffleId = dep.shuffleId();
+    // 注意: 这里是partitioner，不是partition，默认是HashPartitioner
     this.partitioner = dep.partitioner();
+    // 所以，numPartitions是reducer端partition的个数
     this.numPartitions = partitioner.numPartitions();
     this.writeMetrics = taskContext.taskMetrics().shuffleWriteMetrics();
     this.serializer = dep.serializer();
@@ -122,21 +126,30 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   @Override
   public void write(Iterator<Product2<K, V>> records) throws IOException {
     assert (partitionWriters == null);
+    // 如果records为空
     if (!records.hasNext()) {
       partitionLengths = new long[numPartitions];
+      // 则dataTmp也为空
       shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapId, partitionLengths, null);
+      // TODO read what's this???
       mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths);
       return;
     }
+    // 以下，records不为空
+    // 创建序列化器实例对象
     final SerializerInstance serInstance = serializer.newInstance();
     final long openStartTime = System.nanoTime();
+    // 初始化partitionWriters数组
     partitionWriters = new DiskBlockObjectWriter[numPartitions];
+    // 初始化partitionWriterSegments数组
     partitionWriterSegments = new FileSegment[numPartitions];
+    // 该task会为每个reducer端的partition创建一个临时文件
     for (int i = 0; i < numPartitions; i++) {
       final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
         blockManager.diskBlockManager().createTempShuffleBlock();
       final File file = tempShuffleBlockIdPlusFile._2();
       final BlockId blockId = tempShuffleBlockIdPlusFile._1();
+      // 所有的DiskBlockObjectWriter都共用同一个writeMetrics
       partitionWriters[i] =
         blockManager.getDiskWriter(blockId, file, serInstance, fileBufferSize, writeMetrics);
     }
@@ -148,11 +161,14 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     while (records.hasNext()) {
       final Product2<K, V> record = records.next();
       final K key = record._1();
+      // 调用partitioner的getPartition(key)方法，来确定将该记录存储到哪个reducer的partition中
+      // 比如，最经典的HashPartition，就是将key做hash计算的结果，作为reducer的partiiton的index
       partitionWriters[partitioner.getPartition(key)].write(key, record._2());
     }
 
     for (int i = 0; i < numPartitions; i++) {
       final DiskBlockObjectWriter writer = partitionWriters[i];
+      // 提交每个writer写入的内容
       partitionWriterSegments[i] = writer.commitAndGet();
       writer.close();
     }
@@ -160,6 +176,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     File output = shuffleBlockResolver.getDataFile(shuffleId, mapId);
     File tmp = Utils.tempFileWith(output);
     try {
+      // writePartitionedFile会更新tmp文件的内容
       partitionLengths = writePartitionedFile(tmp);
       shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapId, partitionLengths, tmp);
     } finally {
@@ -176,6 +193,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   }
 
   /**
+   * 把各个分区的文件，串联成一个组合文件
    * Concatenate all of the per-partition files into a single combined file.
    *
    * @return array of lengths, in bytes, of each partition of the file (used by map output tracker).
@@ -192,12 +210,15 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     final long writeStartTime = System.nanoTime();
     boolean threwException = true;
     try {
+      // 逐一把每个partition 的输出文件合并到一个文件outputFile
       for (int i = 0; i < numPartitions; i++) {
         final File file = partitionWriterSegments[i].file();
         if (file.exists()) {
           final FileInputStream in = new FileInputStream(file);
           boolean copyThrewException = true;
           try {
+            // 从文件in中读取内容拷贝到文件out中，并返回从文件in中读取的字节大小
+            // TODO read copyStream
             lengths[i] = Utils.copyStream(in, out, false, transferToEnabled);
             copyThrewException = false;
           } finally {
@@ -211,6 +232,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       threwException = false;
     } finally {
       Closeables.close(out, threwException);
+      // writeMetrics会统计整个shuffle写过程中的所有耗时
       writeMetrics.incWriteTime(System.nanoTime() - writeStartTime);
     }
     partitionWriters = null;
