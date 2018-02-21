@@ -100,23 +100,30 @@ private[spark] class DiskBlockObjectWriter(
   private var numRecordsWritten = 0
 
   private def initialize(): Unit = {
+    // 以追加写的方式创建文件输出流
     fos = new FileOutputStream(file, true)
+    // 获取文件输入流的管道
     channel = fos.getChannel()
     ts = new TimeTrackingOutputStream(writeMetrics, fos)
+    // 这个流的运用哟....???
     class ManualCloseBufferedOutputStream
       extends BufferedOutputStream(ts, bufferSize) with ManualCloseOutputStream
     mcs = new ManualCloseBufferedOutputStream
   }
 
   def open(): DiskBlockObjectWriter = {
+    // 如果writer已经关闭，则抛出异常
     if (hasBeenClosed) {
       throw new IllegalStateException("Writer already closed. Cannot be reopened.")
     }
+    // 如果writer还未初始化，则初始化之
     if (!initialized) {
       initialize()
       initialized = true
     }
 
+    // 这个流的灵活使用，真是我的薄弱点，要多看、多想、多运用!!!
+    // 之后要重点关注SerializerManager和SerializerInstance这两个类
     bs = serializerManager.wrapStream(blockId, mcs)
     objOut = serializerInstance.serializeStream(bs)
     streamOpen = true
@@ -181,6 +188,7 @@ private[spark] class DiskBlockObjectWriter(
       }
 
       val pos = channel.position()
+      // 如果是该writer第一次执行该方法，那么，committedPosition = 0(没毛病吧???)
       val fileSegment = new FileSegment(file, committedPosition, pos - committedPosition)
       committedPosition = pos
       // In certain compression codecs, more bytes are written after streams are closed
@@ -215,6 +223,8 @@ private[spark] class DiskBlockObjectWriter(
       var truncateStream: FileOutputStream = null
       try {
         truncateStream = new FileOutputStream(file, true)
+        // 清除file[0, committedPosition]之外写入的内容(就是把committedPosition后写入的，
+        // 还未提交的内容清除)
         truncateStream.getChannel.truncate(committedPosition)
       } catch {
         case e: Exception =>
@@ -256,9 +266,12 @@ private[spark] class DiskBlockObjectWriter(
    * Notify the writer that a record worth of bytes has been written with OutputStream#write.
    */
   def recordWritten(): Unit = {
+    // 写入record个数+1
     numRecordsWritten += 1
+    // 更新writer的统计信息
     writeMetrics.incRecordsWritten(1)
 
+    // 每个2^14个record，更新写入文件的bytes大小
     if (numRecordsWritten % 16384 == 0) {
       updateBytesWritten()
     }
@@ -269,7 +282,10 @@ private[spark] class DiskBlockObjectWriter(
    * Note that this is only valid before the underlying streams are closed.
    */
   private def updateBytesWritten() {
+    // pos表示当前文件写入内容的大小
     val pos = channel.position()
+    // pos - reportedPosition：当前大小减去上一次更新时的文件大小，
+    // 表示其增加的内容大小
     writeMetrics.incBytesWritten(pos - reportedPosition)
     reportedPosition = pos
   }
