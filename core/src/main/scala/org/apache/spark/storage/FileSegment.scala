@@ -20,6 +20,7 @@ package org.apache.spark.storage
 import java.io.File
 
 /**
+ * 指向文件的一个特定的段(后面括号里的怎么翻译???)
  * References a particular segment of a file (potentially the entire file),
  * based off an offset and a length.
  */
