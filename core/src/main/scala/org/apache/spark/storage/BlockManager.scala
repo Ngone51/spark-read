@@ -261,7 +261,8 @@ private[spark] class BlockManager(
       maxOffHeapMemory,
       slaveEndpoint)
 
-    // 如果是idFromMaster，不用更新缓存吗？？？（好吧，在register的时候，会更新缓存）
+    // 如果是idFromMaster，不用更新缓存吗？？？（好吧，在register的时候，会更新缓存，但是：
+    // 那更新的也只是driver端的blockmanager的缓存啊，还是没有更新executor端的缓存啊???）
     blockManagerId = if (idFromMaster != null) idFromMaster else id
 
     shuffleServerId = if (externalShuffleServiceEnabled) {
