@@ -59,6 +59,7 @@ private[spark] class DiskBlockObjectWriter(
       flush()
     }
 
+    // TODO read 看不懂???
     def manualClose(): Unit = {
       super.close()
     }
@@ -183,6 +184,7 @@ private[spark] class DiskBlockObjectWriter(
       if (syncWrites) {
         // Force outstanding writes to disk and track how long it takes
         val start = System.nanoTime()
+        // TODO read ???
         fos.getFD.sync()
         writeMetrics.incWriteTime(System.nanoTime() - start)
       }
