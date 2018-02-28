@@ -161,6 +161,7 @@ private[spark] class IndexShuffleBlockResolver(
     val indexTmp = Utils.tempFileWith(indexFile)
     try {
       // 这个I/O流为什么要这么封装???我是真的不懂，需要多多学习。
+      // 答：BufferedOutputStream可以让从文件流中去读的数据先缓存到buffer中
       val out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(indexTmp)))
       Utils.tryWithSafeFinally {
         // 我们依次遍历每个block的大小(字节), 并将其转换为偏移量(offsets).
