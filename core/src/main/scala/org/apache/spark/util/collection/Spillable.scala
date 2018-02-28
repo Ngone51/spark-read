@@ -43,15 +43,20 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   // Number of elements read from input since last spill
   protected def elementsRead: Long = _elementsRead
 
+  // 子类没读取到一个元素，就会调用该方法
+  // 用于检查spilling的频率
   // Called by subclasses every time a record is read
   // It's used for checking spilling frequency
   protected def addElementsRead(): Unit = { _elementsRead += 1 }
 
+  // 默认5M???
+  // 我们追踪一个集合占用内存大小时的初始阈值
   // Initial threshold for the size of a collection before we start tracking its memory usage
   // For testing only
   private[this] val initialMemoryThreshold: Long =
     SparkEnv.get.conf.getLong("spark.shuffle.spill.initialMemoryThreshold", 5 * 1024 * 1024)
 
+  // 当内存中elements个数超过numElementsForceSpillThreshold该值时，则强制进行spill
   // Force this collection to spill when there are this many elements in memory
   // For testing only
   private[this] val numElementsForceSpillThreshold: Long =
@@ -61,6 +66,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   // To avoid a large number of small spills, initialize this to a value orders of magnitude > 0
   @volatile private[this] var myMemoryThreshold = initialMemoryThreshold
 
+  // 自上一次spill，从输入读取到的元素个数
   // Number of elements read from input since last spill
   private[this] var _elementsRead = 0L
 
@@ -80,19 +86,30 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
    */
   protected def maybeSpill(collection: C, currentMemory: Long): Boolean = {
     var shouldSpill = false
+    // 每增长32个元素，且collection当前占用内存大于等于myMemoryThreshold就会
+    // 做一次是否需要spill的检查
     if (elementsRead % 32 == 0 && currentMemory >= myMemoryThreshold) {
+      // 向shuffle内存池申请至两倍于当前占用内存的内存
       // Claim up to double our current memory from the shuffle memory pool
       val amountToRequest = 2 * currentMemory - myMemoryThreshold
+      // TODO read
       val granted = acquireMemory(amountToRequest)
+      // 如果granted和amountToRequest一样，那么，myMemoryThreshold就是两倍的currentMemory
       myMemoryThreshold += granted
+      // 如果向shuffle内存池申请的内存后，currentMemory还是大于等于myMemoryThreshold，
+      // 则执行spill
       // If we were granted too little memory to grow further (either tryToAcquire returned 0,
       // or we already had more memory than myMemoryThreshold), spill the current collection
       shouldSpill = currentMemory >= myMemoryThreshold
     }
+    // 如果当前记录的元素个数已经超过设置的阈值，则强制执行spill
     shouldSpill = shouldSpill || _elementsRead > numElementsForceSpillThreshold
+    // 到此，真正执行spill
     // Actually spill
     if (shouldSpill) {
+      // 更新执行spill的次数
       _spillCount += 1
+      // log之
       logSpillage(currentMemory)
       spill(collection)
       _elementsRead = 0
@@ -136,6 +153,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   }
 
   /**
+   * 打印标准的日志信息，来详细记录一次溢写
    * Prints a standard log message detailing spillage.
    *
    * @param size number of bytes spilled
