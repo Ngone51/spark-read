@@ -46,12 +46,18 @@ private[spark] class PartitionedPairBuffer[K, V](initialCapacity: Int = 64)
 
   /** Add an element into the buffer */
   def insert(partition: Int, key: K, value: V): Unit = {
+    // 注意：data数组的当前大小、容量大小分别都是curSize、capacity的2倍！！！
     if (curSize == capacity) {
+      // 双倍扩容
       growArray()
     }
+    // 注意data数组的存储方式：两个两个连续存储，
+    // 第一个位置存储(分区id，key)的pair对,
+    // 第二个位置存储value
     data(2 * curSize) = (partition, key.asInstanceOf[AnyRef])
     data(2 * curSize + 1) = value.asInstanceOf[AnyRef]
     curSize += 1
+    // 妙，实在是妙，这才是多态的正确打开方式！
     afterUpdate()
   }
 
@@ -67,16 +73,21 @@ private[spark] class PartitionedPairBuffer[K, V](initialCapacity: Int = 64)
         capacity * 2
       }
     val newArray = new Array[AnyRef](2 * newCapacity)
+    // 注意区分：data数组的实际大小是2*capacity，而newArray的实际大小是2*newCapacity
     System.arraycopy(data, 0, newArray, 0, 2 * capacity)
     data = newArray
     capacity = newCapacity
+    // 妙，实在是妙，这才是多态的正确打开方式！
     resetSamples()
   }
 
   /** Iterate through the data in a given order. For this class this is not really destructive. */
   override def partitionedDestructiveSortedIterator(keyComparator: Option[Comparator[K]])
     : Iterator[((Int, K), V)] = {
+    // 如果没有指定keyComparator，keyComparator为None，则map结果为None，会执行else，
+    // 得到partitionComparator，该comparator只根据partition ID进行排序
     val comparator = keyComparator.map(partitionKeyComparator).getOrElse(partitionComparator)
+    // 用Tim Sort算法对原始data数组按给定的comparator进行排序
     new Sorter(new KVArraySortDataFormat[(Int, K), AnyRef]).sort(data, 0, curSize, comparator)
     iterator
   }
