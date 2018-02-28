@@ -120,6 +120,8 @@ private[spark] class ExternalSorter[K, V, C](
   // grow internal data structures by growing + copying every time the number of objects doubles.
   private val serializerBatchSize = conf.getLong("spark.shuffle.spill.batchSize", 10000)
 
+  // 在我们执行spill之前，用于在内存中存储对象(数据)的数据结果。我们要么把对象存储到AppendOnlyMap中并对其合并，
+  // 要么将对象存储到一个数组buffer中。这取决于我们是否设置了Aggregator。
   // Data structures to store in-memory objects before we spill. Depending on whether we have an
   // Aggregator set, we either put objects into an AppendOnlyMap where we combine them, or we
   // store them in an array buffer.
@@ -365,12 +367,18 @@ private[spark] class ExternalSorter[K, V, C](
     val inMemBuffered = inMemory.buffered
     (0 until numPartitions).iterator.map { p =>
       val inMemIterator = new IteratorForPartition(p, inMemBuffered)
+      // _.readNextPartition()和inMemIterator都是属于p分区的iterator
+      // iterators由两部分组成：一部分是各个SpilledFile中的p分区中的元素构成的各个iterator，
+      // 另一部分是内存中的p分区的元素构成的iterator
       val iterators = readers.map(_.readNextPartition()) ++ Seq(inMemIterator)
+      // 如果定义了aggregator
       if (aggregator.isDefined) {
+        // 大致是读明白了...主要是spark实际运用经验不够丰富，很多场景没遇到
+        // 乍一看，哇，这个函数真是复杂，但只有耐心的看，就发现其实也很简单
         // Perform partial aggregation across partitions
         (p, mergeWithAggregation(
           iterators, aggregator.get.mergeCombiners, keyComparator, ordering.isDefined))
-      } else if (ordering.isDefined) {
+      } else if (ordering.isDefined) { // 如果定义了ordering
         // No aggregator given, but we have an ordering (e.g. used by reduce tasks in sortByKey);
         // sort the elements without trying to merge them
         (p, mergeSort(iterators, ordering.get))
@@ -389,9 +397,16 @@ private[spark] class ExternalSorter[K, V, C](
     val bufferedIters = iterators.filter(_.hasNext).map(_.buffered)
     type Iter = BufferedIterator[Product2[K, C]]
     val heap = new mutable.PriorityQueue[Iter]()(new Ordering[Iter] {
+      // 该ordering定义了，该优先级队列会根据key的优先级大小来访问元素。所以，之前的partition排序信息
+      // 不会被考虑在内???
+      // 之所以使用和comparator.compare相反的比较结果，是因为PriorityQueue优先出队优先级最大的元素
       // Use the reverse of comparator.compare because PriorityQueue dequeues the max
+      // 貌似这里的大小比较，只关注了key，不关注partition
       override def compare(x: Iter, y: Iter): Int = -comparator.compare(x.head._1, y.head._1)
     })
+    // TODO _* 再次遇到，什么意思???理解不够透彻
+    // 这里，bufferedIters是一个包含多个元素的seq()。但是，
+    // enqueue()会依次遍历seq()中的每个元素，并入队。
     heap.enqueue(bufferedIters: _*)  // Will contain only the iterators with hasNext = true
     new Iterator[Product2[K, C]] {
       override def hasNext: Boolean = !heap.isEmpty
@@ -402,6 +417,7 @@ private[spark] class ExternalSorter[K, V, C](
         }
         val firstBuf = heap.dequeue()
         val firstPair = firstBuf.next()
+        // 如果该buffered iterator还有元素，则将其重新入队
         if (firstBuf.hasNext) {
           heap.enqueue(firstBuf)
         }
@@ -424,6 +440,11 @@ private[spark] class ExternalSorter[K, V, C](
       : Iterator[Product2[K, C]] =
   {
     if (!totalOrder) {
+      // 我们只拥有部分有序。例如：通过hash code对keys进行排序，这意味着多个不同的key，从ordering的角度来看，
+      // 被认为是相等的。为了处理这个问题(因为combiner是合并那些key真正相等的pair，而不是说ordering认为它们
+      // 相等，就可以合并。比如，有三个健值对(k1, v1), (k2, v2), (k1, v3),在ordering看来，可能k1,k2是相等
+      // 的，但是combiner却不能合并(k1, v1)和(k2, v2), 因为它们的值并不真的相同)，我们需要读取所有ordering
+      // 认为相等的key，然后进一步比较它们到底是否相等。
       // We only have a partial ordering, e.g. comparing the keys by hash code, which means that
       // multiple distinct keys might be treated as equal by the ordering. To deal with this, we
       // need to read all keys considered equal by the ordering at once and compare them.
@@ -436,27 +457,37 @@ private[spark] class ExternalSorter[K, V, C](
 
         override def hasNext: Boolean = sorted.hasNext
 
+        // next()返回的是一个iterator???
         override def next(): Iterator[Product2[K, C]] = {
           if (!hasNext) {
             throw new NoSuchElementException
           }
           keys.clear()
           combiners.clear()
+          // 从sorted iterator中取出第一个健值对
           val firstPair = sorted.next()
+          // 因为第一个健值对肯定没在keys和combiners中出现过，
+          // 所以，都需要添加进去
           keys += firstPair._1
           combiners += firstPair._2
           val key = firstPair._1
+          // 找到所有ordering认为和key相等的健值对
           while (sorted.hasNext && comparator.compare(sorted.head._1, key) == 0) {
+            // 该pair的key在ordering看来和给定的key相等
             val pair = sorted.next()
             var i = 0
             var foundKey = false
+            // 接下来要做的是：从已知的keys中去寻找，有没有和该pair的key真正(值)相等的key
             while (i < keys.size && !foundKey) {
               if (keys(i) == pair._1) {
+                // 如果找到了一个真正(值)相等的key，则通过combiner合并
                 combiners(i) = mergeCombiners(combiners(i), pair._2)
+                // 说明该pair的key之前已经存在于keys中，不是第一次出现
                 foundKey = true
               }
               i += 1
             }
+            // 说明该pair的key是第一次出现，则添加到keys和combiners中去
             if (!foundKey) {
               keys += pair._1
               combiners += pair._2
@@ -469,8 +500,10 @@ private[spark] class ExternalSorter[K, V, C](
         }
       }.flatMap(i => i)
     } else {
+      // 我们拥有完全有序???
       // We have a total ordering, so the objects with the same key are sequential.
       new Iterator[Product2[K, C]] {
+        // mergeSort会根据指定的comparator，对key进行排序
         val sorted = mergeSort(iterators, comparator).buffered
 
         override def hasNext: Boolean = sorted.hasNext
@@ -482,6 +515,8 @@ private[spark] class ExternalSorter[K, V, C](
           val elem = sorted.next()
           val k = elem._1
           var c = elem._2
+          // 因为sorted会根据key进行排序，所以才可以这样循环合并
+          // 把具有相同key的(key, value)都通过mergeCombiners()合并起来
           while (sorted.hasNext && sorted.head._1 == k) {
             val pair = sorted.next()
             c = mergeCombiners(c, pair._2)
@@ -493,6 +528,7 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
+   * 一个用于一个一个partition的读取spilled file的内部类。
    * An internal class for reading a spilled file partition by partition. Expects all the
    * partitions to be requested in order.
    */
@@ -595,6 +631,7 @@ private[spark] class ExternalSorter[K, V, C](
       if (finished || deserializeStream == null) {
         return null
       }
+      // 反序列化
       // 从反序列化流中分别读取key和value
       val k = deserializeStream.readKey().asInstanceOf[K]
       val c = deserializeStream.readValue().asInstanceOf[C]
@@ -712,7 +749,6 @@ private[spark] class ExternalSorter[K, V, C](
           collection.partitionedDestructiveSortedIterator(Some(keyComparator))))
       }
     } else {
-      // TODO read
       // 合并溢写的和内存中的数据
       // Merge spilled and in-memory data
       merge(spills, destructiveIterator(
@@ -768,6 +804,7 @@ private[spark] class ExternalSorter[K, V, C](
     } else {
       // We must perform merge-sort; get an iterator by partition and write everything directly.
       for ((id, elements) <- this.partitionedIterator) {
+        // elements是同一个id分区内的所有经过merge sort后的元素
         if (elements.hasNext) {
           for (elem <- elements) {
             writer.write(elem._1, elem._2)
@@ -828,6 +865,7 @@ private[spark] class ExternalSorter[K, V, C](
       if (!hasNext) {
         throw new NoSuchElementException
       }
+      // elem((partitionId, key), value)
       val elem = data.next()
       (elem._1._2, elem._2)
     }
