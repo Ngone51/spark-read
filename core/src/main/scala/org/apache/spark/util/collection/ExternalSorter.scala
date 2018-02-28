@@ -182,17 +182,20 @@ private[spark] class ExternalSorter[K, V, C](
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
 
-    if (shouldCombine) {
+    if (shouldCombine) { // 如果定义了map端的aggregator
       // Combine values in-memory first using our AppendOnlyMap
       val mergeValue = aggregator.get.mergeValue
       val createCombiner = aggregator.get.createCombiner
       var kv: Product2[K, V] = null
       val update = (hadValue: Boolean, oldValue: C) => {
+        // 如果有旧值，则合并value，反之，则创建一个新的combiner
         if (hadValue) mergeValue(oldValue, kv._2) else createCombiner(kv._2)
       }
       while (records.hasNext) {
         addElementsRead()
         kv = records.next()
+        // changeVlaue()会将拥有相同key的健值对合并到一起，最后map中存储的
+        // 是(key, combiner)的形式
         map.changeValue((getPartition(kv._1), kv._1), update)
         maybeSpillCollection(usingMap = true)
       }
@@ -216,7 +219,8 @@ private[spark] class ExternalSorter[K, V, C](
    */
   private def maybeSpillCollection(usingMap: Boolean): Unit = {
     var estimatedSize = 0L
-    if (usingMap) {
+    if (usingMap) { // 如果使用的是map作为内存中缓存数据的数据结构
+      // 获取map在jvm中的估计大小
       estimatedSize = map.estimateSize()
       if (maybeSpill(map, estimatedSize)) {
         map = new PartitionedAppendOnlyMap[K, C]
