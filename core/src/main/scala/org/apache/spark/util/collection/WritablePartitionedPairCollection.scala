@@ -66,6 +66,7 @@ private[spark] trait WritablePartitionedPairCollection[K, V] {
 
 private[spark] object WritablePartitionedPairCollection {
   /**
+   * 一个只根据partition ID进行排序的比较器(因为没有指定keyComparator)
    * A comparator for (Int, K) pairs that orders them by only their partition ID.
    */
   def partitionComparator[K]: Comparator[(Int, K)] = new Comparator[(Int, K)] {
@@ -75,15 +76,20 @@ private[spark] object WritablePartitionedPairCollection {
   }
 
   /**
+   * 一个用于比较(Int, K)对的比较器，会先根据partition ID排序，再根据指定的key ordering排序。
+   * 这里的Int对应partition ID，K对应key。
    * A comparator for (Int, K) pairs that orders them both by their partition ID and a key ordering.
    */
   def partitionKeyComparator[K](keyComparator: Comparator[K]): Comparator[(Int, K)] = {
     new Comparator[(Int, K)] {
       override def compare(a: (Int, K), b: (Int, K)): Int = {
         val partitionDiff = a._1 - b._1
+        // 先根据partition ID排序
         if (partitionDiff != 0) {
           partitionDiff
         } else {
+          // 如果partition ID不一样，
+          // 再根据keyComparator指定的比较规则来对key排序
           keyComparator.compare(a._2, b._2)
         }
       }
