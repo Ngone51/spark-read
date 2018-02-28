@@ -75,6 +75,7 @@ abstract class SortDataFormat[K, Buffer] {
 }
 
 /**
+ * 支持对一个key-value对格式的数组进行排序，该数组的元素在key和value之间交替排列。
  * Supports sorting an array of key-value pairs where the elements of the array alternate between
  * keys and values, as used in [[AppendOnlyMap]].
  *
