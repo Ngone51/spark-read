@@ -43,7 +43,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   // Number of elements read from input since last spill
   protected def elementsRead: Long = _elementsRead
 
-  // 子类没读取到一个元素，就会调用该方法
+  // 子类每读取到一个元素，就会调用该方法
   // 用于检查spilling的频率
   // Called by subclasses every time a record is read
   // It's used for checking spilling frequency
