@@ -195,11 +195,13 @@ private[spark] class ExternalSorter[K, V, C](
         maybeSpillCollection(usingMap = true)
       }
     } else {
+      // 我们先看map端不需要combine的情况...
       // Stick values into our buffer
       while (records.hasNext) {
         addElementsRead()
         val kv = records.next()
         buffer.insert(getPartition(kv._1), kv._1, kv._2.asInstanceOf[C])
+        // 如果最后一个record插入后，没有发生spill，那么，buffer(内存中)还是有元素的
         maybeSpillCollection(usingMap = false)
       }
     }
@@ -220,6 +222,8 @@ private[spark] class ExternalSorter[K, V, C](
     } else {
       estimatedSize = buffer.estimateSize()
       if (maybeSpill(buffer, estimatedSize)) {
+        // 如果成功spill，则重新创建新的buffer
+        // 所以之前的buffer是因为没有了引用，而被gc自动回收吗???
         buffer = new PartitionedPairBuffer[K, C]
       }
     }
@@ -260,6 +264,17 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
+   * Spark Spill策略：内存中的iterator(已经根据partition或keycomparator排好序)会依次将元素
+   * 通过DiskBlockObjectWriter写入本地磁盘的临时文件中。每当写入的元素个数到达
+   * serializerBatchSize(可通过spark.shuffle.spill.batchSize配置，默认10000)个时，就会把
+   * 这serializerBatchSize个元素组成一个batch(FileSegment)。同一个partition中，最后不足
+   * serializerBatchSize个的元素组成一个batch。最终，各个partition的所有batch即相关信息组成
+   * 一个SpilledFile。
+   * 需要注意的一点是：一个SpilledFile中的一个partition可能会包含多个batch，详见L317-L321的注释
+   * 另外需要注意的一点是：元素会通过序列化流来写入磁盘。因此，当使用SpillReader来读取溢写至磁盘的元
+   * 素时，又需要反序列之。
+   *
+   * 将内存中的元素溢写至磁盘中的临时文件
    * Spill contents of in-memory iterator to a temporary file on disk.
    */
   private[this] def spillMemoryIteratorToDisk(inMemoryIterator: WritablePartitionedIterator)
@@ -272,6 +287,7 @@ private[spark] class ExternalSorter[K, V, C](
     // These variables are reset after each flush
     var objectsWritten: Long = 0
     val spillMetrics: ShuffleWriteMetrics = new ShuffleWriteMetrics
+    // file指定了writer将往哪个文件写入内容
     val writer: DiskBlockObjectWriter =
       blockManager.getDiskWriter(blockId, file, serInstance, fileBufferSize, spillMetrics)
 
@@ -300,6 +316,11 @@ private[spark] class ExternalSorter[K, V, C](
         elementsPerPartition(partitionId) += 1
         objectsWritten += 1
 
+        // 如果写入的元素个数达到serializerBatchSize(默认10000)个，则批量的flush元素
+        // 存在一个可能是：一个partition包含多个batch(大小为serializerBatchSize)，如：
+        // 在该partition中有25000个元素，那么，每10000个就会生成一个batch，然后最后5000个元素，
+        // 又会生成一个batch(虽然最后只剩5000个元素，没达到10000个，但也不会和其它的partition
+        // 的元素去凑成一个batch。因为，一个batch必须是同一个partition中的元素)
         if (objectsWritten == serializerBatchSize) {
           flush()
         }
@@ -324,7 +345,7 @@ private[spark] class ExternalSorter[K, V, C](
         }
       }
     }
-
+    // 返回该spill file
     SpilledFile(file, blockId, batchSizes.toArray, elementsPerPartition)
   }
 
@@ -476,6 +497,14 @@ private[spark] class ExternalSorter[K, V, C](
    * partitions to be requested in order.
    */
   private[this] class SpillReader(spill: SpilledFile) {
+    // scanLeft(v)(f)会以v为初始值，从左到右应用f到集合的元素上，并返回所有中间结果。
+    // 例如：(1 to 10).scanLeft(0)(_ + _)返回的结果是：
+    // List(0, 1, 3, 6, 10, 15, 21, 28, 36, 45, 55)
+
+    // 由此，下面这行代码的意思也就好解释了：把原先记录各个partition的size(注意：该size只
+    // 包含了一个SpillFile中的各个partition的元素，而不是整个map task中的各个partition
+    // 的所有元素)的array，转换成一个记录各个partition偏移量的array(包含第一个partition
+    // 的0偏移量).所以，最终，batchOffsets的size是serializerBatchSizes.length + 1
     // Serializer batch offsets; size will be batchSize.length + 1
     val batchOffsets = spill.serializerBatchSizes.scanLeft(0L)(_ + _)
 
@@ -488,6 +517,9 @@ private[spark] class ExternalSorter[K, V, C](
     var indexInBatch = 0
     var lastPartitionId = 0
 
+    // 初始化的时候调用该方法，只有一种可能的情况：
+    // 如果第一个partition为空，则跳过该partition。
+    // 而不可能说已经访问到该partition的末尾。
     skipToNextPartition()
 
     // Intermediate file and deserializer streams that read from exactly one batch
@@ -503,6 +535,7 @@ private[spark] class ExternalSorter[K, V, C](
       // Note that batchOffsets.length = numBatches + 1 since we did a scan above; check whether
       // we're still in a valid batch.
       if (batchId < batchOffsets.length - 1) {
+        // 关闭上一个batch的流
         if (deserializeStream != null) {
           deserializeStream.close()
           fileStream.close()
@@ -510,19 +543,24 @@ private[spark] class ExternalSorter[K, V, C](
           fileStream = null
         }
 
+        // 确定该batch的起始偏移位置
         val start = batchOffsets(batchId)
         fileStream = new FileInputStream(spill.file)
         fileStream.getChannel.position(start)
         batchId += 1
 
+        // 确定该batch的终止偏移位置(也是下一个batch的起始偏移位置)
         val end = batchOffsets(batchId)
 
         assert(end >= start, "start = " + start + ", end = " + end +
           ", batchOffsets = " + batchOffsets.mkString("[", ", ", "]"))
 
+        // 封装文件流，创建缓存输入流
         val bufferedStream = new BufferedInputStream(ByteStreams.limit(fileStream, end - start))
 
+        // 封装缓存输入流，创建压缩流
         val wrappedStream = serializerManager.wrapStream(spill.blockId, bufferedStream)
+        // 封装压缩流，创建反序列化流
         serInstance.deserializeStream(wrappedStream)
       } else {
         // No more batches left
@@ -532,10 +570,13 @@ private[spark] class ExternalSorter[K, V, C](
     }
 
     /**
+     * 当我们访问到当前partition的末尾时，则更新partitionId，在该过程中，同时也有可能会跳过空的partition。
      * Update partitionId if we have reached the end of our current partition, possibly skipping
      * empty partitions on the way.
      */
     private def skipToNextPartition() {
+      // 如果indexInPartition为0，且spill.elementsPerPartition(partitionId)(说明该partition为空)，
+      // 则可以完美地跳过。
       while (partitionId < numPartitions &&
           indexInPartition == spill.elementsPerPartition(partitionId)) {
         partitionId += 1
@@ -554,18 +595,27 @@ private[spark] class ExternalSorter[K, V, C](
       if (finished || deserializeStream == null) {
         return null
       }
+      // 从反序列化流中分别读取key和value
       val k = deserializeStream.readKey().asInstanceOf[K]
       val c = deserializeStream.readValue().asInstanceOf[C]
+      // 更新上一个访问的partitionId
       lastPartitionId = partitionId
       // Start reading the next batch if we're done with this one
+      // 读取的元素在该batch中的索引位置
       indexInBatch += 1
+      // 如果读取的元素个数达到了serializerBatchSize个，说明该batch的所有元素都读完了。
+      // 则开始读取下一个batch。
+      // 这和我们spill是写入元素至磁盘文件时的batch大小是对应的。
       if (indexInBatch == serializerBatchSize) {
         indexInBatch = 0
         deserializeStream = nextBatchStream()
       }
       // Update the partition location of the element we're reading
+      // 读取的元素在该partition中的索引位置(一个partition可能包含多个batch)
       indexInPartition += 1
+      // 检查是否访问完了该partition中的所有元素，如果是，则开始访问下一个partition
       skipToNextPartition()
+      // 说明我们访问(读取)完了所有的partition(中的所有元素)
       // If we've finished reading the last partition, remember that we're done
       if (partitionId == numPartitions) {
         finished = true
@@ -610,6 +660,7 @@ private[spark] class ExternalSorter[K, V, C](
       batchId = batchOffsets.length  // Prevent reading any other batch
       val ds = deserializeStream
       deserializeStream = null
+      // 文件流不用close吗???是不是会在deserializeStream的close()中close???
       fileStream = null
       if (ds != null) {
         ds.close()
@@ -646,10 +697,12 @@ private[spark] class ExternalSorter[K, V, C](
    */
   def partitionedIterator: Iterator[(Int, Iterator[Product2[K, C]])] = {
     val usingMap = aggregator.isDefined
+    // 如果定义了aggregator，则使用map，反之，使用buffer
     val collection: WritablePartitionedPairCollection[K, C] = if (usingMap) map else buffer
     if (spills.isEmpty) {
       // Special case: if we have only in-memory data, we don't need to merge streams, and perhaps
       // we don't even need to sort by anything other than partition ID
+      // TODO read destructiveIterator: 这个函数到底干嘛滴???
       if (!ordering.isDefined) {
         // The user hasn't requested sorted keys, so only sort by partition ID, not key
         groupByPartition(destructiveIterator(collection.partitionedDestructiveSortedIterator(None)))
@@ -659,6 +712,8 @@ private[spark] class ExternalSorter[K, V, C](
           collection.partitionedDestructiveSortedIterator(Some(keyComparator))))
       }
     } else {
+      // TODO read
+      // 合并溢写的和内存中的数据
       // Merge spilled and in-memory data
       merge(spills, destructiveIterator(
         collection.partitionedDestructiveSortedIterator(comparator)))
@@ -690,14 +745,23 @@ private[spark] class ExternalSorter[K, V, C](
       context.taskMetrics().shuffleWriteMetrics)
 
     if (spills.isEmpty) {
+      // spills为空，说明在这种情况下，我们只有在内存中的数据
       // Case where we only have in-memory data
       val collection = if (aggregator.isDefined) map else buffer
+      // 对内存中的数据(按照partition ID或partitionID和key)排序，并返回WritablePartitionedIterator
       val it = collection.destructiveSortedWritablePartitionedIterator(comparator)
+      // 由于it(至少)是按照partitionID排过序的，所以此时的records是按照partitionID连续出现的。
+      // 例如：(p1, v11), (p1,v12), (p2, v21), (p3, v31), (p3, v32), (p3, v33)
+      // 由此，下面的代码才变得清晰起来。
       while (it.hasNext) {
         val partitionId = it.nextPartition()
         while (it.hasNext && it.nextPartition() == partitionId) {
           it.writeNext(writer)
         }
+        // 将同一个分区内的写入文件的内容提交，并生成一个FileSegment
+        // 例如：(p1, v11)和(p1,v12)生成一个FileSegment；
+        // (p2, v21)单独生成一个FileSegment;
+        // (p3, v31), (p3, v32), (p3, v33)这三个生成一个FileSegment
         val segment = writer.commitAndGet()
         lengths(partitionId) = segment.length
       }
@@ -708,6 +772,7 @@ private[spark] class ExternalSorter[K, V, C](
           for (elem <- elements) {
             writer.write(elem._1, elem._2)
           }
+          // 同样地，将同一个分区内的写入文件的内容提交，并生成一个FileSegment
           val segment = writer.commitAndGet()
           lengths(id) = segment.length
         }
@@ -743,6 +808,8 @@ private[spark] class ExternalSorter[K, V, C](
   private def groupByPartition(data: Iterator[((Int, K), C)])
       : Iterator[(Int, Iterator[Product2[K, C]])] =
   {
+    // BufferedIterator的作用是：原始iterator的next移动，会导致所有buffered iterator的next移动(
+    // 就相当于一个软连接，希望你能明白我的意思)
     val buffered = data.buffered
     (0 until numPartitions).iterator.map(p => (p, new IteratorForPartition(p, buffered)))
   }
