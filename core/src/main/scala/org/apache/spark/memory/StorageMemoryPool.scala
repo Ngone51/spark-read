@@ -134,6 +134,9 @@ private[memory] class StorageMemoryPool(
     // <=0: 说明storagePool里的空闲内存足够想要的释放内存大小spaceToFree，则直接返回
     // spaceFreedByReleasingUnusedMemory(pool需要削减的大小)
     if (remainingSpaceToFree > 0) {
+      // 既然能够驱逐blocks，就说明，storage pool size超过了storageRegionSize。
+      // 所以，此时，上述memoryFree应该为0才对。(是这样的吗???如果不是这样，则在
+      // UnifiedMemoryManager#maybeGrowExecutionPool()中的理解就错误了。)
       // If reclaiming free memory did not adequately shrink the pool, begin evicting blocks:
       val spaceFreedByEviction =
         memoryStore.evictBlocksToFreeSpace(None, remainingSpaceToFree, memoryMode)
