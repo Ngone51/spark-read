@@ -92,9 +92,16 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
       // 向shuffle内存池申请至两倍于当前占用内存的内存
       // Claim up to double our current memory from the shuffle memory pool
       val amountToRequest = 2 * currentMemory - myMemoryThreshold
-      // TODO read
+      // 有个问题: collection(map或buf)在存储了若干个(比如16个)记录后的占用的内存貌似并没有
+      // 向execution pool申请。也就是说，这部分内存是不受MemoryManager管理的。当然，spark
+      // 本身也预留了jvm 40%的内存来申请一些对象啊啥的。不过，接下来，又向execution pool申请
+      // 内存，感觉有点怪怪的???
+      // 答：我的理解是，spark的内存管理并不是真正执行底层内存分配的工作，某方面，它起到的是防止
+      // 内存溢出的作用。当然，主要地还有高效利用内存的作用。
+      // 通过TaskMemoryManager，向execution pool申请内存
       val granted = acquireMemory(amountToRequest)
       // 如果granted和amountToRequest一样，那么，myMemoryThreshold就是两倍的currentMemory
+      // 最终，myMemoryThreshold累加的总和就是向execution pool申请的内存总和
       myMemoryThreshold += granted
       // 如果向shuffle内存池申请的内存后，currentMemory还是大于等于myMemoryThreshold，
       // 则执行spill
@@ -114,6 +121,8 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
       spill(collection)
       _elementsRead = 0
       _memoryBytesSpilled += currentMemory
+      // 在spill执行完成后，内存中的collection对象已经写到来磁盘中，所以需要释放向execution pool申请的内存。
+      // 需要指出的一点是，释放的内存大小并不等于collection所占的内存大小。
       releaseMemory()
     }
     shouldSpill
@@ -148,6 +157,8 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
    * Release our memory back to the execution pool so that other tasks can grab it.
    */
   def releaseMemory(): Unit = {
+    // myMemoryThreshold - initialMemoryThreshold的差值就是
+    // Spillable向execution pool申请的内存大小
     freeMemory(myMemoryThreshold - initialMemoryThreshold)
     myMemoryThreshold = initialMemoryThreshold
   }
