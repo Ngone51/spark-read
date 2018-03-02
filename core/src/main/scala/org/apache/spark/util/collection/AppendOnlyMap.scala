@@ -305,6 +305,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
     }
     assert(curSize == newIndex + (if (haveNullValue) 1 else 0))
 
+    // 再重新调整好array数组后，再根据keyComparator进行排序
     // 排序的范围是data数组的0-newIndex区间，该区间的后面已经全部为空
     new Sorter(new KVArraySortDataFormat[K, AnyRef]).sort(data, 0, newIndex, keyComparator)
 
