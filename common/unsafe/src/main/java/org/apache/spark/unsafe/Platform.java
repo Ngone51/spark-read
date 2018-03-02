@@ -178,6 +178,7 @@ public final class Platform {
     throw new IllegalStateException("unreachable");
   }
 
+  // 设置[object基地址 + offset偏移量, object基地址 + offset为偏移量 + size)范围内的内存为指定值value
   public static void setMemory(Object object, long offset, long size, byte value) {
     _UNSAFE.setMemory(object, offset, size, value);
   }
