@@ -36,6 +36,7 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.Utils;
 
 /**
+ * 给一个(only one???)单独的任务管理内存分配
  * Manages the memory allocated by an individual task.
  * <p>
  * Most of the complexity in this class deals with encoding of off-heap addresses into 64-bit longs.
@@ -67,10 +68,13 @@ public class TaskMemoryManager {
   @VisibleForTesting
   static final int OFFSET_BITS = 64 - PAGE_NUMBER_BITS;  // 51
 
+  // pages总数：2^13 = 8192
   /** The number of entries in the page table. */
   private static final int PAGE_TABLE_SIZE = 1 << PAGE_NUMBER_BITS;
 
   /**
+   * 一个page最多能存储的数据字节大小。理论上，最大的地址是1 << OFFSET_BITS。但是，堆内内存分配器的最大页面size受
+   * 到long[]数组所能最大存储的数据的大小的限制，该大小正是(2^31 - 1) * 8，大约140t的内存大小。
    * Maximum supported data page size (in bytes). In principle, the maximum addressable page size is
    * (1L &lt;&lt; OFFSET_BITS) bytes, which is 2+ petabytes. However, the on-heap allocator's
    * maximum page size is limited by the maximum amount of data that can be stored in a long[]
@@ -99,9 +103,11 @@ public class TaskMemoryManager {
 
   private final MemoryManager memoryManager;
 
+  // 是否说明一个TaskMemoryManager只对应一个task???
   private final long taskAttemptId;
 
   /**
+   * 哈??? 啥意思???
    * Tracks whether we're in-heap or off-heap. For off-heap, we short-circuit most of these methods
    * without doing any masking or lookups. Since this branching should be well-predicted by the JIT,
    * this extra layer of indirection / abstraction hopefully shouldn't be too expensive.
@@ -109,6 +115,9 @@ public class TaskMemoryManager {
   final MemoryMode tungstenMemoryMode;
 
   /**
+   * ???????
+   * memory consumers和TAskMemoryManager是什么关系???
+   * 一个Task对应多个memory consumers???
    * Tracks spillable memory consumers.
    */
   @GuardedBy("this")
@@ -123,6 +132,7 @@ public class TaskMemoryManager {
    * Construct a new TaskMemoryManager.
    */
   public TaskMemoryManager(MemoryManager memoryManager, long taskAttemptId) {
+    // TODO read Tungsten Memory Mode
     this.tungstenMemoryMode = memoryManager.tungstenMemoryMode();
     this.memoryManager = memoryManager;
     this.taskAttemptId = taskAttemptId;
@@ -139,49 +149,71 @@ public class TaskMemoryManager {
     assert(required >= 0);
     assert(consumer != null);
     MemoryMode mode = consumer.getMode();
+    // 哈???啥意思???
     // If we are allocating Tungsten pages off-heap and receive a request to allocate on-heap
     // memory here, then it may not make sense to spill since that would only end up freeing
     // off-heap memory. This is subject to change, though, so it may be risky to make this
     // optimization now in case we forget to undo it late when making changes.
     synchronized (this) {
+      // 首先，向execution pool申请预期required大小的内存
       long got = memoryManager.acquireExecutionMemory(required, taskAttemptId, mode);
 
+      // 首先尝试从其它MemoryConsumers那里释放内存，这样，我们就可以减少执行spilling的频率，
+      // 以避免产生过多的spilled文件。
       // Try to release memory from other consumers first, then we can reduce the frequency of
       // spilling, avoid to have too many spilled files.
-      if (got < required) {
+      if (got < required) { // 如果实际申请到的内存小于预期获取的内存(说明内存不够用咯，这时就要先尝试
+                            // 让其它MemoryConsumers通过执行spill来释放一些内存)
         // Call spill() on other consumers to release memory
         // Sort the consumers according their memory usage. So we avoid spilling the same consumer
         // which is just spilled in last few times and re-spilling on it will produce many small
         // spill files.
+        // 使用TreeMap的好处是???排序???
         TreeMap<Long, List<MemoryConsumer>> sortedConsumers = new TreeMap<>();
         for (MemoryConsumer c: consumers) {
           if (c != consumer && c.getUsed() > 0 && c.getMode() == mode) {
             long key = c.getUsed();
             List<MemoryConsumer> list =
+                    // 如果key没有在sortedConsumers，则通过第二个参数，为其创建对应的value。
+                    // 在这里，对应的value是一个ArrayList。反之，如果key已经存在，则将其对应的
+                    // list返回。并将该consumer添加到list中去。也就是说，sortedConsumers把
+                    // 内存使用量相同的consumers都添加到了同一个队列中去。
                 sortedConsumers.computeIfAbsent(key, k -> new ArrayList<>(1));
             list.add(c);
           }
         }
         while (!sortedConsumers.isEmpty()) {
+          // 获取那些使用内存大于剩下还需要申请的内存大小的使用内存最小的MemoryConsumers
+          // ceil(n): 获取大于等于n的最小整数。例如，ceil(5.1) = 6;
+          // ceilingEntry(key)同理。
           // Get the consumer using the least memory more than the remaining required memory.
           Map.Entry<Long, List<MemoryConsumer>> currentEntry =
             sortedConsumers.ceilingEntry(required - got);
+          // 没有一个consumer使用的内存大于还需要申请的内存大小，则获取使用内存最多的那些consumers
           // No consumer has used memory more than the remaining required memory.
           // Get the consumer of largest used memory.
           if (currentEntry == null) {
+            // 所以TreeMap是有序的，因为它获取了最后一个entry，它的key最大
             currentEntry = sortedConsumers.lastEntry();
           }
           List<MemoryConsumer> cList = currentEntry.getValue();
+          // 获取cList的最后一个元素
           MemoryConsumer c = cList.remove(cList.size() - 1);
+          // 如果cList为空了，就把它从sortedConsumers中删除。
           if (cList.isEmpty()) {
             sortedConsumers.remove(currentEntry.getKey());
           }
           try {
+            // TODO read comsumer spill
+            // c(consumer)执行spill之后，释放了released大小的内存
             long released = c.spill(required - got, consumer);
             if (released > 0) {
               logger.debug("Task {} released {} from {} for {}", taskAttemptId,
                 Utils.bytesToString(released), c, consumer);
+              // 在释放完内存之后，重新向execution pool申请内存
+              // 注意是: +=
               got += memoryManager.acquireExecutionMemory(required - got, taskAttemptId, mode);
+              // 如果最终申请得到的内存got > 需要的内存required(说明此时内存足够了)，则跳出循环
               if (got >= required) {
                 break;
               }
@@ -192,12 +224,14 @@ public class TaskMemoryManager {
             throw new RuntimeException(e.getMessage());
           } catch (IOException e) {
             logger.error("error while calling spill() on " + c, e);
+            // 这里为什么是SparkOutOfMemoryError???
             throw new SparkOutOfMemoryError("error while calling spill() on " + c + " : "
               + e.getMessage());
           }
         }
       }
 
+      // 如果在对所有的comsumers执行spill之后，内存还是不够(我天...),则对其自己执行spill
       // call spill() on itself
       if (got < required) {
         try {
@@ -216,8 +250,9 @@ public class TaskMemoryManager {
           throw new SparkOutOfMemoryError("error while calling spill() on " + consumer + " : "
             + e.getMessage());
         }
-      }
+      } // 在执行完自身的spill后，got内存可能仍然小于required内存
 
+      // 将该comsumer添加至consumers中
       consumers.add(consumer);
       logger.debug("Task {} acquired {} for {}", taskAttemptId, Utils.bytesToString(got), consumer);
       return got;
@@ -275,11 +310,15 @@ public class TaskMemoryManager {
    */
   public MemoryBlock allocatePage(long size, MemoryConsumer consumer) {
     assert(consumer != null);
+    // 判断memory mode是否相同
     assert(consumer.getMode() == tungstenMemoryMode);
+    // 如果需要申请的内存空间大于单页page的最大表示内存空间，
+    // 则抛出TooLargePageException异常
     if (size > MAXIMUM_PAGE_SIZE_BYTES) {
       throw new TooLargePageException(size);
     }
 
+    // 申请execution memory
     long acquired = acquireExecutionMemory(size, consumer);
     if (acquired <= 0) {
       return null;
@@ -287,12 +326,15 @@ public class TaskMemoryManager {
 
     final int pageNumber;
     synchronized (this) {
+      // nextClearBit：从下标formIndex开始，寻找第一个为设为false的bit位的下标
       pageNumber = allocatedPages.nextClearBit(0);
+      // 说明所有的page都已经被分配使用了
       if (pageNumber >= PAGE_TABLE_SIZE) {
         releaseExecutionMemory(acquired, consumer);
         throw new IllegalStateException(
           "Have already allocated a maximum of " + PAGE_TABLE_SIZE + " pages");
       }
+      // 将该bit位置为true，表示该bit位对应的page被分配出去了
       allocatedPages.set(pageNumber);
     }
     MemoryBlock page = null;
