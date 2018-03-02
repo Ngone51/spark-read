@@ -55,6 +55,7 @@ private[memory] class ExecutionMemoryPool(
   @GuardedBy("lock")
   private val memoryForTask = new mutable.HashMap[Long, Long]()
 
+  // execution memory pool的使用内存是每个task使用的内存总和
   override def memoryUsed: Long = lock.synchronized {
     memoryForTask.values.sum
   }
@@ -160,6 +161,10 @@ private[memory] class ExecutionMemoryPool(
       numBytes
     }
     if (memoryForTask.contains(taskAttemptId)) {
+      // 只需要释放掉对应task所占用的内存即可，并不用修改memoryUsed或memoryFree，
+      // 因为，memoryUsed或memoryFree还是会根据所有task的内存使用情况来计算。
+      // 而此时，tasks的内存使用情况已经得到了更新，进而，计算所得的memoryUsed或
+      // memoryFree也将得到更新。
       memoryForTask(taskAttemptId) -= memoryToFree
       if (memoryForTask(taskAttemptId) <= 0) {
         memoryForTask.remove(taskAttemptId)
