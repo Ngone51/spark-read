@@ -182,6 +182,7 @@ private[spark] class ExternalSorter[K, V, C](
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
 
+    // 使用map和buffer的一个重要不同是：使用map，会对具有相同key的健值对通过aggregator进行合并
     if (shouldCombine) { // 如果定义了map端的aggregator
       // Combine values in-memory first using our AppendOnlyMap
       val mergeValue = aggregator.get.mergeValue
@@ -378,7 +379,7 @@ private[spark] class ExternalSorter[K, V, C](
       // 如果定义了aggregator
       if (aggregator.isDefined) {
         // 大致是读明白了...主要是spark实际运用经验不够丰富，很多场景没遇到
-        // 乍一看，哇，这个函数真是复杂，但只有耐心的看，就发现其实也很简单
+        // 乍一看，哇，这个函数真是复杂，但只要耐心的看，就发现其实也很简单
         // Perform partial aggregation across partitions
         (p, mergeWithAggregation(
           iterators, aggregator.get.mergeCombiners, keyComparator, ordering.isDefined))
@@ -717,6 +718,7 @@ private[spark] class ExternalSorter[K, V, C](
    * it returns pairs from an on-disk map.
    */
   def destructiveIterator(memoryIterator: Iterator[((Int, K), C)]): Iterator[((Int, K), C)] = {
+    // TODO read isShuffleSort什么意思???
     if (isShuffleSort) {
       memoryIterator
     } else {
