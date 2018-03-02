@@ -77,6 +77,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
   private final ShuffleWriteMetrics writeMetrics;
 
   /**
+   * 当内存中存储的记录个数大于该阈值时，则强制执行spill
    * Force this sorter to spill when there are this many elements in memory.
    */
   private final int numElementsForSpillThreshold;
@@ -88,6 +89,9 @@ final class ShuffleExternalSorter extends MemoryConsumer {
   private final int diskWriteBufferSize;
 
   /**
+   * 用于存储记录进行排序(???)的内存页。当spilling执行时，在该列表中的内存页就可以被释放。虽然，从原则上讲，
+   * 我们可以在spill执行过程中循环利用这些内存页(从另一方面说，如果我们让TaskMemoryManager自己维护一个可
+   * 复用内存页池，并不是很有必要。)
    * Memory pages that hold the records being sorted. The pages in this list are freed when
    * spilling, although in principle we could recycle these pages across spills (on the other hand,
    * this might not be necessary if we maintained a pool of re-usable pages in the TaskMemoryManager
@@ -114,6 +118,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       SparkConf conf,
       ShuffleWriteMetrics writeMetrics) {
     super(memoryManager,
+      // 哈???
       (int) Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()),
       memoryManager.getTungstenMemoryMode());
     this.taskMemoryManager = memoryManager;
@@ -389,6 +394,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     }
 
     growPointerArrayIfNecessary();
+    // 需要额外的4个字节用于存储记录的长度(除了记录本身)
     // Need 4 bytes to store the record length.
     final int required = length + 4;
     acquireNewPageIfNecessary(required);
