@@ -107,8 +107,12 @@ private[spark] class UnifiedMemoryManager private[memory] (
     }
 
     /**
+     * 通过驱逐(storage pool)缓存的blcoks来增长execution pool的size。因此，storage pool的size会被削减。
      * Grow the execution pool by evicting cached blocks, thereby shrinking the storage pool.
      *
+     * 当为一个task申请内存时，execution pool可能会发起多次尝试。每次尝试都必须能够驱逐storage(的内存)，
+     * 以防在几次尝试的间隙，另一个任务插入进来并且缓存来一个大的block(不可以加锁吗解决吗???)。该方法会在每
+     * 次尝试时被调用。
      * When acquiring memory for a task, the execution pool may need to make multiple
      * attempts. Each attempt must be able to evict storage in case another task jumps in
      * and caches a large block between the attempts. This is called once per attempt.
@@ -121,22 +125,51 @@ private[spark] class UnifiedMemoryManager private[memory] (
         // the memory that storage has borrowed from execution.
         // 当execution pool的空闲内存不够时，我们可以向storage pool借点内存。有两种情况（我的理解）：
         // 1. storage pool size <= storageRegionSize，那么，execution pool能借用的内存就是storage pool的
-        // memoryFree(空闲内存);
+        // memoryFree(空闲内存);理解不对，storage pool size有可能大于storageRegionSize，但仍然有空闲内存
+        // (详见下面关于memoryReclaimableFromStorage的讨论)。
         // 2. storage pool size > storageRegionSize，也就是说storage pool增长到比storageRegionSize还大的时候，
         // 那么，我们就驱逐超过storageRegionSize存储的那部分blocks。
         // memoryReclaimableFromStorage就是在上述两种情况中，取（execution pool）能借用内存最多的一种情况。
+
+        /*********************************************************************************************/
+        // 上面的两种情况理解的有点问题，我重新定义一下这两种情况：
+        // 1. storage pool有free memory可用，则execution pool向storage pool借用这部分空闲内存。
+        // 关于空闲内存也有两种情况：
+        //   a) storage pool size <= storageRegionSize: storage pool未变化时(或削减后)的可用空闲内存
+        //   b) storage pool size > storageRegionSize: storage pool的size已经增长超过了storageRegionSize
+        //   的限定。此时的空闲内存包括从execution pool中借来的内存。但此时，如果execution pool想要从storage pool
+        //   中借用内存，则不用驱逐其中的blocks(虽然storage pool size > storageRegionSize)，因为超过
+        //   storageRegionSize限定的那部分内存并没有被block占用，而是空闲的。
+        // 2. storage pool没有free memory可用。此时，有同样的两种情况：
+        //   a) storage pool size <= storageRegionSize: execution pool不能驱逐storage pool中的blocks来
+        //   获取更多的内存。此时，execution pool只能等待内存的释放，来获取更多内存。
+        //   b) storage pool size > storageRegionSize: 说明其借用了execution pool的内存。此时，
+        //   如果execution pool内存不够，需要更多的内存，则可以驱逐storage pool超过storageRegionSize的
+        //   那部分内存中的blocks，以获取可用内存。
+
+        // (该情况对应于上述第(1.b)种情况)
         // 但是我在想，有没有这样一种情况：storage pool size已经增长超过了storageRegionSize,但是storage pool还是
         // 有空闲的内存（memoryFree）???(应该没有的吧，因为只有在MemoryFree用光的时候，storage pool size才会增长
-        // 超过storageRegionSize啊)
+        // 超过storageRegionSize啊。但是!!!我storage pool的内存应该(???)也是要释放的，当其一直释放至比storageRegionSize
+        // 还要少的时候(pool size会不会随着释放减少呢???应该不会)，此时，storage pool的memoryFree是
+        // storage pool.size - storage pool.memoryUsed吗???(按照memoryFree的计算方式，就是这样的。而此时，pool size
+        // 应该还是storage pool增长之后的size。因此，此时storage pool的free memory可能超过了storageRegionSize的界限。)
+        // 问题的关键在于，storage pool的内存是如何释放的，还是说它只会等着execution pool来驱逐???不对，
+        // execution pool只会驱逐storage pool超过storageRegionSize的那部分block，拿回原本就属于自己却被
+        // storage pool借去的内存。由此可知，storage pool还是会自己释放内存的。)
+        // 所以，这样一种情况到底有可能吗???感觉是有可能的，而且看起来没毛病。
         val memoryReclaimableFromStorage = math.max(
           storagePool.memoryFree, // 1. storage pool有空闲内存，execution pool向它借内存
           storagePool.poolSize - storageRegionSize) // 2. storage pool之前借走了execution pool的内存，execution pool
                                                     // 驱逐这部分被借走的内存，回收利用之。
-        // memoryReclaimableFromStorage = 0：此时，storage pool的空闲内存(MemoryFree)为0，且poolSize=storageRegionSize
-        // memoryReclaimableFromStorage < 0：memoryFree = 0（storage pool的空闲内存也被用光了：自己用或者被
-        // execution pool借用）且poolSize < storageRegionSize（storage pool的size被削减了，说明execution pool之前
-        // 借用了storage pool的内存），这时，execution pool的size就不能再增长了。
-        // memoryReclaimableFromStorage<=0的情况，会不会导致OOM呢???
+        // 1) memoryReclaimableFromStorage = 0：
+        //   a) storage pool的空闲内存(MemoryFree)为0，且poolSize=storageRegionSize
+        //   b) storage pool的空闲内存(MemoryFree)为0, 且poolSize < storageRegionSize。(execution pool只能
+        //   驱逐storage pool大于storageRegionSize的那部分内存中的blocks)
+        // 2) memoryReclaimableFromStorage < 0: 不存在这种情况
+        // 3) memoryReclaimableFromStorage > 0: 注意：a)、b)两种情况是互斥的。
+        //   a) memoryFree > 0: 有可用空闲内存
+        //   b) poolSize > storageRegionSize, execution pool驱逐之。
         if (memoryReclaimableFromStorage > 0) {
           // Only reclaim as much space as is necessary and available:
           val spaceToReclaim = storagePool.freeSpaceToShrinkPool(
