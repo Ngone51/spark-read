@@ -49,6 +49,7 @@ private[spark] trait WritablePartitionedPairCollection[K, V] {
   def destructiveSortedWritablePartitionedIterator(keyComparator: Option[Comparator[K]])
     : WritablePartitionedIterator = {
     // 如果该数据结构是PartitionedAppendOnlyMap，则在调用该方法后，map的结构会受到破坏，map不再有效
+    // 此时，it已经根据partitionId(或者和key)对所有的数据排好序
     val it = partitionedDestructiveSortedIterator(keyComparator)
     // 该iterator会遍历数据，并通过writer写入磁盘
     new WritablePartitionedIterator {
