@@ -274,6 +274,8 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     return spillSize;
   }
 
+  // ShuffleExternalSorter的内存使用由
+  // 所有分配的pages和一个inMemSorter中的LongArray组成
   private long getMemoryUsage() {
     long totalPageSize = 0;
     for (MemoryBlock page : allocatedPages) {
@@ -333,15 +335,23 @@ final class ShuffleExternalSorter extends MemoryConsumer {
    */
   private void growPointerArrayIfNecessary() throws IOException {
     assert(inMemSorter != null);
+    // 如果inMemSorter没有更多的空间来存储记录
     if (!inMemSorter.hasSpaceForAnotherRecord()) {
+      // 获取该inMemSorter已经使用的内存大小
       long used = inMemSorter.getMemoryUsage();
       LongArray array;
       try {
+        // 增长array的size至原来的2倍(有可能触发的spill操作)
         // could trigger spilling
         array = allocateArray(used / 8 * 2);
       } catch (TooLargePageException e) {
+        // 记录指针数组已经很大了，在单个page中已经放不下了，所以需要执行spill
         // The pointer array is too big to fix in a single page, spill.
+        // TODO read ShuffleExternalSorter spill
         spill();
+        // 直接return了???
+        // 因为spill执行后，inMemSorter肯定会有额外的存储空间了啊(因为inMemSorter
+        // 中的元素被spill到磁盘中去了呀)
         return;
       } catch (SparkOutOfMemoryError e) {
         // should have trigger spilling
@@ -351,10 +361,15 @@ final class ShuffleExternalSorter extends MemoryConsumer {
         }
         return;
       }
+      // 如果没有异常抛出，仍有可能发生了spill。
+      // 所以，先检查是否已经触发了spill
       // check if spilling is triggered or not
       if (inMemSorter.hasSpaceForAnotherRecord()) {
+        // 如果inMemSorter现在有额外存储空间了，说明该inMemSorter执行了spill,
+        // 则释放掉刚刚申请的array
         freeArray(array);
       } else {
+        // 如果没有，则用新申请的array替换就的array
         inMemSorter.expandPointerArray(array);
       }
     }
@@ -370,11 +385,16 @@ final class ShuffleExternalSorter extends MemoryConsumer {
    *                      special overflow pages).
    */
   private void acquireNewPageIfNecessary(int required) {
+    // 如果从未申请过一个page或这当前page的剩余空间(小于required size)不足以存储当前的记录，
+    // 则申请一个新的page
     if (currentPage == null ||
       pageCursor + required > currentPage.getBaseOffset() + currentPage.size() ) {
       // TODO: try to find space in previous pages
+      // 设置currentPage为新申请的page
       currentPage = allocatePage(required);
+      // 设置pageCursor为当前page的base offset
       pageCursor = currentPage.getBaseOffset();
+      // 添加当前page至allocatedPages
       allocatedPages.add(currentPage);
     }
   }
@@ -387,25 +407,36 @@ final class ShuffleExternalSorter extends MemoryConsumer {
 
     // for tests
     assert(inMemSorter != null);
+    // 如果inMemSorter中的记录个数超过了设定的阈值，则强制执行spill
     if (inMemSorter.numRecords() >= numElementsForSpillThreshold) {
       logger.info("Spilling data because number of spilledRecords crossed the threshold " +
         numElementsForSpillThreshold);
+      // TODO read ShufffleExternalSorter spill()
       spill();
     }
 
+    // 先看看是否需要扩增array的size
     growPointerArrayIfNecessary();
     // 需要额外的4个字节用于存储记录的长度(除了记录本身)
     // Need 4 bytes to store the record length.
     final int required = length + 4;
+    // 再看看是否有必要申请一个新的page
     acquireNewPageIfNecessary(required);
 
     assert(currentPage != null);
     final Object base = currentPage.getBaseObject();
+    // TODO read
     final long recordAddress = taskMemoryManager.encodePageNumberAndOffset(currentPage, pageCursor);
+    // 总感觉这样直接用Platform怪怪的，需要封装一下，所以有人提出了SPARK-10399(当然，该issue不止于此)
+    // 先在该page中存储该记录的长度
     Platform.putInt(base, pageCursor, length);
+    // pageCursor向右移动4个字节
     pageCursor += 4;
+    // 再在该page中存储该记录的实际内容
     Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
+    // 再更新pageCursor
     pageCursor += length;
+    // 再往inMemSorter中插入该记录??? 哈？怎么还要存储一遍???看不懂了...
     inMemSorter.insertRecord(recordAddress, partitionId);
   }
 
