@@ -204,7 +204,7 @@ public class TaskMemoryManager {
             sortedConsumers.remove(currentEntry.getKey());
           }
           try {
-            // TODO read comsumer spill
+            // TODO read consumer spill
             // c(consumer)执行spill之后，释放了released大小的内存
             long released = c.spill(required - got, consumer);
             if (released > 0) {
@@ -328,8 +328,9 @@ public class TaskMemoryManager {
     synchronized (this) {
       // nextClearBit：从下标formIndex开始，寻找第一个为设为false的bit位的下标
       pageNumber = allocatedPages.nextClearBit(0);
-      // 说明所有的page都已经被分配使用了
+      // 说明所有的page都已经被分配使用了(page都没有了，内存还有???)
       if (pageNumber >= PAGE_TABLE_SIZE) {
+        // 在抛出异常之前，释放刚刚申请的内存
         releaseExecutionMemory(acquired, consumer);
         throw new IllegalStateException(
           "Have already allocated a maximum of " + PAGE_TABLE_SIZE + " pages");
@@ -339,15 +340,18 @@ public class TaskMemoryManager {
     }
     MemoryBlock page = null;
     try {
+      // 在从execution pool中申请到内存后，再通过allocator分配实际的内存
       page = memoryManager.tungstenMemoryAllocator().allocate(acquired);
     } catch (OutOfMemoryError e) {
       logger.warn("Failed to allocate a page ({} bytes), try again.", acquired);
       // there is no enough memory actually, it means the actual free memory is smaller than
       // MemoryManager thought, we should keep the acquired memory.
       synchronized (this) {
+        // 为什么不把没有使用的内存释放掉???这样做不浪费内存吗???
         acquiredButNotUsed += acquired;
         allocatedPages.clear(pageNumber);
       }
+      // 递归调用
       // this could trigger spilling to free some pages.
       return allocatePage(size, consumer);
     }
@@ -398,11 +402,19 @@ public class TaskMemoryManager {
    */
   public long encodePageNumberAndOffset(MemoryBlock page, long offsetInPage) {
     if (tungstenMemoryMode == MemoryMode.OFF_HEAP) {
+      // 在off-heap的内存模式中，offset代表的是一个用64个bit位表示的绝对地址。(所以如果直接把这64位塞到
+      // 低位的51个bit位是塞不过的)，但是由于我们page的大小限制((1 << 31 - 1) * 8L(bytes)约为
+      // 1 << 37(bits)),所以
+      // 原本64位的绝对地址，最多低位37位用来表示绝对的内存地址，其它高位27位都为0。这样，我们就可以把这个
+      // 64位绝对地址塞到低位的51个bit位中去(因为这个64个bit位的高位都是0啊)。由此，我们可以把这个
+      // offset(64bit绝对地址) - page的基址(64bit绝对地址)，得到一个新的offset(偏移量，64bit相对地址)，
+      // 用于表示在该page中，相对于基地址的偏移量。而这个偏移量虽然是64bit的，但是也能塞进低位的51个bit位，
+      // 理由已经在上面解释了。
       // In off-heap mode, an offset is an absolute address that may require a full 64 bits to
       // encode. Due to our page size limitation, though, we can convert this into an offset that's
       // relative to the page's base offset; this relative offset will fit in 51 bits.
       offsetInPage -= page.getBaseOffset();
-    }
+    } // 而对于on-heap的内存模式，该offsetInPage正是相对地址，不需要另作转换
     return encodePageNumberAndOffset(page.pageNumber, offsetInPage);
   }
 
@@ -422,10 +434,14 @@ public class TaskMemoryManager {
   }
 
   /**
+   * 这个函数的功能应该是获取page的object。而只有ON HEAP的page有对应的object，
+   * 而对于OFF HEAP的page是没有object的，所以返回null。
+   * (感觉这函数的名字有点问题，还是另有所为???)
    * Get the page associated with an address encoded by
    * {@link TaskMemoryManager#encodePageNumberAndOffset(MemoryBlock, long)}
    */
   public Object getPage(long pagePlusOffsetAddress) {
+    // 只能获取ON HEAP的page???哈???
     if (tungstenMemoryMode == MemoryMode.ON_HEAP) {
       final int pageNumber = decodePageNumber(pagePlusOffsetAddress);
       assert (pageNumber >= 0 && pageNumber < PAGE_TABLE_SIZE);
@@ -481,6 +497,7 @@ public class TaskMemoryManager {
       Arrays.fill(pageTable, null);
     }
 
+    // 额，现在才release，不会浪费内存吗???
     // release the memory that is not used by any consumer (acquired for pages in tungsten mode).
     memoryManager.releaseExecutionMemory(acquiredButNotUsed, taskAttemptId, tungstenMemoryMode);
 
