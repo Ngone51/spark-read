@@ -92,7 +92,13 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     // 也就是说，一个array中的元素就可以存储8个字节的数据。假设，我们现在需要存储n(1 <= n < 8)个字
     // 节的数据，显然，我们也只能至少申请1个size大小的long[] array，虽然会有几个字节的浪费。但是没办
     // 法，你又不可能把一个long拆开来。所以，这里的7就是用来做这个工作的。
+    // 另，这里的long[]数组的大小((size + 7)/8)不应该超过(1 << 32 - 1)/8，不然就溢出了
+    // 比如在TaskMemoryManager#allocatPage(size, consumer)中就有对size大小做检查
     long[] array = new long[(int) ((size + 7) / 8)];
+    // 所以，size是有可能比实际的long[] array(array.length * 8L)的size小的。比如，
+    // 我们申请1个字节的内存，但实际底层分配的是8个字节。但此时，我们能用的是多少呢???还是1个字节呀。
+    // 那么，这里就有一个问题：当我们最初向execution pool申请1个字节大小的内存时，实际却申请了8个，
+    // 而这其中的7个自己execution pool是不是还是认为没有被使用呢???
     MemoryBlock memory = new MemoryBlock(array, Platform.LONG_ARRAY_OFFSET, size);
     if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) {
       memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_CLEAN_VALUE);
