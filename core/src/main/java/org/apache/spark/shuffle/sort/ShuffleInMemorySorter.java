@@ -41,6 +41,9 @@ final class ShuffleInMemorySorter {
   private final MemoryConsumer consumer;
 
   /**
+   * 一个用于存储经过PackedRecordPointer编码的记录指针和partition ids的数组。排序操作会在该数组上执行，
+   * 而非直接在记录上操作。
+   * 该数组只有一部分用于存储记录指针，剩下的部分用于排序时的临时缓冲区。
    * An array of record pointers and partition ids that have been encoded by
    * {@link PackedRecordPointer}. The sort operates on this array instead of directly manipulating
    * records.
@@ -51,17 +54,20 @@ final class ShuffleInMemorySorter {
   private LongArray array;
 
   /**
+   * 是否使用基数排序来对内存中的partition ids进行排序。
    * Whether to use radix sort for sorting in-memory partition ids. Radix sort is much faster
    * but requires additional memory to be reserved memory as pointers are added.
    */
   private final boolean useRadixSort;
 
   /**
+   * 记录指针数组中，可插入新记录指针的下标位置。
    * The position in the pointer array where new records can be inserted.
    */
   private int pos = 0;
 
   /**
+   * 用于说明记录指针数组中多少比例用于存储数据，剩下的用于排序。
    * How many records could be inserted, because part of the array should be left for sorting.
    */
   private int usableCapacity = 0;
@@ -103,6 +109,7 @@ final class ShuffleInMemorySorter {
     pos = 0;
   }
 
+  // 使用新的array替换就的array(会在旧的array存储空间不够的时候调用)
   public void expandPointerArray(LongArray newArray) {
     assert(newArray.size() > array.size());
     Platform.copyMemory(
@@ -112,8 +119,11 @@ final class ShuffleInMemorySorter {
       newArray.getBaseOffset(),
       pos * 8L
     );
+    // 是否旧的array(内存空间)
     consumer.freeArray(array);
+    // 更新array为新申请的array
     array = newArray;
+    // 更新usableCapacity
     usableCapacity = getUsableCapacity();
   }
 
