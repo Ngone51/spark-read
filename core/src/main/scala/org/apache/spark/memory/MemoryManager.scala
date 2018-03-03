@@ -205,6 +205,7 @@ private[spark] abstract class MemoryManager(
     if (conf.get(MEMORY_OFFHEAP_ENABLED)) {
       require(conf.get(MEMORY_OFFHEAP_SIZE) > 0,
         "spark.memory.offHeap.size must be > 0 when spark.memory.offHeap.enabled == true")
+      // TODO read
       require(Platform.unaligned(),
         "No support for unaligned Unsafe. Set spark.memory.offHeap.enabled to false.")
       MemoryMode.OFF_HEAP
