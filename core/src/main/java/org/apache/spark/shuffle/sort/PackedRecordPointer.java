@@ -18,36 +18,47 @@
 package org.apache.spark.shuffle.sort;
 
 /**
+ * 封装了一个8字节的字，其中高位24个bit位用于表示partition ID，低位40个bit位用于表示记录指针(记录的
+ * 具体位置: 某个page中的某个offset位置)
  * Wrapper around an 8-byte word that holds a 24-bit partition number and 40-bit record pointer.
  * <p>
  * Within the long, the data is laid out as follows:
  * <pre>
  *   [24 bit partition number][13 bit memory page number][27 bit offset in page]
  * </pre>
+ * TODO 注释修改 2^27 bits = 16 megabytes
  * This implies that the maximum addressable page size is 2^27 bits = 128 megabytes, assuming that
  * our offsets in pages are not 8-byte-word-aligned. Since we have 2^13 pages (based off the
  * 13-bit page numbers assigned by {@link org.apache.spark.memory.TaskMemoryManager}), this
  * implies that we can address 2^13 * 128 megabytes = 1 terabyte of RAM per task.
  * <p>
+ * TODO 1 gigabyte是否也计算错误??? 但是不知道怎么算呀???
  * Assuming word-alignment would allow for a 1 gigabyte maximum page size, but we leave this
  * optimization to future work as it will require more careful design to ensure that addresses are
  * properly aligned (e.g. by padding records).
  */
 final class PackedRecordPointer {
 
+  // 这个和TaskMemoryManager里的MAXIMUM_PAGE_SIZE_BYTES的值并不一样，
+  // 它俩是什么关系呢???
   static final int MAXIMUM_PAGE_SIZE_BYTES = 1 << 27;  // 128 megabytes
 
   /**
+   * 最大的partition ID
    * The maximum partition identifier that can be encoded. Note that partition ids start from 0.
    */
   static final int MAXIMUM_PARTITION_ID = (1 << 24) - 1;  // 16777215
 
   /**
+   * parition id的第一个字节的下标(从低位开始数的，或者说从右边开始数)
+   * 具体地：该word一共8个字节，共60个bytes，则左边高位3个字节用于描述partitionID。这三个字节，
+   * 从右边低位开始数，分别是第5、第6、第7个字节
    * The index of the first byte of the partition id, counting from the least significant byte.
    */
   static final int PARTITION_ID_START_BYTE_INDEX = 5;
 
   /**
+   * parition id的最后一个字节的下标(从低位开始数的，或者说从右边开始数)
    * The index of the last byte of the partition id, counting from the least significant byte.
    */
   static final int PARTITION_ID_END_BYTE_INDEX = 7;
@@ -71,6 +82,7 @@ final class PackedRecordPointer {
    * Pack a record address and partition id into a single word.
    *
    * @param recordPointer a record pointer encoded by TaskMemoryManager.
+   * TODO 注释修改 2^24 - 1
    * @param partitionId a shuffle partition id (maximum value of 2^24).
    * @return a packed pointer that can be decoded using the {@link PackedRecordPointer} class.
    */
@@ -79,6 +91,8 @@ final class PackedRecordPointer {
     // Note that without word alignment we can address 2^27 bytes = 128 megabytes per page.
     // Also note that this relies on some internals of how TaskMemoryManager encodes its addresses.
     final long pageNumber = (recordPointer & MASK_LONG_UPPER_13_BITS) >>> 24;
+    // 最大的问题是，这里的address编码和TaskMemoryManager里的编码不一样啊!!!在TaskMemoryManger中的page
+    // 偏移量可以达到37个bit位，而这里只有27个bit位，什么情况啊???哪里遗漏了吗???
     final long compressedAddress = pageNumber | (recordPointer & MASK_LONG_LOWER_27_BITS);
     return (((long) partitionId) << 40) | compressedAddress;
   }
