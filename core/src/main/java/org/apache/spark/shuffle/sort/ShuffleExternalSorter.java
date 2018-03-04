@@ -160,16 +160,20 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       writeMetricsToUse = new ShuffleWriteMetrics();
     }
 
+    // 采用基数排序或Tim排序，将records按partition ID排好序。
     // This call performs the actual sort.
     final ShuffleInMemorySorter.ShuffleSorterIterator sortedRecords =
       inMemSorter.getSortedIterator();
 
+    // 缓存数据??? 可是下面分段写入记录的时候，不是也通过DiskBlockObjectWriter直接写了吗???
+    // DiskBlockObjectWriter不是自带BufferOutputStream的吗??? 看不懂了....
     // Small writes to DiskBlockObjectWriter will be fairly inefficient. Since there doesn't seem to
     // be an API to directly transfer bytes from managed memory to the disk writer, we buffer
     // data through a byte array. This array does not need to be large enough to hold a single
     // record;
     final byte[] writeBuffer = new byte[diskWriteBufferSize];
 
+    // TODO read comment
     // Because this output will be read during shuffle, its compression codec must be controlled by
     // spark.shuffle.compress instead of spark.shuffle.spill.compress, so we need to use
     // createTempShuffleBlock here; see SPARK-3426 for more details.
@@ -196,6 +200,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       if (partition != currentPartition) {
         // Switch to the new partition
         if (currentPartition != -1) {
+          // 提交同一个partition中的records，并生成一个FileSegment
           final FileSegment fileSegment = writer.commitAndGet();
           spillInfo.partitionLengths[currentPartition] = fileSegment.length();
         }
@@ -207,17 +212,26 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       final long recordOffsetInPage = taskMemoryManager.getOffsetInPage(recordPointer);
       int dataRemaining = Platform.getInt(recordPage, recordOffsetInPage);
       long recordReadPosition = recordOffsetInPage + 4; // skip over record length
+      // TODO read
+      // 这个分段写一个记录什么意思，没整明白???
+      // writeBuffer用作缓存???
       while (dataRemaining > 0) {
+        // 为了分段写记录到disk中去
         final int toTransfer = Math.min(diskWriteBufferSize, dataRemaining);
+        // copy 未知类型(maybe long[], byte[]) to byte[]
+        // 把一个记录分段拷贝到一个较小的buffer中去
         Platform.copyMemory(
           recordPage, recordReadPosition, writeBuffer, Platform.BYTE_ARRAY_OFFSET, toTransfer);
+        // 将buffer中的内容通过磁盘写入writer(可能并为写入磁盘，而是先通过writeBuffer缓存???)。
         writer.write(writeBuffer, 0, toTransfer);
         recordReadPosition += toTransfer;
         dataRemaining -= toTransfer;
       }
+      // 写完一个完整的记录后，更新写统计信息
       writer.recordWritten();
     }
 
+    // 提交最后一个partition，并生成FileSegment
     final FileSegment committedSegment = writer.commitAndGet();
     writer.close();
     // If `writeSortedFile()` was called from `closeAndGetSpills()` and no records were inserted,
@@ -225,9 +239,11 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     // writeSortedFile() in that case.
     if (currentPartition != -1) {
       spillInfo.partitionLengths[currentPartition] = committedSegment.length();
+      // 添加该spillInfo至spills
       spills.add(spillInfo);
     }
 
+    // TODO read
     if (!isLastFile) {  // i.e. this is a spill file
       // The current semantics of `shuffleRecordsWritten` seem to be that it's updated when records
       // are written to disk, not when they enter the shuffle sorting code. DiskBlockObjectWriter
@@ -265,6 +281,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       spills.size() > 1 ? " times" : " time");
 
     writeSortedFile(false);
+    // TODO read
     final long spillSize = freeMemory();
     inMemSorter.reset();
     // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding the
