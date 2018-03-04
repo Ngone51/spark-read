@@ -184,12 +184,13 @@ final class ShuffleInMemorySorter {
    */
   public ShuffleSorterIterator getSortedIterator() {
     int offset = 0;
-    if (useRadixSort) {
+    if (useRadixSort) { // 基数排序
       offset = RadixSort.sort(
         array, pos,
         PackedRecordPointer.PARTITION_ID_START_BYTE_INDEX,
         PackedRecordPointer.PARTITION_ID_END_BYTE_INDEX, false, false);
-    } else {
+    } else { // Tim排序
+      // array.getBaseOffset() + pos * 8L之后是array空出来，用于排序的空间
       MemoryBlock unused = new MemoryBlock(
         array.getBaseObject(),
         array.getBaseOffset() + pos * 8L,
