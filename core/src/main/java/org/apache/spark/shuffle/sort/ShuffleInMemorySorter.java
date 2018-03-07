@@ -72,6 +72,7 @@ final class ShuffleInMemorySorter {
    */
   private int usableCapacity = 0;
 
+  // 用于初始化inMemSorter的初始大小
   private int initialSize;
 
   ShuffleInMemorySorter(MemoryConsumer consumer, int initialSize, boolean useRadixSort) {
@@ -199,6 +200,9 @@ final class ShuffleInMemorySorter {
       Sorter<PackedRecordPointer, LongArray> sorter =
         new Sorter<>(new ShuffleSortDataFormat(buffer));
 
+      // 排序真正排的只是存储在array中的PackedRecordPointer(其中包含了partitionID)，
+      // 而存储在pages里的数据的位置不用因为排序而变化。因为，PackedRecordPointer包含了
+      // 一个具体的记录在pages中的具体位置，这就是record pointer(记录指针)的意义所在。
       sorter.sort(array, 0, pos, SORT_COMPARATOR);
     }
     return new ShuffleSorterIterator(pos, array, offset);
