@@ -170,6 +170,7 @@ public class TaskMemoryManager {
         // spill files.
         // 使用TreeMap的好处是???排序???
         TreeMap<Long, List<MemoryConsumer>> sortedConsumers = new TreeMap<>();
+        // 有这么多consumer吗???还是没有理清TaskMemoryManager和consumer的关系
         for (MemoryConsumer c: consumers) {
           if (c != consumer && c.getUsed() > 0 && c.getMode() == mode) {
             long key = c.getUsed();
@@ -205,7 +206,14 @@ public class TaskMemoryManager {
           }
           try {
             // TODO read consumer spill
+            // 为什么consumer可以直接spill?不用询问consumer的意见吗???可能的解释是，
+            // consumer只是用来使用内存存储记录的，并且被存储的记录在map端不会有很多的
+            // 访问。当内存不够时，我们执行spill，把记录写到磁盘空间中，就能达到释放内存
+            // 的作用的。另外，这些记录也不是没有了，而是在磁盘中了。
+            // 这里有一个问题，我们是否可以对不同的consumer执行spill时，除了上面的内存
+            // 占用多少这个优先级顺序，还能否有其它的参数来衡量优先级???
             // c(consumer)执行spill之后，释放了released大小的内存
+            // 执行spill(不同的consumer有自己不同的实现)
             long released = c.spill(required - got, consumer);
             if (released > 0) {
               logger.debug("Task {} released {} from {} for {}", taskAttemptId,
@@ -318,7 +326,7 @@ public class TaskMemoryManager {
       throw new TooLargePageException(size);
     }
 
-    // 申请execution memory
+    // 申请execution memory(acquired有可能小于size), 可能会触发spill
     long acquired = acquireExecutionMemory(size, consumer);
     if (acquired <= 0) {
       return null;
@@ -344,13 +352,25 @@ public class TaskMemoryManager {
       page = memoryManager.tungstenMemoryAllocator().allocate(acquired);
     } catch (OutOfMemoryError e) {
       logger.warn("Failed to allocate a page ({} bytes), try again.", acquired);
+      // 关于oom：
+      // 上面的acquireExecutionMemory()是spark自己管理的内存池，而allocate()是向jvm申请内存，
+      // 如果抛出oom，则说明spark以为还有acquired大小的内存，而实际上，jvm上的内存已经小于acquired了。
+      // 说明，spark没有精确的记录内存的使用，有些内存的使用是没有跟踪到的。比如创建MemoryBlock时的
+      // 内存申请。
       // there is no enough memory actually, it means the actual free memory is smaller than
       // MemoryManager thought, we should keep the acquired memory.
       synchronized (this) {
         // 为什么不把没有使用的内存释放掉???这样做不浪费内存吗???
+        // see [SPARK-13210] [SQL] catch OOM when allocate memory and expand array 作者的解释
+        // 从execution pool里申请到的acquired大小的内存(小于jvm的实际内存)，并不是说，jvm一点都
+        // 分配不了(有可能它能分配acquired / 2大小的内存)，关键是，我们无法精确的知道，那些内存是spark的
+        // 内存管理器，有多少是没有精确跟踪到的。
         acquiredButNotUsed += acquired;
         allocatedPages.clear(pageNumber);
       }
+      // TODO 死循环??? 如果每次acquired都大于0(因为有其它的consumer在同时释放
+      // (不包括spill)内存??? 这个'同时'可能吗???)
+      // 问一个问题：一个executor会同时执行多个task吗???
       // 递归调用
       // this could trigger spilling to free some pages.
       return allocatePage(size, consumer);
