@@ -150,6 +150,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
 
     final ShuffleWriteMetrics writeMetricsToUse;
 
+    // TODO read
     if (isLastFile) {
       // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
       writeMetricsToUse = writeMetrics;
@@ -179,6 +180,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     // createTempShuffleBlock here; see SPARK-3426 for more details.
     final Tuple2<TempShuffleBlockId, File> spilledFileInfo =
       blockManager.diskBlockManager().createTempShuffleBlock();
+    // 所以，最终写入该file的记录都是按partitionID有序的
     final File file = spilledFileInfo._2();
     final TempShuffleBlockId blockId = spilledFileInfo._1();
     final SpillInfo spillInfo = new SpillInfo(numPartitions, file, blockId);
@@ -210,6 +212,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       final long recordPointer = sortedRecords.packedRecordPointer.getRecordPointer();
       final Object recordPage = taskMemoryManager.getPage(recordPointer);
       final long recordOffsetInPage = taskMemoryManager.getOffsetInPage(recordPointer);
+      // dataRemaining意为记录的长度。
       int dataRemaining = Platform.getInt(recordPage, recordOffsetInPage);
       long recordReadPosition = recordOffsetInPage + 4; // skip over record length
       // TODO read
@@ -280,9 +283,15 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       spills.size(),
       spills.size() > 1 ? " times" : " time");
 
+    // 对inMemSorter中数据进行排序，并通过DiskBlockObjectWriter写入磁盘
     writeSortedFile(false);
-    // TODO read
+    // 感觉这里的freeMemory并不是spillSize(如果spiilSize指的是spill掉的记录的size的话)，
+    // 因为这里free掉的memory是pages的占用的内存，而pages的内存并不是都存储了记录，也会有末尾
+    // 零碎的内存没有被利用起来。
     final long spillSize = freeMemory();
+    // spill之后，会reset inMemSorter。
+    // 在reset中，会inMemSoter会释放当前的array(可能扩增过size)，
+    // 然后重新申请大小initialSize的array
     inMemSorter.reset();
     // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding the
     // records. Otherwise, if the task is over allocated memory, then without freeing the memory
@@ -316,9 +325,13 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     return peakMemoryUsedBytes;
   }
 
+  // TODO read freeMemory
   private long freeMemory() {
+    // 更新内存使用的峰值
     updatePeakMemoryUsed();
     long memoryFreed = 0;
+    // 释放所有的pages??? So，这些pages是用来干嘛的呀???
+    // 答：pages用来records的实际数据，而inMemSorter
     for (MemoryBlock block : allocatedPages) {
       memoryFreed += block.size();
       freePage(block);
@@ -326,6 +339,9 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     allocatedPages.clear();
     currentPage = null;
     pageCursor = 0;
+    // memoryFreed不包括inMemSorter的使用内存???
+    // 答：可能的解释是，释放的内存指的只是记录实际数据占的内存。
+    // 而且，inMemSorter占用的内存，后在该方法调用之后，调用reset()来释放。
     return memoryFreed;
   }
 
@@ -402,12 +418,15 @@ final class ShuffleExternalSorter extends MemoryConsumer {
    *                      special overflow pages).
    */
   private void acquireNewPageIfNecessary(int required) {
-    // 如果从未申请过一个page或这当前page的剩余空间(小于required size)不足以存储当前的记录，
+    // 如果从未申请过一个page或者当前page的剩余空间(小于required size)不足以存储当前的记录，
     // 则申请一个新的page
     if (currentPage == null ||
       pageCursor + required > currentPage.getBaseOffset() + currentPage.size() ) {
       // TODO: try to find space in previous pages
       // 设置currentPage为新申请的page
+      // required大小为record的大小，而且申请的page的内存只会小于等于required，
+      // 所以一个page最多只能存下一个记录咯。那上面的TODO为什么还要从previous中去寻找空间呢???
+      // 但是从if()里的判断条件看，也是想在一个page中存多个record的意思啊，所以到底是怎么回事呢???
       currentPage = allocatePage(required);
       // 设置pageCursor为当前page的base offset
       pageCursor = currentPage.getBaseOffset();
@@ -428,7 +447,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     if (inMemSorter.numRecords() >= numElementsForSpillThreshold) {
       logger.info("Spilling data because number of spilledRecords crossed the threshold " +
         numElementsForSpillThreshold);
-      // TODO read ShufffleExternalSorter spill()
+      // 强制执行spill
       spill();
     }
 
@@ -449,11 +468,11 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     Platform.putInt(base, pageCursor, length);
     // pageCursor向右移动4个字节
     pageCursor += 4;
-    // 再在该page中存储该记录的实际内容
+    // 再在该page中存储该记录(实际数据)
     Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
     // 再更新pageCursor
     pageCursor += length;
-    // 再往inMemSorter中插入该记录??? 哈？怎么还要存储一遍???看不懂了...
+    // 再往inMemSorter中插入该记录的recordAddress和partition ID，用于之后的排序
     inMemSorter.insertRecord(recordAddress, partitionId);
   }
 
