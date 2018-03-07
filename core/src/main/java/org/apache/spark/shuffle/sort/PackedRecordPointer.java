@@ -91,6 +91,7 @@ final class PackedRecordPointer {
     // Note that without word alignment we can address 2^27 bytes = 128 megabytes per page.
     // Also note that this relies on some internals of how TaskMemoryManager encodes its addresses.
     final long pageNumber = (recordPointer & MASK_LONG_UPPER_13_BITS) >>> 24;
+    // TODO 解决疑问
     // 最大的问题是，这里的address编码和TaskMemoryManager里的编码不一样啊!!!在TaskMemoryManger中的page
     // 偏移量可以达到37个bit位，而这里只有27个bit位，什么情况啊???哪里遗漏了吗???
     final long compressedAddress = pageNumber | (recordPointer & MASK_LONG_LOWER_27_BITS);
