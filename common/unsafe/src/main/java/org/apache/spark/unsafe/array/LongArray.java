@@ -43,6 +43,11 @@ public final class LongArray {
     this.memory = memory;
     this.baseObj = memory.getBaseObject();
     this.baseOffset = memory.getBaseOffset();
+    // length表示LongArray能存储的元素个数
+    // 注意：这里直接用size / WIDTH，而不是(size + 7) / WIDTH。因为(size + 7) / WIDTH是为了保证申请内存
+    // 大于等于size，但实际能存储的元素个数确实是size / WIDTH。虽然会有多余的空闲内存，但这不是我们能使用的。
+    // TODO 其实这两天也断断续续地在想这个问题，如何再去利用这部分空闲的内存呢???以及，对于execution pool，这部分
+    // 内存空出来了，一直不能被使用，但是，execution pool却还认为该部分内存还没被分配过(从内存数量的角度看)。
     this.length = memory.size() / WIDTH;
   }
 
