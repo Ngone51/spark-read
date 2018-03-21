@@ -184,6 +184,7 @@ private[spark] class BlockManager(
   // 在该executor上的BlockManager
   private[spark] var shuffleServerId: BlockManagerId = _
 
+  // TODO read
   // Client to read other executors' shuffle files. This is either an external service, or just the
   // standard BlockTransferService to directly connect to other Executors.
   private[spark] val shuffleClient = if (externalShuffleServiceEnabled) {
@@ -392,11 +393,16 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 获取本地block的接口。如果block没有找到或无法成功读取，则抛出异常。
    * Interface to get local block data. Throws an exception if the block cannot be found or
    * cannot be read successfully.
    */
   override def getBlockData(blockId: BlockId): ManagedBuffer = {
+    // 该BlockId是否为ShuffleBlockId
     if (blockId.isShuffle) {
+      // 如果是ShuffleBlock，则通过ShuffleBlockResolver来获取该block
+      // 该getBlockData()返回的是FileSegmentManagedBuffer，该buf包含数据文件的一个引用(File对象),
+      // 但并不包含实际的block数据。
       shuffleManager.shuffleBlockResolver.getBlockData(blockId.asInstanceOf[ShuffleBlockId])
     } else {
       getLocalBytes(blockId) match {
@@ -649,7 +655,7 @@ private[spark] class BlockManager(
       // Try to avoid expensive serialization by reading a pre-serialized copy from disk:
       // 虽然level说了是deserialized，但是如果存到了磁盘上，那肯定是序列化过的
       if (level.useDisk && diskStore.contains(blockId)) {
-        // 之所以在这边没有磁盘里读取的block缓存到内存中，是因为：首先该if分支处理的是反序列化存储
+        // 之所以在这边没有把磁盘里读取的block缓存到内存中，是因为：首先该if分支处理的是反序列化存储
         // 的block，所以，极有可能在内存中已经有该value对象(且没有以bytes存储的对象)。而调用者却想要
         // bytes对象(说明内存中没有bytes对象嘛)。而你却要缓存一个value对象（强调：人家要的是bytes）对
         // 象。所以，这样的缓存很可能不会带来任何效益。
@@ -659,6 +665,7 @@ private[spark] class BlockManager(
         // cache the block's deserialized objects since that caching may not have a payoff.
         diskStore.getBytes(blockId)
       } else if (level.useMemory && memoryStore.contains(blockId)) {
+        // TODO read
         // 如果在内存中，则序列化之
         // The block was not found on disk, so serialize an in-memory copy:
         new ByteBufferBlockData(serializerManager.dataSerializeWithExplicitClassTag(
