@@ -113,6 +113,8 @@ object BlockId {
   val TEMP_SHUFFLE = "temp_shuffle_([-A-Fa-f0-9]+)".r
   val TEST = "test_(.*)".r
 
+  // 注意：每一个case开头都是一个正则表达式，case会把匹配该正则的结果以
+  // Option[List[String]]的形式返回
   def apply(name: String): BlockId = name match {
     case RDD(rddId, splitIndex) =>
       RDDBlockId(rddId.toInt, splitIndex.toInt)
