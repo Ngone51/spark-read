@@ -369,7 +369,7 @@ private[spark] class MapOutputTrackerMaster(
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
 
   // requests for map output statuses
-  // 获取map output状态的请求
+  // 用于存储获取map output状态的请求
   private val mapOutputRequests = new LinkedBlockingQueue[GetMapOutputMessage]
 
   // Thread pool used for handling map output status requests. This is a separate thread pool
@@ -408,6 +408,8 @@ private[spark] class MapOutputTrackerMaster(
             val data = mapOutputRequests.take()
             // PoisonPill策略
              if (data == PoisonPill) {
+              // 不用担心再放回去过程中，有其它线程看不到PoisonPill，因为mapOutputRequests
+              // 是LinkedBlockingQueue,当没有元素时，take()会阻塞
               // Put PoisonPill back so that other MessageLoops can see it.
               mapOutputRequests.offer(PoisonPill)
               return
@@ -766,23 +768,32 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
       }
 
       if (fetchedStatuses == null) {
+        // 我们赢得了拉取statues的资格，那么就开始做吧
         // We won the race to fetch the statuses; do so
         logInfo("Doing the fetch; tracker endpoint = " + trackerEndpoint)
         // This try-finally prevents hangs due to timeouts:
         try {
+          // 向driver端获取mapout status的信息
           // 发送请求到MapOutputTrackerMasterEndpoint
           val fetchedBytes = askTracker[Array[Byte]](GetMapOutputStatuses(shuffleId))
-          // 反序列化返回的结果
+          // 反序列化返回的结果(statues)
           fetchedStatuses = MapOutputTracker.deserializeMapStatuses(fetchedBytes)
           logInfo("Got the output locations")
+          // 将获取到的statues存到mapStatues中，这样，如果有其他的线程来取时，
+          // 就可以直接从mapStatues中获取了
           mapStatuses.put(shuffleId, fetchedStatuses)
         } finally {
           fetching.synchronized {
+            // 获取statuses成功，则从fetching中去除shuffleId，表名shuffledId对应的
+            // statuses已经获取结束了
             fetching -= shuffleId
+            // 唤醒其它等待的线程，以让它们也可以获取到该statuses
             fetching.notifyAll()
           }
         }
       }
+      // 记录获取statused耗费的时间。如果是直接从mapStatuses获取的，那么肯定很快；
+      // 如果从通过master获取，则需经过网络路由，必定会耗费更多的时间。
       logDebug(s"Fetching map output statuses for shuffle $shuffleId took " +
         s"${System.currentTimeMillis - startTime} ms")
 
