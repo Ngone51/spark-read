@@ -52,19 +52,27 @@ private[spark] class NettyBlockTransferService(
   extends BlockTransferService {
 
   // TODO: Don't use Java serialization, use a more cross-version compatible serialization format.
+  // 创建序列化器(网络传输肯定需要经过序列化的嘛)
   private val serializer = new JavaSerializer(conf)
+  // 是否启用认证
   private val authEnabled = securityManager.isAuthenticationEnabled()
+  // 传输配置
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle", numCores)
 
+  // 传输上下文
   private[this] var transportContext: TransportContext = _
+  // 传输服务端
   private[this] var server: TransportServer = _
+  // 传输客户端工厂类(用于创建传输客户端)
   private[this] var clientFactory: TransportClientFactory = _
+  // 应用id
   private[this] var appId: String = _
 
   override def init(blockDataManager: BlockDataManager): Unit = {
     val rpcHandler = new NettyBlockRpcServer(conf.getAppId, serializer, blockDataManager)
     var serverBootstrap: Option[TransportServerBootstrap] = None
     var clientBootstrap: Option[TransportClientBootstrap] = None
+    // 如果没有启用认证呢? 则serverBootstrap和clientBootstrap都是None吗???
     if (authEnabled) {
       serverBootstrap = Some(new AuthServerBootstrap(transportConf, securityManager))
       clientBootstrap = Some(new AuthClientBootstrap(transportConf, conf.getAppId, securityManager))
@@ -110,12 +118,14 @@ private[spark] class NettyBlockTransferService(
     try {
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
+          // 每次都要获取一个新的TransportClient
           val client = clientFactory.createClient(host, port)
           new OneForOneBlockFetcher(client, appId, execId, blockIds, listener,
             transportConf, tempFileManager).start()
         }
       }
 
+      // 默认最大重试次数，3次
       val maxRetries = transportConf.maxIORetries()
       if (maxRetries > 0) {
         // Note this Fetcher will correctly handle maxRetries == 0; we avoid it just in case there's
