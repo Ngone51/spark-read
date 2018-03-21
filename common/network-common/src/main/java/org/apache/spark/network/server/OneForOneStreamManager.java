@@ -34,6 +34,8 @@ import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.client.TransportClient;
 
 /**
+ * 流管理器允许注册一个Iterator<ManagedBuffer>(通过client以chunks的形式单独地获取)。
+ * 每一次注册的buffer都是一个chunk。
  * StreamManager which allows registration of an Iterator&lt;ManagedBuffer&gt;, which are
  * individually fetched as chunks by the client. Each registered buffer is one chunk.
  */
@@ -197,7 +199,9 @@ public class OneForOneStreamManager extends StreamManager {
    * allowed to fetch from this stream.
    */
   public long registerStream(String appId, Iterator<ManagedBuffer> buffers) {
+    // 申请一个新的stream id
     long myStreamId = nextStreamId.getAndIncrement();
+    // 添加新的streamId和StreamState之间的映射
     streams.put(myStreamId, new StreamState(appId, buffers));
     return myStreamId;
   }

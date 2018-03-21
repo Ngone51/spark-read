@@ -108,6 +108,7 @@ public class RetryingBlockFetcher {
     this.listener = listener;
     this.maxRetries = conf.maxIORetries();
     this.retryWaitTime = conf.ioRetryWaitTimeMs();
+    // 又用了google common这个包
     this.outstandingBlocksIds = Sets.newLinkedHashSet();
     Collections.addAll(outstandingBlocksIds, blockIds);
     this.currentListener = new RetryingBlockFetchListener();
@@ -182,6 +183,8 @@ public class RetryingBlockFetcher {
   }
 
   /**
+   * 我们的RetryListener会拦截block的拉取响应，然后再将响应传递给我们的parent listener。注意，在每次重试
+   * 的事件中，我们会立即替换currentListener这个字段。这意味着任何不是来自当前的listener的响应都会被忽略。
    * Our RetryListener intercepts block fetch responses and forwards them to our parent listener.
    * Note that in the event of a retry, we will immediately replace the 'currentListener' field,
    * indicating that any responses from non-current Listeners should be ignored.
@@ -189,9 +192,11 @@ public class RetryingBlockFetcher {
   private class RetryingBlockFetchListener implements BlockFetchingListener {
     @Override
     public void onBlockFetchSuccess(String blockId, ManagedBuffer data) {
+      // 我们只会在该block request是outstanding和我们仍是currentListener时，将该成功消息传递给parent listener。
       // We will only forward this success message to our parent listener if this block request is
       // outstanding and we are still the active listener.
       boolean shouldForwardSuccess = false;
+      // 注意：我们需要对currentListener加锁
       synchronized (RetryingBlockFetcher.this) {
         if (this == currentListener && outstandingBlocksIds.contains(blockId)) {
           outstandingBlocksIds.remove(blockId);
@@ -212,6 +217,7 @@ public class RetryingBlockFetcher {
       boolean shouldForwardFailure = false;
       synchronized (RetryingBlockFetcher.this) {
         if (this == currentListener && outstandingBlocksIds.contains(blockId)) {
+          // 是否可以retry
           if (shouldRetry(exception)) {
             initiateRetry();
           } else {

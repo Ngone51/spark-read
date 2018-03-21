@@ -81,6 +81,7 @@ public class OneForOneBlockFetcher {
       TransportConf transportConf,
       TempFileManager tempFileManager) {
     this.client = client;
+    // 创建OpenBlocks messgae
     this.openMessage = new OpenBlocks(appId, execId, blockIds);
     this.blockIds = blockIds;
     this.listener = listener;

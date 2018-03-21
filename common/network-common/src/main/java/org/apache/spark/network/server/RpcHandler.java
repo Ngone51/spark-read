@@ -26,6 +26,7 @@ import org.apache.spark.network.client.RpcResponseCallback;
 import org.apache.spark.network.client.TransportClient;
 
 /**
+ * TransportClient通过sendRPC()方法发送的消息的处理器(handler)。
  * Handler for sendRPC() messages sent by {@link org.apache.spark.network.client.TransportClient}s.
  */
 public abstract class RpcHandler {

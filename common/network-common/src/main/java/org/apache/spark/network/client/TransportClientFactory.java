@@ -80,6 +80,7 @@ public class TransportClientFactory implements Closeable {
 
   /** Random number generator for picking connections between peers. */
   private final Random rand;
+  /** 在两个节点之间，同时最多能拥有的连接个数 */
   private final int numConnectionsPerPeer;
 
   private final Class<? extends Channel> socketChannelClass;

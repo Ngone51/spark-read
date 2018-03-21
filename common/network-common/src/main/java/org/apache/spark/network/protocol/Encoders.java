@@ -26,12 +26,17 @@ public class Encoders {
 
   /** Strings are encoded with their length followed by UTF-8 bytes. */
   public static class Strings {
+    // encodeLength返回的值的大小，就是encode()将要写入buf的值的大小
     public static int encodedLength(String s) {
+      // 这个'4'代表啥???
+      // 答：encode()时，不仅要encode数据，还要encode数据的长度，
+      // 而长度用int表示，而一个int又要4个字节。
       return 4 + s.getBytes(StandardCharsets.UTF_8).length;
     }
 
     public static void encode(ByteBuf buf, String s) {
       byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+      // 这就是上面的'4'
       buf.writeInt(bytes.length);
       buf.writeBytes(bytes);
     }
