@@ -57,6 +57,10 @@ private[spark] class BlockStoreShuffleReader[K, C](
 
     val serializerInstance = dep.serializer.newInstance()
 
+    // 为什么这里使用flatMap,里面的case是这样的???
+    // 答：因为flatMap会调用该对象的hasNext、next方法。而ShuffleBlockFetcherIterator继承
+    // 了iterator，并且实现了自己的next、hasNext方法。在ShuffleBlockFetcherIterator自己
+    // 实现的next方法中，就是返回(blockId, inputStream)这种形式的。
     // Create a key/value iterator for each stream
     val recordIter = wrappedStreams.flatMap { case (blockId, wrappedStream) =>
       // Note: the asKeyValueIterator below wraps a key/value iterator inside of a
