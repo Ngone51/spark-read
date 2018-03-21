@@ -97,6 +97,7 @@ public final class FileSegmentManagedBuffer extends ManagedBuffer {
     FileInputStream is = null;
     try {
       is = new FileInputStream(file);
+      // 跳过offset之前的数据
       ByteStreams.skipFully(is, offset);
       return new LimitedInputStream(is, length);
     } catch (IOException e) {

@@ -158,6 +158,36 @@ private[spark] class UnifiedMemoryManager private[memory] (
         // execution pool只会驱逐storage pool超过storageRegionSize的那部分block，拿回原本就属于自己却被
         // storage pool借去的内存。由此可知，storage pool还是会自己释放内存的。)
         // 所以，这样一种情况到底有可能吗???感觉是有可能的，而且看起来没毛病。
+
+        /****************************最*************终**************版********************************/
+        // 上述的第二个理解还是有根本性的错误：'storage pool有空闲内存'和'storage poolSize > storageRegionSize，则
+        // storage pool没有空闲内存'并不是互斥的。具体的说，当storage poolSize > storageRegionSize时，storage pool
+        // 也可能有空闲内存，同时超过storageRegionSize的那部分内存中，还存储了一些blocks。
+        // 下面我就再重新分析一遍。
+        // 还是分两种情况：
+        // 1. storage pool没有空闲内存可用。此时，有两种情况：
+        //   a) storage poolSize <= storageRegionSize: execution pool不能驱逐storage pool中的blocks
+        //   来获取更多的内存。此时，execution pool只能等待内存主动释放，来获取更多内存。
+        //   对应于max: memoryFree = 0, poolSize - storageRegionSize <= 0
+        //   b) storage poolSize > storageRegionSize: execution pool可以驱逐storage pool中超过
+        //   storageRegionSize的那部分内存中的blocks，来回收之前被storage pool借走的内存。
+        //   对应于max: memoryFree = 0, poolSize - storageRegionSize > 0
+
+        // 2. storage pool有空闲内存可用。此时情况复杂些：
+        //   a) storage poolSize <= storageRegionSize: execution pool只能借用storage pool的空闲内存。
+        //   对应与max: memoryFree > 0, poolSize - storageRegionSize < 0
+        //   b) storage poolSize > storageRegionSize：此时又有两种情况：
+        //     b.1) storage pool usedMemory <= storageRegionSize:
+        //     其中，usedMemory = poolSize - memoryFree。则，此时memoryFree >= poolSize - storageRegionSize
+        //     此时execution pool的可用内存仅有storage pool的空闲内存。
+        //     b.2) storage pool usedMemory > storageRegionSize:
+        //     显然，此时memoryFree < poolSize - storageRegionSize。此时，execution pool最多可以利用的内存包括
+        //     storage pool的空闲内存以及通过驱逐storage pool超过storageRegionSize的存储blocks而回收的内存。
+        //     (从freeSpaceToShrinkPool()方法可知，spark会优先使用空闲内存。当空闲内存不够时，再通过驱逐storage pool
+        //     的blocks回收内存。)
+        // 总结：可见，并不是当storage poolSize > storageRegionSize的时候，execution pool就会去驱逐storage pool
+        // 中的blocks或者storage pool就没有空闲内存可用。而当storage poolSize < storageRegionSize的时候，
+        // execution pool必然不能驱逐storage pool中的blocks。
         val memoryReclaimableFromStorage = math.max(
           storagePool.memoryFree, // 1. storage pool有空闲内存，execution pool向它借内存
           storagePool.poolSize - storageRegionSize) // 2. storage pool之前借走了execution pool的内存，execution pool
