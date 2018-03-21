@@ -56,7 +56,7 @@ private[spark] class IndexShuffleBlockResolver(
     blockManager.diskBlockManager.getFile(ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
   }
 
-  // 货物shuffle的索引文件
+  // 获取shuffle的索引文件
   private def getIndexFile(shuffleId: Int, mapId: Int): File = {
     // 通过DiskBlockManager来获取或创建索引文件(File对象)
     // 根据shuffleId、mapId、NOOP_REDUCE_ID创建ShuffleIndexBlockId，来获取对应的索引文件
@@ -246,17 +246,27 @@ private[spark] class IndexShuffleBlockResolver(
     // class of issue from re-occurring in the future which is why they are left here even though
     // SPARK-22982 is fixed.
     val channel = Files.newByteChannel(indexFile.toPath)
+    // 为什么是blockId.reduceId * 8???
+    // 答：首先，indexFile里面存储的是map端每个partition的偏移量(用于读取dataFile)。
+    // 而该偏移量是用long来存储的，一个long需要8个字节。例如：reduceId = 0，则
+    // position = 0，即该reducer可以从文件的第0个字节处读取第一个partition的偏移量。
+    // 而如果reduceId = 1，则position = 8，即该reducer就要从该文件的第8个字节开始
+    // 读取第二个偏移量。
     channel.position(blockId.reduceId * 8)
     val in = new DataInputStream(Channels.newInputStream(channel))
     try {
+      // 获取的offset对应DataFile开始读取对应partition的开始位置
       val offset = in.readLong()
       val nextOffset = in.readLong()
       val actualPosition = channel.position()
+      // 因为offset和nextOffset读取了两个long，所以position会向前移动16个字节。
       val expectedPosition = blockId.reduceId * 8 + 16
       if (actualPosition != expectedPosition) {
         throw new Exception(s"SPARK-22982: Incorrect channel position after index file reads: " +
           s"expected $expectedPosition but actual position was $actualPosition.")
       }
+      // FileSegmentManagedBuffer的长度是nextOffset - offset的大小, 而这个区间对应一个单独的partition。
+      // 这是不是意味着一个shuffle block对应的就是一个partition的数据???
       new FileSegmentManagedBuffer(
         transportConf,
         getDataFile(blockId.shuffleId, blockId.mapId),
