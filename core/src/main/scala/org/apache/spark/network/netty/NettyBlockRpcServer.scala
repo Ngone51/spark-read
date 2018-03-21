@@ -52,14 +52,17 @@ class NettyBlockRpcServer(
       client: TransportClient,
       rpcMessage: ByteBuffer,
       responseContext: RpcResponseCallback): Unit = {
+    // 解析收到的消息类型
     val message = BlockTransferMessage.Decoder.fromByteBuffer(rpcMessage)
     logTrace(s"Received request: $message")
 
     message match {
       case openBlocks: OpenBlocks =>
         val blocksNum = openBlocks.blockIds.length
+        // 通过blockManager的getBlockData()获取block
         val blocks = for (i <- (0 until blocksNum).view)
           yield blockManager.getBlockData(BlockId.apply(openBlocks.blockIds(i)))
+        // 向streamManger注册一个新的stream(日后必有用...)
         val streamId = streamManager.registerStream(appId, blocks.iterator.asJava)
         logTrace(s"Registered streamId $streamId with $blocksNum buffers")
         responseContext.onSuccess(new StreamHandle(streamId, blocksNum).toByteBuffer)
