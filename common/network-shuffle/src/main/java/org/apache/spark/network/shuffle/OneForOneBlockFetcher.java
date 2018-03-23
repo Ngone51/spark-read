@@ -116,10 +116,13 @@ public class OneForOneBlockFetcher {
       throw new IllegalArgumentException("Zero-sized blockIds array");
     }
 
+    // RpcResponseCallback会在TransportResponseHandler#handle()接收到server端的消息时
+    // 被调用。当然，针对不同的响应消息，RpcResponseCallback的实现是不一样的。
     client.sendRpc(openMessage.toByteBuffer(), new RpcResponseCallback() {
       @Override
       public void onSuccess(ByteBuffer response) {
         try {
+          // 解析从server端传输过来的StreamHandle
           streamHandle = (StreamHandle) BlockTransferMessage.Decoder.fromByteBuffer(response);
           logger.trace("Successfully opened blocks {}, preparing to fetch chunks.", streamHandle);
 
@@ -127,9 +130,11 @@ public class OneForOneBlockFetcher {
           // reasonable due to higher level chunking in [[ShuffleBlockFetcherIterator]].
           for (int i = 0; i < streamHandle.numChunks; i++) {
             if (tempFileManager != null) {
+              // TODO read
               client.stream(OneForOneStreamManager.genStreamChunkId(streamHandle.streamId, i),
                 new DownloadCallback(i));
             } else {
+              // TODO read 这是同步的吗？
               client.fetchChunk(streamHandle.streamId, i, chunkCallback);
             }
           }
