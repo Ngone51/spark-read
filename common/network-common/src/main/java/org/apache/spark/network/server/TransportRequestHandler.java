@@ -45,6 +45,11 @@ import org.apache.spark.network.protocol.StreamResponse;
 import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
 
 /**
+ * 用于处理来自客户端的请求和回写chunk data的handler。每个handler和一个Netty的channel绑定。
+ * 并且，为了在channel被关闭的时候能够清理掉streams，该handler还会追踪那些通过该channel被拉
+ * 取的streams（详见channelUnregistered）。
+ *
+ * 传递的消息应该已经被由TransportServer建立的pipeline处理过。
  * A handler that processes requests from clients and writes chunk data back. Each handler is
  * attached to a single Netty channel, and keeps track of which streams have been fetched via this
  * channel, in order to clean them up if the channel is terminated (see #channelUnregistered).
@@ -57,12 +62,15 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
   /** The Netty channel that this handler is associated with. */
   private final Channel channel;
 
+  // ??? 这是哪个client？？？
   /** Client on the same channel allowing us to talk back to the requester. */
   private final TransportClient reverseClient;
 
   /** Handles all RPC messages. */
   private final RpcHandler rpcHandler;
 
+  // 这里的streamManager应该是OneForOneStreamManager
+  // 可用于管理与TransportRequestHandler绑定的channel中的被拉取chunk data的streams
   /** Returns each chunk part of a stream. */
   private final StreamManager streamManager;
 
@@ -105,9 +113,10 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
 
   @Override
   public void handle(RequestMessage request) {
+    // 如果是一个拉取chunk data的请求
     if (request instanceof ChunkFetchRequest) {
       processFetchRequest((ChunkFetchRequest) request);
-    } else if (request instanceof RpcRequest) {
+    } else if (request instanceof RpcRequest) { // rpc请求
       processRpcRequest((RpcRequest) request);
     } else if (request instanceof OneWayMessage) {
       processOneWayMessage((OneWayMessage) request);
@@ -123,26 +132,36 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
       logger.trace("Received req from {} to fetch block {}", getRemoteAddress(channel),
         req.streamChunkId);
     }
+    // 查询当前正在被拉取的chunk块的个数
     long chunksBeingTransferred = streamManager.chunksBeingTransferred();
     if (chunksBeingTransferred >= maxChunksBeingTransferred) {
       logger.warn("The number of chunks being transferred {} is above {}, close the connection.",
         chunksBeingTransferred, maxChunksBeingTransferred);
+      // 就直接close了？？？那如果还有要拉取的chunk呢？
       channel.close();
       return;
     }
     ManagedBuffer buf;
     try {
+      // 不理解这个reverseClient的意思。。。
       streamManager.checkAuthorization(reverseClient, req.streamChunkId.streamId);
+      // 注册与该streamId对应的channel
       streamManager.registerChannel(channel, req.streamChunkId.streamId);
+      // 获取该streamId中chunkIndex对应的那个chunk data
       buf = streamManager.getChunk(req.streamChunkId.streamId, req.streamChunkId.chunkIndex);
     } catch (Exception e) {
       logger.error(String.format("Error opening block %s for request from %s",
         req.streamChunkId, getRemoteAddress(channel)), e);
+      // 拉取失败（从上面的错误信息，可以看出来，底层的一个chunk对应了上层的一个block。
+      // 这句话好像哪里看到过，记不起来啦。。。）
       respond(new ChunkFetchFailure(req.streamChunkId, Throwables.getStackTraceAsString(e)));
       return;
     }
 
+    // 更新该streamId当前正在被传输的chunk的个数
     streamManager.chunkBeingSent(req.streamChunkId.streamId);
+    // 拉取成功，响应客户端（返回刚刚拉取的chunk data（buf））
+    // TODO read
     respond(new ChunkFetchSuccess(req.streamChunkId, buf)).addListener(future -> {
       streamManager.chunkSent(req.streamChunkId.streamId);
     });
@@ -182,11 +201,14 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
     }
   }
 
+  // 处理rpc请求
   private void processRpcRequest(final RpcRequest req) {
     try {
+      // 这个rpcHandler应该是NettyBlockRpcServer
       rpcHandler.receive(reverseClient, req.body().nioByteBuffer(), new RpcResponseCallback() {
         @Override
         public void onSuccess(ByteBuffer response) {
+          // 要把response封装成一个RpcResponse返回
           respond(new RpcResponse(req.requestId, new NioManagedBuffer(response)));
         }
 
