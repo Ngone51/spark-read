@@ -203,7 +203,7 @@ public class TransportClient implements Closeable {
   }
 
   /**
-   * 用于发送一个不透明的消息给服务端的RpcHandler。callback函数会在服务端响应或接收到错误后被调用。
+   * 用于发送一个不透明的消息给服务端的RpcHandler。callback函数会在（客户端接收到）服务端响应或错误后被调用。
    * Sends an opaque message to the RpcHandler on the server-side. The callback will be invoked
    * with the server's response or upon any failure.
    *
@@ -217,7 +217,11 @@ public class TransportClient implements Closeable {
       logger.trace("Sending RPC to {}", getRemoteAddress(channel));
     }
 
+    // 随机生成一个rpc的请求id
     long requestId = Math.abs(UUID.randomUUID().getLeastSignificantBits());
+    // 将该rpc请求（rpc id）以及其对应的callback存储到TransportResponseHandler中，
+    // 等到server端响应时，我们再用TransportResponseHandler去把对应的rpc请求取出来，
+    // 然后再用callback去处理
     handler.addRpcRequest(requestId, callback);
 
     channel.writeAndFlush(new RpcRequest(requestId, new NioManagedBuffer(message)))
