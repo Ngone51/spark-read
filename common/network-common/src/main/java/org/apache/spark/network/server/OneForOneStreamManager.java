@@ -83,6 +83,8 @@ public class OneForOneStreamManager extends StreamManager {
   @Override
   public ManagedBuffer getChunk(long streamId, int chunkIndex) {
     StreamState state = streams.get(streamId);
+    // 如果想要获取的chunk的index和curChunk不一致，说明chunk的拉取顺序乱了。
+    // （要求是按index 从小到大有序的拉取）
     if (chunkIndex != state.curChunk) {
       throw new IllegalStateException(String.format(
         "Received out-of-order chunk index %s (expected %s)", chunkIndex, state.curChunk));
@@ -157,6 +159,7 @@ public class OneForOneStreamManager extends StreamManager {
   public void chunkBeingSent(long streamId) {
     StreamState streamState = streams.get(streamId);
     if (streamState != null) {
+      // 该stream正在传输的chunk个数加1
       streamState.chunksBeingTransferred++;
     }
 
