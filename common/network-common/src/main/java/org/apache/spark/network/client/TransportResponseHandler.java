@@ -157,8 +157,10 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
     }
   }
 
+  // 处理TransportRequestHandler#respone#channel.writeAndFlush()发送过来的消息
   @Override
   public void handle(ResponseMessage message) throws Exception {
+    // 如果messgae是chunk拉取成功的消息
     if (message instanceof ChunkFetchSuccess) {
       ChunkFetchSuccess resp = (ChunkFetchSuccess) message;
       ChunkReceivedCallback listener = outstandingFetches.get(resp.streamChunkId);
@@ -182,8 +184,9 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
         listener.onFailure(resp.streamChunkId.chunkIndex, new ChunkFetchFailureException(
           "Failure while fetching " + resp.streamChunkId + ": " + resp.errorString));
       }
-    } else if (message instanceof RpcResponse) {
+    } else if (message instanceof RpcResponse) { // 响应的消息是"RpcResponse"
       RpcResponse resp = (RpcResponse) message;
+      // 获取对应的rpc请求id，该id是client和server之间处理同一个rpc请求的凭据
       RpcResponseCallback listener = outstandingRpcs.get(resp.requestId);
       if (listener == null) {
         logger.warn("Ignoring response for RPC {} from {} ({} bytes) since it is not outstanding",
