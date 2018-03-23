@@ -112,6 +112,8 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
     super.channelInactive(ctx);
   }
 
+  // 虽然不知道怎么回事(具体和netty的原理有关)，但是应该能确定从TransportClient#sendRpc#writeAndFlush
+  // 中发送过来的RpcRequest会最先被该方法读取。
   @Override
   public void channelRead(ChannelHandlerContext ctx, Object request) throws Exception {
     if (request instanceof RequestMessage) {
