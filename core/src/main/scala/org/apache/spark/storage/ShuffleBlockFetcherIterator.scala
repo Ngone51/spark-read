@@ -76,7 +76,7 @@ final class ShuffleBlockFetcherIterator(
   /**
    * 拉取的blocks总数。该总数可能会比blocksByAddress中的blocks总数小，因为我们在initialize()方法
    * 中过滤了大小为0的blocks。
-   * blocks总数 = 本地blcoks的总数 + 远程的blocks总数
+   * blocks总数 = 本地blocks的总数 + 远程的blocks总数
    * Total number of blocks to fetch. This can be smaller than the total number of blocks
    * in [[blocksByAddress]] because we filter out zero-sized blocks in [[initialize]].
    *
@@ -109,6 +109,9 @@ final class ShuffleBlockFetcherIterator(
   /**
    * 一个用于存储我们FetchResult的阻塞队列。该队列将由BlockTransferService提供的异步模型变成
    * 一个同步模型(iterator)。 哈???什么意思???
+   * 答：解释一下。BlockTransferService在获取blocks数据时是异步执行的（发送完请求后，它就不管了，等sever
+   * 把block传回来之后，自有listener去处理。而results是一个阻塞队列，它只能按队列中元素的顺序有序获取，并且
+   * 当队列中没有元素时（server还没来得及返回响应消息），它会阻塞等待。 ）
    * A queue to hold our results. This turns the asynchronous model provided by
    * [[org.apache.spark.network.BlockTransferService]] into a synchronous model (iterator).
    */
@@ -253,10 +256,13 @@ final class ShuffleBlockFetcherIterator(
             // Increment the ref count because we need to pass this to a different thread.
             // This needs to be released after use.
             // TODO read
+            // 类似于增加一个对该buf的"引用"。只有当"引用"个数为0的时候，该buf才能被成功释放。
             buf.retain()
+            // 成功获取一个block，则剩下等待获取的blocks应该去除该成功获取的blcok
             remainingBlocks -= blockId
             // 这个sizeMap的key难道不是blockId.toString吗???
             // 哦，发现没，这个blockId是一个String类型的。
+            // 将获取的结果封装成SuccessFetchResult，并存储到results中。
             results.put(new SuccessFetchResult(BlockId(blockId), address, sizeMap(blockId), buf,
               remainingBlocks.isEmpty))
             logDebug("remainingBlocks: " + remainingBlocks)
@@ -267,6 +273,7 @@ final class ShuffleBlockFetcherIterator(
 
       override def onBlockFetchFailure(blockId: String, e: Throwable): Unit = {
         logError(s"Failed to get block(s) from ${req.address.host}:${req.address.port}", e)
+        // 获取失败，则将获取的结果封装成一个FailureFetchResult，并同样存储到results中。
         results.put(new FailureFetchResult(BlockId(blockId), address, e))
       }
     }
@@ -376,7 +383,7 @@ final class ShuffleBlockFetcherIterator(
   }
 
   private[this] def initialize(): Unit = {
-    // TODO read
+    // TODO read cleanup()
     // Add a task completion callback (called in both success case and failure case) to cleanup.
     context.addTaskCompletionListener(_ => cleanup())
 
@@ -394,7 +401,7 @@ final class ShuffleBlockFetcherIterator(
     // Send out initial requests for blocks, up to our maxBytesInFlight
     fetchUpToMaxBytes()
 
-    // 已经发起的远程请求的个数
+    // 已经发起的远程请求的个数（remoteRequests：所有远程请求数组；fetchRequests等待发起的远程请求队列）
     val numFetches = remoteRequests.size - fetchRequests.size
     logInfo("Started " + numFetches + " remote fetches in" + Utils.getUsedTimeMs(startTime))
 
@@ -428,6 +435,7 @@ final class ShuffleBlockFetcherIterator(
     // For local shuffle block, throw FailureFetchResult for the first IOException.
     while (result == null) {
       val startFetchWait = System.currentTimeMillis()
+      // 当results中没有元素时，会发生阻塞（直到server发回响应数据）
       result = results.take()
       val stopFetchWait = System.currentTimeMillis()
       shuffleMetrics.incFetchWaitTime(stopFetchWait - startFetchWait)
@@ -435,6 +443,7 @@ final class ShuffleBlockFetcherIterator(
       result match {
         case r @ SuccessFetchResult(blockId, address, size, buf, isNetworkReqDone) =>
           if (address != blockManager.blockManagerId) {
+            // TODO 现在才减少该值会不会有点太晚？
             numBlocksInFlightPerAddress(address) = numBlocksInFlightPerAddress(address) - 1
             shuffleMetrics.incRemoteBytesRead(buf.size)
             if (buf.isInstanceOf[FileSegmentManagedBuffer]) {
@@ -443,12 +452,16 @@ final class ShuffleBlockFetcherIterator(
             shuffleMetrics.incRemoteBlocksFetched(1)
           }
           bytesInFlight -= size
+          // 如果该SuccessFetchResult是一个request中的最后一个拉取的block，
+          // 那么意味这该request也就完成了所有拉取请求，则reqsInFlight减1。
           if (isNetworkReqDone) {
             reqsInFlight -= 1
             logDebug("Number of requests in flight " + reqsInFlight)
           }
 
           val in = try {
+            // TODO read
+            // buf创建input stream
             buf.createInputStream()
           } catch {
             // The exception could only be throwed by local shuffle block
@@ -459,6 +472,7 @@ final class ShuffleBlockFetcherIterator(
               throwFetchFailedException(blockId, address, e)
           }
 
+          // 封装压缩流
           input = streamWrapper(blockId, in)
           // Only copy the stream if it's wrapped by compression or encryption, also the size of
           // block is small (the decompressed block is smaller than maxBytesInFlight)
@@ -473,6 +487,7 @@ final class ShuffleBlockFetcherIterator(
               out.close()
               input = out.toChunkedByteBuffer.toInputStream(dispose = true)
             } catch {
+              // copyStream失败，就意味着corrupt了吗???
               case e: IOException =>
                 buf.release()
                 if (buf.isInstanceOf[FileSegmentManagedBuffer]
@@ -481,6 +496,7 @@ final class ShuffleBlockFetcherIterator(
                 } else {
                   logWarning(s"got an corrupted block $blockId from $address, fetch again", e)
                   corruptedBlocks += blockId
+                  // 重新获取的话，server端的chunk index还对的上来吗???
                   fetchRequests += FetchRequest(address, Array((blockId, size)))
                   result = null
                 }
@@ -495,6 +511,7 @@ final class ShuffleBlockFetcherIterator(
           throwFetchFailedException(blockId, address, e)
       }
 
+      // 我们再次发起（可能多个）获取远程block的请求，放心这个过程是异步执行的
       // Send fetch requests up to maxBytesInFlight
       fetchUpToMaxBytes()
     }
@@ -584,6 +601,7 @@ final class ShuffleBlockFetcherIterator(
 }
 
 /**
+ * 一个用于确保当InputStream.close()被调用时，底层的ManagedBuffer能够被释放的辅助类。
  * Helper class that ensures a ManagedBuffer is released upon InputStream.close()
  */
 private class BufferReleasingInputStream(
