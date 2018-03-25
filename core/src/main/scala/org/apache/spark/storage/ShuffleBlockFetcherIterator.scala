@@ -175,7 +175,6 @@ final class ShuffleBlockFetcherIterator(
   @GuardedBy("this")
   private[this] val shuffleFilesSet = mutable.HashSet[File]()
 
-  // TODO read
   initialize()
 
   // Decrements the buffer reference count.
@@ -371,6 +370,7 @@ final class ShuffleBlockFetcherIterator(
         shuffleMetrics.incLocalBlocksFetched(1)
         shuffleMetrics.incLocalBytesRead(buf.size)
         buf.retain()
+        // 第三个参数的设置变为buf.size(),详见SPARK-23524
         results.put(new SuccessFetchResult(blockId, blockManager.blockManagerId, 0, buf, false))
       } catch {
         case e: Exception =>
