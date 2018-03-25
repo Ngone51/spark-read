@@ -31,6 +31,7 @@ import org.apache.spark.network.protocol.ResponseMessage;
 import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
 
 /**
+ * 一个单独的传输层的通道处理器，用于分发请求消息给TransportRequestHandler和响应消息给TransportResponseHandler。
  * The single Transport-level Channel handler which is used for delegating requests to the
  * {@link TransportRequestHandler} and responses to the {@link TransportResponseHandler}.
  *
