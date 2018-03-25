@@ -160,20 +160,25 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
   // 处理TransportRequestHandler#respone#channel.writeAndFlush()发送过来的消息
   @Override
   public void handle(ResponseMessage message) throws Exception {
-    // 如果messgae是chunk拉取成功的消息
+    // 如果message是chunk拉取成功的消息
     if (message instanceof ChunkFetchSuccess) {
       ChunkFetchSuccess resp = (ChunkFetchSuccess) message;
       ChunkReceivedCallback listener = outstandingFetches.get(resp.streamChunkId);
+      // 如果该请求不在outstandingFetches里面，则忽略它，但需要先释放buf
       if (listener == null) {
         logger.warn("Ignoring response for block {} from {} since it is not outstanding",
           resp.streamChunkId, getRemoteAddress(channel));
         resp.body().release();
       } else {
         outstandingFetches.remove(resp.streamChunkId);
+        // 这里的listener应该对应OneForOneBlockFetcher里的chunkCallback，
+        // chunkCallback继而有会将该消息传递给ShuffleBlockFetcherIterator里的blockFetchingListener。
+        // 其实，这也是底层网络传输中callback和上层listener的一种一一对应，就像chunk和block对应一样。
         listener.onSuccess(resp.streamChunkId.chunkIndex, resp.body());
+        // 释放buf占用的内存
         resp.body().release();
       }
-    } else if (message instanceof ChunkFetchFailure) {
+    } else if (message instanceof ChunkFetchFailure) { // 拉取失败的消息
       ChunkFetchFailure resp = (ChunkFetchFailure) message;
       ChunkReceivedCallback listener = outstandingFetches.get(resp.streamChunkId);
       if (listener == null) {
@@ -181,6 +186,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
           resp.streamChunkId, getRemoteAddress(channel), resp.errorString);
       } else {
         outstandingFetches.remove(resp.streamChunkId);
+        // 这里的listener应该对应OneForOneBlockFetcher里的chunkCallback
         listener.onFailure(resp.streamChunkId.chunkIndex, new ChunkFetchFailureException(
           "Failure while fetching " + resp.streamChunkId + ": " + resp.errorString));
       }
@@ -209,11 +215,15 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
         outstandingRpcs.remove(resp.requestId);
         listener.onFailure(new RuntimeException(resp.errorString));
       }
-    } else if (message instanceof StreamResponse) {
+    } else if (message instanceof StreamResponse) { // stream响应消息
       StreamResponse resp = (StreamResponse) message;
+      // 使用poll直接从streamCallbacks队首取出callback（因为streamCallbacks中的callbacks在
+      // 添加时是加锁的，已经保证了它的有序性）
+      // TODO read 通过网络传输后，接收到的resp还是有序的吗？
       Pair<String, StreamCallback> entry = streamCallbacks.poll();
       if (entry != null) {
         StreamCallback callback = entry.getValue();
+        // TODO read
         if (resp.byteCount > 0) {
           StreamInterceptor interceptor = new StreamInterceptor(this, resp.streamId, resp.byteCount,
             callback);
