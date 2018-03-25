@@ -139,14 +139,21 @@ public class RetryingBlockFetcher {
 
     // Now initiate the fetch on all outstanding blocks, possibly initiating a retry if that fails.
     try {
+      // 这个fetchStarter就是NettyBlockTransferService#fetchBlocks里的blockFetchStarter啦
+      // createAndStart()会通过创建OneForOneBlockFetcher，并调用其start()方法，开始发起远程请求。
+      // 和其它地方不同的是，这里的myListener会拦截server的响应消息，如果是拉取失败的消息，则它会检查是否可以发起
+      // 一个重试请求。如果可以，则重新发起一个请求。
       fetchStarter.createAndStart(blockIdsToFetch, myListener);
     } catch (Exception e) {
       logger.error(String.format("Exception while beginning fetch of %s outstanding blocks %s",
         blockIdsToFetch.length, numRetries > 0 ? "(after " + numRetries + " retries)" : ""), e);
 
+      // 检查是否满足发起重试的条件
       if (shouldRetry(e)) {
+        // TODO read
         initiateRetry();
       } else {
+        // 如果不能发起重试，则该request中所有blocks就获取失败
         for (String bid : blockIdsToFetch) {
           listener.onBlockFetchFailure(bid, e);
         }
@@ -155,6 +162,9 @@ public class RetryingBlockFetcher {
   }
 
   /**
+   * TODO read retry之后，还能保证chunk有序获取吗？（这样想，获取失败，server端的chunkIndex如果没有
+   * 更新，则retry没有问题。但是，如果chunkIndex更新了，chunk从server发送到client时出错了。这个时候
+   * 再去retry，chunkIndex就对不上了啊。这个时候会有问题吧？？？）
    * Lightweight method which initiates a retry in a different thread. The retry will involve
    * calling fetchAllOutstanding() after a configured wait time.
    */
