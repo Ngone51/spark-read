@@ -113,14 +113,14 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
 
   @Override
   public void handle(RequestMessage request) {
-    // 如果是一个拉取chunk data的请求
+    // 如果是一个拉取chunk的请求
     if (request instanceof ChunkFetchRequest) {
       processFetchRequest((ChunkFetchRequest) request);
     } else if (request instanceof RpcRequest) { // rpc请求
       processRpcRequest((RpcRequest) request);
     } else if (request instanceof OneWayMessage) {
       processOneWayMessage((OneWayMessage) request);
-    } else if (request instanceof StreamRequest) {
+    } else if (request instanceof StreamRequest) { // stream请求
       processStreamRequest((StreamRequest) request);
     } else {
       throw new IllegalArgumentException("Unknown request type: " + request);
@@ -143,9 +143,11 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
     }
     ManagedBuffer buf;
     try {
+      // 权限验证
       // 不理解这个reverseClient的意思。。。
       streamManager.checkAuthorization(reverseClient, req.streamChunkId.streamId);
-      // 注册与该streamId对应的channel
+      // 注册与该streamId对应的channel（如果多个ChunkFetchRequest来自于同一个channel都要注册吗？
+      // 那么问题来了，一个stream里的chunks可以属于多个channel吗？？？貌似不可以啊）
       streamManager.registerChannel(channel, req.streamChunkId.streamId);
       // 获取该streamId中chunkIndex对应的那个chunk data
       buf = streamManager.getChunk(req.streamChunkId.streamId, req.streamChunkId.chunkIndex);
@@ -161,12 +163,13 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
     // 更新该streamId当前正在被传输的chunk的个数
     streamManager.chunkBeingSent(req.streamChunkId.streamId);
     // 拉取成功，响应客户端（返回刚刚拉取的chunk data（buf））
-    // TODO read
     respond(new ChunkFetchSuccess(req.streamChunkId, buf)).addListener(future -> {
+      // 如果chunk发送成功，则要把正在被传输的chunk的个数需要减1
       streamManager.chunkSent(req.streamChunkId.streamId);
     });
   }
 
+  // 处理stream请求
   private void processStreamRequest(final StreamRequest req) {
     if (logger.isTraceEnabled()) {
       logger.trace("Received req from {} to fetch stream {}", getRemoteAddress(channel),
@@ -247,6 +250,7 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
       } else {
         logger.error(String.format("Error sending result %s to %s; closing connection",
           result, remoteAddress), future.cause());
+        // 发送失败，关闭chanel（貌似每次发生网络错误，就要关闭连接通道（channel）？？？）
         channel.close();
       }
     });
