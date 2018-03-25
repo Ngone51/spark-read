@@ -81,7 +81,7 @@ public class OneForOneBlockFetcher {
       TransportConf transportConf,
       TempFileManager tempFileManager) {
     this.client = client;
-    // 创建OpenBlocks messgae
+    // 创建OpenBlocks message
     this.openMessage = new OpenBlocks(appId, execId, blockIds);
     this.blockIds = blockIds;
     this.listener = listener;
@@ -126,6 +126,7 @@ public class OneForOneBlockFetcher {
           streamHandle = (StreamHandle) BlockTransferMessage.Decoder.fromByteBuffer(response);
           logger.trace("Successfully opened blocks {}, preparing to fetch chunks.", streamHandle);
 
+          // 然后再根据接收到的StreamHandle去拉取chunks
           // Immediately request all chunks -- we expect that the total size of the request is
           // reasonable due to higher level chunking in [[ShuffleBlockFetcherIterator]].
           for (int i = 0; i < streamHandle.numChunks; i++) {
@@ -134,7 +135,7 @@ public class OneForOneBlockFetcher {
               client.stream(OneForOneStreamManager.genStreamChunkId(streamHandle.streamId, i),
                 new DownloadCallback(i));
             } else {
-              // TODO read 这是同步的吗？
+              // 请求的时候是有序的，但接收响应消息并处理的时候，并不一定有序
               client.fetchChunk(streamHandle.streamId, i, chunkCallback);
             }
           }
