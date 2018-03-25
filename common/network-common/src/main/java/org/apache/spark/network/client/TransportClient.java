@@ -115,8 +115,10 @@ public class TransportClient implements Closeable {
   }
 
   /**
+   * 根据先前约定的streamId，从远程请求一个单独的chunk
    * Requests a single chunk from the remote side, from the pre-negotiated streamId.
    *
+   * chunk的索引从0开始。多次获取同一个chunk是有效的，但是某些stream可能并不支持。
    * Chunk indices go from 0 onwards. It is valid to request the same chunk multiple times, though
    * some streams may not support this.
    *
@@ -133,28 +135,39 @@ public class TransportClient implements Closeable {
       long streamId,
       int chunkIndex,
       ChunkReceivedCallback callback) {
+    // 记录拉取的开始时间
     long startTime = System.currentTimeMillis();
     if (logger.isDebugEnabled()) {
       logger.debug("Sending fetch chunk request {} to {}", chunkIndex, getRemoteAddress(channel));
     }
 
+    // 构建StreamChunkId，这样server就知道我们要获取哪个stream中的哪个chunk
     StreamChunkId streamChunkId = new StreamChunkId(streamId, chunkIndex);
+    // 把该请求对应的streamChunkId加入到TransportResponseHandler中。这样一来，当client接收到
+    // server的响应消息时，就能够通过该handler找到对应的streamChunkId来处理。
     handler.addFetchRequest(streamChunkId, callback);
 
+    // 通过channel，向server发送ChunkFetchRequest的请求消息
     channel.writeAndFlush(new ChunkFetchRequest(streamChunkId)).addListener(future -> {
       if (future.isSuccess()) {
+        // 计算拉取一个chunk的耗时
         long timeTaken = System.currentTimeMillis() - startTime;
         if (logger.isTraceEnabled()) {
           logger.trace("Sending request {} to {} took {} ms", streamChunkId,
             getRemoteAddress(channel), timeTaken);
         }
       } else {
+        // 拉取失败
         String errorMsg = String.format("Failed to send request %s to %s: %s", streamChunkId,
           getRemoteAddress(channel), future.cause());
         logger.error(errorMsg, future.cause());
+        // 从该handler中移除该请求
         handler.removeFetchRequest(streamChunkId);
+        // 关闭channel(这会造成什么影响？后面不能继续向server发起任何请求了？？？)
         channel.close();
         try {
+          // 这里的callback应该对应OneForOneBlockFetcher里的chunkCallback，
+          // chunkCallback继而有会将该消息传递给ShuffleBlockFetcherIterator里的blockFetchingListener。
           callback.onFailure(chunkIndex, new IOException(errorMsg, future.cause()));
         } catch (Exception e) {
           logger.error("Uncaught exception in RPC response callback handler!", e);
@@ -164,6 +177,7 @@ public class TransportClient implements Closeable {
   }
 
   /**
+   * 根据给定的stream id向远程终端请求以流的方式请求数据
    * Request to stream the data with the given stream ID from the remote end.
    *
    * @param streamId The stream to fetch.
@@ -175,6 +189,11 @@ public class TransportClient implements Closeable {
       logger.debug("Sending stream request for {} to {}", streamId, getRemoteAddress(channel));
     }
 
+    // TODO server的响应消息在client接收后是有序的吗？从TransportResponseHandler的处理方式是来看应该
+    // 是有序的。可是，如何能确保通过网络传输后的响应消息和发送的请求的顺序是一样的呢？难度是netty的channel
+    // 起到来了作用？？？
+    // 用synchronized包裹代码块，以保证callback入队和RPC写到socket的过程是原子的。这样，当server的
+    // 响应消息到达客户端时，callbacks可以以正确的顺序被调用。
     // Need to synchronize here so that the callback is added to the queue and the RPC is
     // written to the socket atomically, so that callbacks are called in the right order
     // when responses arrive.
