@@ -451,6 +451,7 @@ final class ShuffleBlockFetcherIterator(
             }
             shuffleMetrics.incRemoteBlocksFetched(1)
           }
+          // 代码有变化,详见SPARK-23524
           bytesInFlight -= size
           // 如果该SuccessFetchResult是一个request中的最后一个拉取的block，
           // 那么意味这该request也就完成了所有拉取请求，则reqsInFlight减1。
@@ -472,7 +473,7 @@ final class ShuffleBlockFetcherIterator(
               throwFetchFailedException(blockId, address, e)
           }
 
-          // 封装压缩流
+          // 在in上封装一个压缩流
           input = streamWrapper(blockId, in)
           // Only copy the stream if it's wrapped by compression or encryption, also the size of
           // block is small (the decompressed block is smaller than maxBytesInFlight)
@@ -480,6 +481,7 @@ final class ShuffleBlockFetcherIterator(
             val originalInput = input
             val out = new ChunkedByteBufferOutputStream(64 * 1024, ByteBuffer.allocate)
             try {
+              // 直接就从input拷贝一遍到out??? 然后就验证完了??? 相当不懂...
               // Decompress the whole block at once to detect any corruption, which could increase
               // the memory usage tne potential increase the chance of OOM.
               // TODO: manage the memory used here, and spill it into disk in case of OOM.
