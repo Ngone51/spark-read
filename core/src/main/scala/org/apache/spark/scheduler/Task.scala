@@ -120,25 +120,30 @@ private[spark] abstract class Task[T](
       case e: Throwable =>
         // Catch all errors; run task failure callbacks, and rethrow the exception.
         try {
+          // 标记该任务失败
           context.markTaskFailed(e)
         } catch {
           case t: Throwable =>
             e.addSuppressed(t)
         }
+        // 以错误信息标记该task完成
         context.markTaskCompleted(Some(e))
         throw e
     } finally {
       try {
+        // 正常标记该task完成，并执行注册在该task上的completion callbacks(listeners)
         // Call the task completion callbacks. If "markTaskCompleted" is called twice, the second
         // one is no-op.
         context.markTaskCompleted(None)
       } finally {
         try {
           Utils.tryLogNonFatalError {
+            // 释放该task占用的内存
             // Release memory used by this thread for unrolling blocks
             SparkEnv.get.blockManager.memoryStore.releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP)
             SparkEnv.get.blockManager.memoryStore.releaseUnrollMemoryForThisTask(
               MemoryMode.OFF_HEAP)
+            // 唤醒其它等待着内存释放的tasks（也就是说，在一个executor会有多个tasks执行）
             // Notify any tasks waiting for execution memory to be freed to wake up and try to
             // acquire memory again. This makes impossible the scenario where a task sleeps forever
             // because there are no other tasks left to notify it. Since this is safe to do but may
