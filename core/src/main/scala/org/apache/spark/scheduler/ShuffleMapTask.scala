@@ -99,7 +99,10 @@ private[spark] class ShuffleMapTask(
     try {
       // 通过spark的env，获取shuffleManager
       val manager = SparkEnv.get.shuffleManager
+      // 获取shuffle writer
       writer = manager.getWriter[Any, Any](dep.shuffleHandle, partitionId, context)
+      // 根据不同的shuffle writer写数据
+      // TODO read.iterator() 这是一个嵌套的计算方式
       writer.write(rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
       writer.stop(success = true).get
     } catch {
