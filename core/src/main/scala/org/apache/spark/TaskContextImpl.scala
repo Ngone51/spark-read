@@ -104,6 +104,7 @@ private[spark] class TaskContextImpl(
     if (failed) return
     failed = true
     failure = error
+    // 怎么没看见哪个地方有添加listener到onFailureCallbacks里去的???
     invokeListeners(onFailureCallbacks, "TaskFailureListener", Option(error)) {
       _.onTaskFailure(this, error)
     }
@@ -125,6 +126,7 @@ private[spark] class TaskContextImpl(
       error: Option[Throwable])(
       callback: T => Unit): Unit = {
     val errorMsgs = new ArrayBuffer[String](2)
+    // 以listeners注册时候的逆序来调用listeners
     // Process callbacks in the reverse order of registration
     listeners.reverse.foreach { listener =>
       try {
