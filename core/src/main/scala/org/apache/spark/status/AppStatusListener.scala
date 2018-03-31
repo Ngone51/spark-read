@@ -574,7 +574,7 @@ private[spark] class AppStatusListener(
       // first attempt of this task. This may not be 100% accurate because the first attempt
       // could have failed half-way through. The correct fix would be to keep track of the
       // metrics added by each attempt, but this is much more complicated.
-      // TODO 这个resubmiteed是指该任务需要之后被re-schedule，还是它是一个已经被re-schedule且现在结束的任务？？？
+      // TODO 这个resubmitted是指该任务需要之后被re-schedule，还是它是一个已经被re-schedule且现在结束的任务？？？
       if (event.reason != Resubmitted) {
         if (event.taskMetrics != null) {
           val readMetrics = event.taskMetrics.shuffleReadMetrics
