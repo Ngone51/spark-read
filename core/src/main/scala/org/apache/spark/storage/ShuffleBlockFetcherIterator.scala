@@ -167,7 +167,7 @@ final class ShuffleBlockFetcherIterator(
   private[this] var isZombie = false
 
   /**
-   * 一个用于存储用于shuffling远程超大的blocks的文件集合。在cleanup的时候，该集合中的文件会被发现(清除)。
+   * 一个用于存储用于shuffling远程超大的blocks的文件集合。在cleanup的时候，该集合中的文件会被删除。
    * 这是避免磁盘文件泄露的防护层。
    * A set to store the files used for shuffling remote huge blocks. Files in this set will be
    * deleted when cleanup. This is a layer of defensiveness against disk file leaks.
