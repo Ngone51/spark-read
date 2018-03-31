@@ -79,9 +79,10 @@ private[spark] class TaskContextImpl(
   @GuardedBy("this")
   override def addTaskCompletionListener(listener: TaskCompletionListener)
       : this.type = synchronized {
+    // 如果该task已经执行完成，则添加在该task上的listener会被立即执行
     if (completed) {
       listener.onTaskCompletion(this)
-    } else {
+    } else { // 否则，会暂存在onCompleteCallbacks中
       onCompleteCallbacks += listener
     }
     this
@@ -113,6 +114,7 @@ private[spark] class TaskContextImpl(
   /** Marks the task as completed and triggers the completion listeners. */
   @GuardedBy("this")
   private[spark] def markTaskCompleted(error: Option[Throwable]): Unit = synchronized {
+    // 如果该task已经complete了，则直接return（no-op）
     if (completed) return
     completed = true
     invokeListeners(onCompleteCallbacks, "TaskCompletionListener", error) {
