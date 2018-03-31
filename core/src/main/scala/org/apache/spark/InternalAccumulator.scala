@@ -18,6 +18,7 @@
 package org.apache.spark
 
 /**
+ * 一个与内部累加器相关联的属性变量和方法的集合。这些内部累积器用于表示task级别的metrics。
  * A collection of fields and methods concerned with internal accumulators that represent
  * task level metrics.
  */
