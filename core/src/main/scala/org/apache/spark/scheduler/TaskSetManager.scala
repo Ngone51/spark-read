@@ -849,12 +849,16 @@ private[spark] class TaskSetManager(
    */
   def handleFailedTask(tid: Long, state: TaskState, reason: TaskFailedReason) {
     val info = taskInfos(tid)
+    // 如果该task已经fail或kill了，则return(no-op)
     if (info.failed || info.killed) {
       return
     }
+    // 删除该正在运行的task
     removeRunningTask(tid)
+    // 标记该task为finish状态（Failed or Killed）
     info.markFinished(state, clock.getTimeMillis())
     val index = info.index
+    // 该task正在running的副本数减1
     copiesRunning(index) -= 1
     var accumUpdates: Seq[AccumulatorV2[_, _]] = Seq.empty
     val failureReason = s"Lost task ${info.id} in stage ${taskSet.id} (TID $tid, ${info.host}," +
@@ -922,11 +926,12 @@ private[spark] class TaskSetManager(
         logWarning(failureReason)
         None
     }
-
+    // 通知dagSheduler taskend 事件，这样listener就会知道有个task结束了
     sched.dagScheduler.taskEnded(tasks(index), reason, null, accumUpdates, info)
 
     if (!isZombie && reason.countTowardsTaskFailures) {
       assert (null != failureReason)
+      // TODO read
       taskSetBlacklistHelperOpt.foreach(_.updateBlacklistForFailedTask(
         info.host, info.executorId, index, failureReason))
       numFailures(index) += 1
@@ -989,20 +994,37 @@ private[spark] class TaskSetManager(
     sortedTaskSetQueue
   }
 
-  /** Called by TaskScheduler when an executor is lost so we can re-enqueue our tasks */
+  /**
+   * 当一个executor失联的时候被TaskScheduler调用，这样我们就可以将我们的tasks重新入队（之后就会
+   * 被分配到其它的executor去咯～这应该就算是一种容错机制吧）
+   * Called by TaskScheduler when an executor is lost so we can re-enqueue our tasks
+   */
   override def executorLost(execId: String, host: String, reason: ExecutorLossReason) {
+    // 对于shuffle map stage，我们需要将该stage中的所有在该executor上执行的tasks resubmit
+    // （不管该task正在running，还是已经finish），因为会有下一个stage来读取上一个stage的tasks
+    // 写出的partition数据。而此时，该tasks的executor已经失联了，所以下一个stage也就获取不到数据了。
+    // 而对于其它的类型的task（比如，ResultTask），如果它已经finish了，则我们已经获取到了数据，就不用
+    // resubmit了。而如果它的状态还是running，说明该task的结果是返回不回来了。所以，我们需要resubmit它。
+
     // Re-enqueue any tasks that ran on the failed executor if this is a shuffle map stage,
     // and we are not using an external shuffle server which could serve the shuffle outputs.
     // The reason is the next stage wouldn't be able to fetch the data from this dead executor
     // so we would need to rerun these tasks on other executors.
+    // 如果该taskSet中的task是ShuffleMapTask，且我们没有启用外部的shuffle服务，且TaskSetManager处于活跃状态
     if (tasks(0).isInstanceOf[ShuffleMapTask] && !env.blockManager.externalShuffleServiceEnabled
         && !isZombie) {
+      // （我以前总是在想，一个task在一个机器上已经挂了，怎么重新让它重新再
+      // 到其他的机器上去运行呢，原来就是这样的：保存了一份TaskSet的meta信息。
+      // 厉害啊！）
+      // 从taskInfos中获取在该已经失联的executor上运行的task的信息
       for ((tid, info) <- taskInfos if info.executorId == execId) {
         val index = taskInfos(tid).index
+        // 我们只处理已经成功的task。因为如果该task还没成功，到时候肯定会有其它地方来继续处理它。
         if (successful(index) && !killedByOtherAttempt(index)) {
           successful(index) = false
           copiesRunning(index) -= 1
           tasksSuccessful -= 1
+          // 将该task加入到pending队列中
           addPendingTask(index)
           // Tell the DAGScheduler that this task was resubmitted so that it doesn't think our
           // stage finishes when a total of tasks.size tasks finish.
@@ -1011,6 +1033,7 @@ private[spark] class TaskSetManager(
         }
       }
     }
+    // 对于ResultTask，该task正在running，我们才能resubmit（原因见上述注释）
     for ((tid, info) <- taskInfos if info.running && info.executorId == execId) {
       val exitCausedByApp: Boolean = reason match {
         case exited: ExecutorExited => exited.exitCausedByApp
