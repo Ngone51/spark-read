@@ -57,6 +57,11 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     if (shouldPool(size)) {
       synchronized (this) {
         // 获取对应size的缓存内存块(弱引用存储)。
+        // TODO：这么巧的吗？size刚刚相等，或许我们可以优化一下：比如，申请6个size的内存，
+        // 而pool的内存有8个size的，此时，我们就可以用一下8个size的啊。因为，即使它自己申请，
+        // 它也会去申请(size + 7)*8的size大小的内存啊。
+        // 答：好吧。SPARK-21860已经解决了该问题，跟我想的一模一样，包括解决方法。就是将size
+        // 调整为8的倍数（alignedSize）。
         final LinkedList<WeakReference<long[]>> pool = bufferPoolsBySize.get(size);
         if (pool != null) {
           while (!pool.isEmpty()) {
@@ -95,6 +100,7 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     // 另，这里的long[]数组的大小((size + 7)/8)不应该超过(1 << 32 - 1)/8，不然就溢出了
     // 比如在TaskMemoryManager#allocatPage(size, consumer)中就有对size大小做检查
     long[] array = new long[(int) ((size + 7) / 8)];
+    // TODO 算是在MemoryManager内存池的管理不正确吧 怎么解决呢???
     // 所以，size是有可能比实际的long[] array(array.length * 8L)的size小的。比如，
     // 我们申请1个字节的内存，但实际底层分配的是8个字节。但此时，我们能用的是多少呢???还是1个字节呀。
     // 那么，这里就有一个问题：当我们最初向execution pool申请1个字节大小的内存时，实际却申请了8个，
@@ -145,6 +151,12 @@ public class HeapMemoryAllocator implements MemoryAllocator {
           pool = new LinkedList<>();
           bufferPoolsBySize.put(size, pool);
         }
+        // TODO 那么问题来了，我们把该array缓存起来了，应该算是没有真正释放分配的内存吧???
+        // 但是，此时MemoryManager已经在内存池中释放了对应的内存大小。那么，当有task又需要
+        // 申请size(小于POOLING_THRESHOLD_BYTES)大小的内存时，当真正通过allocator分配时，
+        // 由于该size小于shouldPool()条件，所以，我们要重新分配size大小的内存，而此时，
+        // 内存恰巧又不够了，怎么办???但事实上，缓存的内存块是有的，只是我们不能用啊！
+
         // 缓存array内存块，以复用
         pool.add(new WeakReference<>(array));
       }
