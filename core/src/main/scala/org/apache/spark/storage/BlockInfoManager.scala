@@ -365,22 +365,32 @@ private[storage] class BlockInfoManager extends Logging {
    * @return the ids of blocks whose pins were released
    */
   def releaseAllLocksForTask(taskAttemptId: TaskAttemptId): Seq[BlockId] = synchronized {
+    // 记录那些通过该task被释放锁的blocks
     val blocksWithReleasedLocks = mutable.ArrayBuffer[BlockId]()
 
+    // 获取该task持有读锁的那些blocks
     val readLocks = readLocksByTask.remove(taskAttemptId).getOrElse(ImmutableMultiset.of[BlockId]())
+    // 获取该task持有写锁的那些blocks
     val writeLocks = writeLocksByTask.remove(taskAttemptId).getOrElse(Seq.empty)
 
+    // 我们先释放写锁
     for (blockId <- writeLocks) {
       infos.get(blockId).foreach { info =>
+        // 判断该block的写锁持有者是不是该task（taskAttemptId）
         assert(info.writerTask == taskAttemptId)
+        // 判断成功，则设置该block现在没有被写锁定
         info.writerTask = BlockInfo.NO_WRITER
       }
+      // 更新blocksWithReleasedLocks
       blocksWithReleasedLocks += blockId
     }
 
+    // 因为readLocks是ConcurrentHashMultiset类型的，调用entrySet()会返回pair对，
+    // 左值是blockId，右值是对该block加读锁的次数
     readLocks.entrySet().iterator().asScala.foreach { entry =>
       val blockId = entry.getElement
       val lockCount = entry.getCount
+      // 更新blocksWithReleasedLocks
       blocksWithReleasedLocks += blockId
       get(blockId).foreach { info =>
         info.readerCount -= lockCount
@@ -388,8 +398,11 @@ private[storage] class BlockInfoManager extends Logging {
       }
     }
 
+    // 唤醒所有等待这些刚刚被释放写锁的blocks的其它tasks(or 线程)
+    // （应该没有等待读锁的傻子吧～）
     notifyAll()
 
+    // 返回刚刚被释放了读写锁的那些个blocks（确切地说是blockId）
     blocksWithReleasedLocks
   }
 
