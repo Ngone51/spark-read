@@ -454,6 +454,7 @@ private[spark] class TaskSchedulerImpl(
     var reason: Option[ExecutorLossReason] = None
     synchronized {
       try {
+        // 找到该task对应的TaskSetManager
         taskIdToTaskSetManager.get(tid) match {
           case Some(taskSet) =>
             if (state == TaskState.LOST) {
@@ -642,21 +643,28 @@ private[spark] class TaskSchedulerImpl(
   }
 
   /**
+   * 总之，要把该task从TaskScheduler里删除干净
    * Cleans up the TaskScheduler's state for tracking the given task.
    */
   private def cleanupTaskState(tid: Long): Unit = {
+    // 从taskIdToTaskSetManager中删除该task
     taskIdToTaskSetManager.remove(tid)
+    // 从taskIdToExecutorId删除该task
     taskIdToExecutorId.remove(tid).foreach { executorId =>
+      // 从executorIdToRunningTaskIds中删除该task
       executorIdToRunningTaskIds.get(executorId).foreach { _.remove(tid) }
     }
   }
 
   /**
+   * 从我们所有的数据结构中删除该executor，并且标记它为失联。
    * Remove an executor from all our data structures and mark it as lost. If the executor's loss
    * reason is not yet known, do not yet remove its association with its host nor update the status
    * of any running tasks, since the loss reason defines whether we'll fail those tasks.
    */
   private def removeExecutor(executorId: String, reason: ExecutorLossReason) {
+    // 因为executor已经失联，所以在该executor上的tasks不再会发送任何状态更新的信息，
+    // 因此，它们可以在这里清除。
     // The tasks on the lost executor may not send any more status updates (because the executor
     // has been lost), so they should be cleaned up here.
     executorIdToRunningTaskIds.remove(executorId).foreach { taskIds =>
@@ -664,6 +672,7 @@ private[spark] class TaskSchedulerImpl(
         s"${taskIds.mkString("[", ",", "]")} on failed executor $executorId")
       // We do not notify the TaskSetManager of the task failures because that will
       // happen below in the rootPool.executorLost() call.
+      // 从TaskSchedulerImpl中清理干净这些tasks
       taskIds.foreach(cleanupTaskState)
     }
 
@@ -680,6 +689,7 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
+    // 如果executor失联的具体原因还不知道
     if (reason != LossReasonPending) {
       executorIdToHost -= executorId
       rootPool.executorLost(executorId, host, reason)
