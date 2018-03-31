@@ -82,6 +82,8 @@ private[spark] class DirectTaskResult[T](
     if (valueObjectDeserialized) {
       valueObject
     } else {
+      // 当持有锁的时候，不要调用该方法。因为，如果反序列化一个large value会耗费十多秒，这就会导致其它等待该锁
+      // 的线程被阻塞。
       // This should not run when holding a lock because it may cost dozens of seconds for a large
       // value
       val ser = if (resultSer == null) SparkEnv.get.serializer.newInstance() else resultSer
