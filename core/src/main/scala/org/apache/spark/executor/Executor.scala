@@ -389,9 +389,22 @@ private[spark] class Executor(
           threwException = false
           res
         } finally {
+          // 释放该task持有的全部锁（包括读锁和写锁）
+          // releasedLocks：虽然变量名字是locks，但它实际上是刚刚被释放了读写锁的那些个blocks，
+          // 确切地说，是blockId
           val releasedLocks = env.blockManager.releaseAllLocksForTask(taskId)
+          // 释放所有分配给该task的运行内存（先释放真正分配的堆内外内存，
+          // 再释放由MemoryManager管理的execution memory）
+          // （那个storage memory和task是什么关系啊???）
+          // 答：详见MemoryStore#releaseUnrollMemoryForThisTask()上的注释
           val freedMemory = taskMemoryManager.cleanUpAllAllocatedMemory()
 
+          // 理解了一下变量threwException，意思是不是说：如果代码运行到finally，且threwException为false。
+          // 说明，task.run()正常结束了。task正常结束，意味着它已经自己释放了所有的内存和blocks的读写锁(是
+          // 这样的吗???)。然后，在finally中理应releasedLocks和freedMemory为空或0才对。而如果不为空或为0，
+          // 说明该task虽然正常结束了，但是没有处理好这两个东西（一个是blocks的锁没有被释放，另一个是有内存泄露）
+          // 这样理解的话，变量threwException的作用才能说的通。
+          // 所以，我上面的理解对吗???关键就是，task在结束时会不会自己处理那些事情呢???
           if (freedMemory > 0 && !threwException) {
             val errMsg = s"Managed memory leak detected; size = $freedMemory bytes, TID = $taskId"
             if (conf.getBoolean("spark.unsafe.exceptionOnMemoryLeak", false)) {
@@ -425,27 +438,39 @@ private[spark] class Executor(
           threadMXBean.getCurrentThreadCpuTime
         } else 0L
 
+        // 会抛出异常
         // If the task has been killed, let's fail it.
         task.context.killTaskIfInterrupted()
 
+        // 至此，task全部正常，准备处理"后事"
         val resultSer = env.serializer.newInstance()
         val beforeSerialization = System.currentTimeMillis()
+        // 序列化task的运行结果(如果是ShuffleMapTask则结果的类型是MapStatus；如果是ResultTask，
+        // 则结果类型由用户编写的代码决定)
         val valueBytes = resultSer.serialize(value)
         val afterSerialization = System.currentTimeMillis()
 
+        // 记录executor反序列化耗时
         // Deserialization happens in two parts: first, we deserialize a Task object, which
         // includes the Partition. Second, Task.run() deserializes the RDD and function to be run.
         task.metrics.setExecutorDeserializeTime(
           (taskStart - deserializeStartTime) + task.executorDeserializeTime)
+        // 记录executor反序列化cpu耗时
         task.metrics.setExecutorDeserializeCpuTime(
           (taskStartCpu - deserializeStartCpuTime) + task.executorDeserializeCpuTime)
+        // 记录executor的执行耗时（我们需要减去Task.run()的反序列化耗时(这部分耗时已经
+        // 在上面统计过了)以避免重复计算）
         // We need to subtract Task.run()'s deserialization time to avoid double-counting
         task.metrics.setExecutorRunTime((taskFinish - taskStart) - task.executorDeserializeTime)
+        // 记录executor的cpu执行耗时
         task.metrics.setExecutorCpuTime(
           (taskFinishCpu - taskStartCpu) - task.executorDeserializeCpuTime)
+        // 记录GC耗时(还能记录gc耗时啊)
         task.metrics.setJvmGCTime(computeTotalGcTime() - startGCTime)
+        // 记录序列化task执行结果的耗时
         task.metrics.setResultSerializationTime(afterSerialization - beforeSerialization)
 
+        // 更新executor的统计信息
         // Expose task metrics using the Dropwizard metrics system.
         // Update task metrics counters
         executorSource.METRIC_CPU_TIME.inc(task.metrics.executorCpuTime)
@@ -489,19 +514,30 @@ private[spark] class Executor(
 
         // Note: accumulator updates must be collected after TaskMetrics is updated
         val accumUpdates = task.collectAccumulatorUpdates()
+        // 创建DirectTaskResult对象，该对象包含了task的返回值以及accumlator的更新信息
         // TODO: do not serialize value twice
         val directResult = new DirectTaskResult(valueBytes, accumUpdates)
+        // 序列化directResult对象
         val serializedDirectResult = ser.serialize(directResult)
         val resultSize = serializedDirectResult.limit()
 
         // directSend = sending directly back to the driver
         val serializedResult: ByteBuffer = {
+          // maxResultSize默认1GB
           if (maxResultSize > 0 && resultSize > maxResultSize) {
+            // 如果该task的serializedDirectResult大小比maxResultSize还大，
+            // 则我们不直接发送该task的serializedDirectResult了，而是发送该serializedDirectResult
+            // 的一个引用（即IndirectTaskResult）。
+            // 所以，是被抛弃了吗???（根据logWarning里的"dropping"的提示）因为，它也不像下面的，
+            // 存到了BlockManager里去啊，这样之后executor才能访问该BlockManager来获取啊。
             logWarning(s"Finished $taskName (TID $taskId). Result is larger than maxResultSize " +
               s"(${Utils.bytesToString(resultSize)} > ${Utils.bytesToString(maxResultSize)}), " +
               s"dropping it.")
             ser.serialize(new IndirectTaskResult[Any](TaskResultBlockId(taskId), resultSize))
           } else if (resultSize > maxDirectResultSize) {
+            // 如果该task的serializedDirectResult大小比maxDirectResultSize还大，
+            // 则我们将其存储到本地的BlockManager中，后续通过blokcMananger来传送（我估计
+            // 会通过BlockTransferService来传输啦～～～）
             val blockId = TaskResultBlockId(taskId)
             env.blockManager.putBytes(
               blockId,
@@ -515,8 +551,9 @@ private[spark] class Executor(
             serializedDirectResult
           }
         }
-
+        // 标记该task为结束状态，并且清除Interrupt状态
         setTaskFinishedAndClearInterruptStatus()
+        // 注意：此时的serializedResult可能有三种情况，详见上面的代码
         execBackend.statusUpdate(taskId, TaskState.FINISHED, serializedResult)
 
       } catch {
