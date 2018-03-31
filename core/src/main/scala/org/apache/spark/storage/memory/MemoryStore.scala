@@ -725,7 +725,7 @@ private[spark] class MemoryStore(
       val success = memoryManager.acquireUnrollMemory(blockId, memory, memoryMode)
       if (success) {
         // TODO read currentTaskAttemptId()
-        // 获取当前的task attemp id
+        // 获取当前的task attempt id
         val taskAttemptId = currentTaskAttemptId()
         val unrollMemoryMap = memoryMode match {
           case MemoryMode.ON_HEAP => onHeapUnrollMemoryMap
@@ -738,6 +738,14 @@ private[spark] class MemoryStore(
   }
 
   /**
+   * 释放unroll memory的底层本质其实就是释放storage memory。当然，我们并不能认为它们就是一样的。
+   * 释放unroll memory只需要释放由MemoryManager管理的（逻辑上的）内存池中的内存，而并不需要释放
+   * 真正分配的内存。事实上，即使一个task结束之后，我们也不需要释放真正分配的storage memory（这也
+   * 就是为什么我们没有在这里找到释放真正的分配内存的地方）。因为，storage memory是用于存储blcok的。
+   * task将block存储在内存（或磁盘）中 ，会有其它的task来读取这些block。所以，这些block占用的内存
+   * 不能够被释放。除非，blocks被删除。
+   * 而我们会在一个task执行结束时，在executor中通过task memory manager删除该task占用的
+   * 全部execution memory，包括MemoryManager管理的内存池中的内存和真正的在堆内或堆外分配的内存。
    * Release memory used by this task for unrolling blocks.
    * If the amount is not specified, remove the current task's allocation altogether.
    */
@@ -749,6 +757,7 @@ private[spark] class MemoryStore(
         case MemoryMode.OFF_HEAP => offHeapUnrollMemoryMap
       }
       if (unrollMemoryMap.contains(taskAttemptId)) {
+        // 如果memory没有指定（则默认为Long.MaxValue），则会释放该task占用的所有内存
         val memoryToRelease = math.min(memory, unrollMemoryMap(taskAttemptId))
         if (memoryToRelease > 0) {
           unrollMemoryMap(taskAttemptId) -= memoryToRelease
