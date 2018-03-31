@@ -206,6 +206,7 @@ class TaskMetrics private[spark] () extends Serializable {
 
 
   import InternalAccumulator._
+  // 一个从name到accumulator的映射
   @transient private[spark] lazy val nameToAccums = LinkedHashMap(
     EXECUTOR_DESERIALIZE_TIME -> _executorDeserializeTime,
     EXECUTOR_DESERIALIZE_CPU_TIME -> _executorDeserializeCpuTime,
@@ -258,7 +259,9 @@ class TaskMetrics private[spark] () extends Serializable {
 
   private[spark] def accumulators(): Seq[AccumulatorV2[_, _]] = internalAccums ++ externalAccums
 
+  // 获取大小非零的内部accumulators（_resultSize除外）
   private[spark] def nonZeroInternalAccums(): Seq[AccumulatorV2[_, _]] = {
+    // 在executor端，RESULT_SIZE累加器的size一直为0，我们需要将它发回driver端来更新它
     // RESULT_SIZE accumulator is always zero at executor, we need to send it back as its
     // value will be updated at driver side.
     internalAccums.filter(a => !a.isZero || a == _resultSize)
