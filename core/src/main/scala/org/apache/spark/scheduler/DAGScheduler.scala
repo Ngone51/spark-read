@@ -1263,6 +1263,7 @@ class DAGScheduler(
         null
       }
 
+    // TODO read
     listenerBus.post(SparkListenerTaskEnd(event.task.stageId, event.task.stageAttemptId,
       Utils.getFormattedClassName(event.task), event.reason, event.taskInfo, taskMetrics))
   }
@@ -1277,12 +1278,14 @@ class DAGScheduler(
     val stageId = task.stageId
     val taskType = Utils.getFormattedClassName(task)
 
+    // TODO read
     outputCommitCoordinator.taskCompleted(
       stageId,
       task.partitionId,
       event.taskInfo.attemptNumber, // this is a task attempt number
       event.reason)
 
+    // 很有可能该stage已经finish了
     if (!stageIdToStage.contains(task.stageId)) {
       // The stage may have already finished when we get this event -- eg. maybe it was a
       // speculative task. It is important that we send the TaskEnd event in any case, so listeners
@@ -1295,6 +1298,7 @@ class DAGScheduler(
       return
     }
 
+    // 获取该task所属的stage
     val stage = stageIdToStage(task.stageId)
 
     // Make sure the task's accumulators are updated before any other processing happens, so that
@@ -1319,6 +1323,7 @@ class DAGScheduler(
       case _: ExceptionFailure => updateAccumulators(event)
       case _ =>
     }
+    // 提交task end事件
     postTaskEnd(event)
 
     event.reason match {
@@ -1429,9 +1434,11 @@ class DAGScheduler(
         logInfo("Resubmitted " + task + ", so marking it as still running")
         stage match {
           case sms: ShuffleMapStage =>
+            // resubmitted的本质就是这么简单，就是要等待该分区的数据。牛逼啊！
             sms.pendingPartitions += task.partitionId
 
           case _ =>
+            // TaskSerManagers只能resummitted ShuffleMapStage里的tasks（为啥???）
             assert(false, "TaskSetManagers should only send Resubmitted task statuses for " +
               "tasks in ShuffleMapStages.")
         }
@@ -1923,6 +1930,7 @@ private[scheduler] class DAGSchedulerEventProcessLoop(dagScheduler: DAGScheduler
     case GettingResultEvent(taskInfo) =>
       dagScheduler.handleGetTaskResult(taskInfo)
 
+    // task结束事件
     case completion: CompletionEvent =>
       dagScheduler.handleTaskCompletion(completion)
 
