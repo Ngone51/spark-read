@@ -81,6 +81,8 @@ private[spark] abstract class Task[T](
     // 向BlockInfoManager注册该task
     SparkEnv.get.blockManager.registerTask(taskAttemptId)
     // 创建TaskContext
+    // (在task真正执行之前，创建context。这样一来，可以在task执行期间调用context来
+    // 设置task执行完成之后需要做的事情。比如，添加listener来在task执行完成后进行cleanup())
     context = new TaskContextImpl(
       stageId,
       stageAttemptId, // stageAttemptId and stageAttemptNumber are semantically equal
@@ -101,7 +103,8 @@ private[spark] abstract class Task[T](
       kill(interruptThread = false, _reasonIfKilled)
     }
 
-    // 创建CallerContext(啥玩意儿???)
+    // TODO read
+    // 创建CallerContext(啥玩意儿???)，不知道它是干嘛的，可能只和hadoop有关???
     new CallerContext(
       "TASK",
       SparkEnv.get.conf.get(APP_CALLER_CONTEXT),
@@ -115,6 +118,7 @@ private[spark] abstract class Task[T](
 
     try {
       // 不同的任务类型实现不同的runTask()来执行任务
+      // remember， this func is very important!!!
       runTask(context)
     } catch {
       case e: Throwable =>
@@ -131,14 +135,19 @@ private[spark] abstract class Task[T](
         throw e
     } finally {
       try {
-        // 正常标记该task完成，并执行注册在该task上的completion callbacks(listeners)
+        // 正常标记该task完成，并执行注册在该task上的completion callbacks(listeners)，比如某些
+        // listener会进行cleanup()的工作
         // Call the task completion callbacks. If "markTaskCompleted" is called twice, the second
         // one is no-op.
         context.markTaskCompleted(None)
       } finally {
         try {
           Utils.tryLogNonFatalError {
-            // 释放该task占用的内存
+            // 释放该task占用的unroll memory（unroll memory是task在申请storage memory时申请的预留内存，
+            // 可能会有部分残留（没有释放）。为什么说"可能"？因为我看到，当一个value完全unroll的时候，unroll的
+            // memory是会全部释放掉的，或者说全部转换成了storage memory；而如果一个value unroll失败，则它部分
+            // 占用的unroll内存，会在PartiallyUnrolledIterator的元素遍历结束时，自动释放。所以，我暂时还没发现
+            // 哪些地方没有释放掉一些占用的unroll memory。）
             // Release memory used by this thread for unrolling blocks
             SparkEnv.get.blockManager.memoryStore.releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP)
             SparkEnv.get.blockManager.memoryStore.releaseUnrollMemoryForThisTask(
@@ -153,6 +162,7 @@ private[spark] abstract class Task[T](
             memoryManager.synchronized { memoryManager.notifyAll() }
           }
         } finally {
+          // 哈??? 下面的注释什么意思???
           // Though we unset the ThreadLocal here, the context member variable itself is still
           // queried directly in the TaskRunner to check for FetchFailedExceptions.
           TaskContext.unset()
@@ -208,6 +218,7 @@ private[spark] abstract class Task[T](
       context.taskMetrics.nonZeroInternalAccums() ++
         // zero value external accumulators may still be useful, e.g. SQLMetrics, we should not
         // filter them out.
+        // TODO read
         context.taskMetrics.externalAccums.filter(a => !taskFailed || a.countFailedValues)
     } else {
       Seq.empty
