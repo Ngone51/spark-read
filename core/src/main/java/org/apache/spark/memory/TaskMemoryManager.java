@@ -510,6 +510,8 @@ public class TaskMemoryManager {
       for (MemoryBlock page : pageTable) {
         if (page != null) {
           logger.debug("unreleased page: " + page + " in task " + taskAttemptId);
+          // 标记pageNumber为FREED_IN_TMM_PAGE_NUMBER，这样的话，接下来allocator才能释放为
+          // page真正分配的内存
           page.pageNumber = MemoryBlock.FREED_IN_TMM_PAGE_NUMBER;
           memoryManager.tungstenMemoryAllocator().free(page);
         }
@@ -521,6 +523,7 @@ public class TaskMemoryManager {
     // release the memory that is not used by any consumer (acquired for pages in tungsten mode).
     memoryManager.releaseExecutionMemory(acquiredButNotUsed, taskAttemptId, tungstenMemoryMode);
 
+    // 在释放完真正分配的内存后，再释放由MemoryManager管理的execution memory
     return memoryManager.releaseAllExecutionMemoryForTask(taskAttemptId);
   }
 
