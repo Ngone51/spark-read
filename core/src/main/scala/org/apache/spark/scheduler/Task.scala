@@ -80,6 +80,12 @@ private[spark] abstract class Task[T](
       metricsSystem: MetricsSystem): T = {
     // 向BlockInfoManager注册该task
     SparkEnv.get.blockManager.registerTask(taskAttemptId)
+    // 注意：非常重要！！！每个task都会有自己的一个context。然后每个执行task的线程
+    // 都会将自己的context在TaskContext存一个副本。因为TaskContext的底层实现是用一
+    // 个ThreadLocal变量来存储这些contexts。所以，当每个task通过TaskContext去过去
+    // context时，它们都会获取自己的执行线程对应的那一个context！其实这就是ThreadLocal
+    // 的作用的体现。其实再简单想一下就知道，ThreadLocal的底层实现会用一个map来存储每个线程
+    // 和它们的contexts之间的映射。
     // 创建TaskContext
     // (在task真正执行之前，创建context。这样一来，可以在task执行期间调用context来
     // 设置task执行完成之后需要做的事情。比如，添加listener来在task执行完成后进行cleanup())
@@ -226,6 +232,10 @@ private[spark] abstract class Task[T](
   }
 
   /**
+   * 通过设置中断标志为true来kill一个task。这（kill的行为）依赖与上层spark代码和用户代码正确的处理该
+   * 标志。该方法是密等的，所以它能被多次调用。
+   * 如果interruptThread = true，则我们也会调用真正执行task的线程的interrupt()方法。
+   * （可以看到，该方法所有的动作只是打打标记，并没有让一个task真正的直接挂掉。）
    * Kills a task by setting the interrupted flag to true. This relies on the upper level Spark
    * code and user code to properly handle the flag. This function should be idempotent so it can
    * be called multiple times.
@@ -233,10 +243,14 @@ private[spark] abstract class Task[T](
    */
   def kill(interruptThread: Boolean, reason: String) {
     require(reason != null)
+    // 设置该task被kill的理由
     _reasonIfKilled = reason
     if (context != null) {
+      // 在context中记录该task被kill的理由
       context.markInterrupted(reason)
     }
+    // 如果interruptThread，则调用该线程的interrupt()方法
+    // 关于线程中断，我觉得可以看看这篇文章：http://www.cnblogs.com/w-wfy/p/6415005.html
     if (interruptThread && taskThread != null) {
       taskThread.interrupt()
     }
