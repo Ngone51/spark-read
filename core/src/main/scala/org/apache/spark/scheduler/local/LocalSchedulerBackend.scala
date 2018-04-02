@@ -166,6 +166,7 @@ private[spark] class LocalSchedulerBackend(
 
   override def killTask(
       taskId: Long, executorId: String, interruptThread: Boolean, reason: String) {
+    // 如果你是本地kill task，那就不需要executorId了。因为本地就只有一个executor...
     localEndpoint.send(KillTask(taskId, interruptThread, reason))
   }
 
