@@ -137,7 +137,7 @@ private[spark] class Executor(
   // Whether to load classes in user jars before those in Spark jars
   private val userClassPathFirst = conf.getBoolean("spark.executor.userClassPathFirst", false)
 
-  // 是否监控杀死或中断的任务
+  // 是否监控被杀死或被中断的任务
   // Whether to monitor killed / interrupted tasks
   private val taskReaperEnabled = conf.getBoolean("spark.task.reaper.enabled", false)
 
@@ -163,6 +163,7 @@ private[spark] class Executor(
   // Limit of bytes for total size of results (default is 1GB)
   private val maxResultSize = Utils.getMaxResultSize(conf)
 
+  // 维护一个正在运行的tasks的列表（实现结构是ConcurrentHashMap）
   // Maintains the list of running tasks.
   private val runningTasks = new ConcurrentHashMap[Long, TaskRunner]
 
@@ -196,21 +197,32 @@ private[spark] class Executor(
 
   // 发起一个任务(by TaskRunner)
   def launchTask(context: ExecutorBackend, taskDescription: TaskDescription): Unit = {
+    // 每次发起一个新的task，都要新建一个TaskRunner。所以，它俩是一一对应的。
     val tr = new TaskRunner(context, taskDescription)
     runningTasks.put(taskDescription.taskId, tr)
     threadPool.execute(tr)
   }
 
+  // 在executor上杀死一个正在运行的task
   def killTask(taskId: Long, interruptThread: Boolean, reason: String): Unit = {
+    // 获取该task对应的TaskRunner
     val taskRunner = runningTasks.get(taskId)
     if (taskRunner != null) {
+      // 如果启用了监控被杀死或被中断的任务的机制
       if (taskReaperEnabled) {
+        // 注意taskReaperForTask由synchronized所修饰
         val maybeNewTaskReaper: Option[TaskReaper] = taskReaperForTask.synchronized {
           val shouldCreateReaper = taskReaperForTask.get(taskId) match {
             case None => true
+              // 如果existingReaper的interruptThread = true, 则不管新来的interruptThread是什么，
+              // 我们都不需要重新创建Reaper；而如果existingReaper的interruptThread = false，则
+              // 如果新来的interruptThread = false，则我们不用重复创建Reaper，而如果新来的
+              // interruptThread = true，则我们需要新建一个Reaper。
+              // 综上所述，我们的目标就是最好创建interruptThread = true的Reaper
             case Some(existingReaper) => interruptThread && !existingReaper.interruptThread
           }
           if (shouldCreateReaper) {
+            // 好了，我们终于可以创建一个新的Reaper了
             val taskReaper = new TaskReaper(
               taskRunner, interruptThread = interruptThread, reason = reason)
             taskReaperForTask(taskId) = taskReaper
@@ -219,9 +231,12 @@ private[spark] class Executor(
             None
           }
         }
+        // 在同步代码块外面执行TaskReaper
         // Execute the TaskReaper from outside of the synchronized block.
+        // TODO read
         maybeNewTaskReaper.foreach(taskReaperPool.execute)
       } else {
+        // 否则，通过TaskRunner kill掉该task
         taskRunner.kill(interruptThread = interruptThread, reason = reason)
       }
     }
@@ -287,12 +302,17 @@ private[spark] class Executor(
      */
     @volatile var task: Task[Any] = _
 
+    // TaskRunner#kill()
     def kill(interruptThread: Boolean, reason: String): Unit = {
       logInfo(s"Executor is trying to kill $taskName (TID $taskId), reason: $reason")
       reasonIfKilled = Some(reason)
       if (task != null) {
         synchronized {
           if (!finished) {
+            // 再通过Task自己来kill掉自己
+            // 还记得我们怎么到这里的吗？TaskSetManager#handleSuccessfulTask() ->
+            // backend.killTask() -> executor#killTask() -> TaskRunner#killTask() ->
+            // Task.killTask()
             task.kill(interruptThread, reason)
           }
         }
@@ -684,7 +704,9 @@ private[spark] class Executor(
 
     override def run(): Unit = {
       val startTimeMs = System.currentTimeMillis()
+      // 哈??? 好吧，注意这是一个def，不是一个val
       def elapsedTimeMs = System.currentTimeMillis() - startTimeMs
+      // 是否超时
       def timeoutExceeded(): Boolean = killTimeoutMs > 0 && elapsedTimeMs > killTimeoutMs
       try {
         // Only attempt to kill the task once. If interruptThread = false then a second kill
@@ -713,6 +735,7 @@ private[spark] class Executor(
             logWarning(s"Killed task $taskId is still running after $elapsedTimeMs ms")
             if (takeThreadDump) {
               try {
+                // TODO read getThreadDumpForThread()
                 Utils.getThreadDumpForThread(taskRunner.getThreadId).foreach { thread =>
                   if (thread.threadName == taskRunner.threadName) {
                     logWarning(s"Thread dump from task $taskId:\n${thread.stackTrace}")
