@@ -91,6 +91,9 @@ class TaskInfo(
 
   def successful: Boolean = finished && !failed && !killed
 
+  // 判断一个task有没有在running的依据是它有没有finished，
+  // 而判断一个task有没有finished的依据是finishTime是否为0。
+  // 这样归根结底就用了一个变量，表示了两种状态。
   def running: Boolean = !finished
 
   def status: String = {
@@ -113,6 +116,7 @@ class TaskInfo(
 
   def id: String = s"$index.$attemptNumber"
 
+  // 用于计算该task的执行耗时
   def duration: Long = {
     if (!finished) {
       throw new UnsupportedOperationException("duration() called on unfinished task")
