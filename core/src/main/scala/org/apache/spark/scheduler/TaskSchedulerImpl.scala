@@ -160,6 +160,7 @@ private[spark] class TaskSchedulerImpl(
 
   def initialize(backend: SchedulerBackend) {
     this.backend = backend
+    // TODO read schedulableBuilder
     schedulableBuilder = {
       schedulingMode match {
         case SchedulingMode.FIFO =>
@@ -465,13 +466,22 @@ private[spark] class TaskSchedulerImpl(
               if (executorIdToRunningTaskIds.contains(execId)) {
                 reason = Some(
                   SlaveLost(s"Task $tid was lost, so marking the executor as lost as well."))
+                // 移除该executor
                 removeExecutor(execId, reason.get)
                 failedExecutor = Some(execId)
               }
             }
+            // 该Task的状态标志属于结束中的一种（FINISHED, FAILED, KILLED, LOST）
             if (TaskState.isFinished(state)) {
+              // 清除该task在该TaskScheduler中的信息（其实本质上就是删除
+              // 几个map结构中的该id）
               cleanupTaskState(tid)
+              // 从TaskSetManager的runningTasks中删除该task
               taskSet.removeRunningTask(tid)
+              // 该task的状态为FINISHED，说明该task正常结束，
+              // 则我们通过taskResultGetter来反序列化或远程获取该task的执行结果
+              // （如果我们的serializedData是DirectTaskResult则直接反序列化；如果是
+              // IndirectTaskResult，则通过BlockManager远程获取）
               if (state == TaskState.FINISHED) {
                 taskResultGetter.enqueueSuccessfulTask(taskSet, tid, serializedData)
               } else if (Set(TaskState.FAILED, TaskState.KILLED, TaskState.LOST).contains(state)) {
@@ -529,11 +539,15 @@ private[spark] class TaskSchedulerImpl(
     taskSetManager.handleSuccessfulTask(tid, taskResult)
   }
 
+  // 注意：TaskSchedulerImpl和TaskSetManager都有handleFailedTask()
+  // 事实上，TaskSchedulerImpl的handleFailedTask()又把主要工作交给了
+  // TaskSetManager的handleFailedTask()来处理了
   def handleFailedTask(
       taskSetManager: TaskSetManager,
       tid: Long,
       taskState: TaskState,
       reason: TaskFailedReason): Unit = synchronized {
+                                        // 注意这里是加同步锁的
     taskSetManager.handleFailedTask(tid, taskState, reason)
     if (!taskSetManager.isZombie && !taskSetManager.someAttemptSucceeded(tid)) {
       // Need to revive offers again now that the task set manager state has been updated to
@@ -694,6 +708,7 @@ private[spark] class TaskSchedulerImpl(
       executorIdToHost -= executorId
       rootPool.executorLost(executorId, host, reason)
     }
+    // TODO read
     blacklistTrackerOpt.foreach(_.handleRemovedExecutor(executorId))
   }
 
