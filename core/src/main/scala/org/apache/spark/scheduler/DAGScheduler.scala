@@ -1235,6 +1235,7 @@ class DAGScheduler(
             throw new SparkException(s"attempted to access non-existent accumulator $id")
         }
         acc.merge(updates.asInstanceOf[AccumulatorV2[Any, Any]])
+        // TODO read
         // To avoid UI cruft, ignore cases where value wasn't updated
         if (acc.name.isDefined && !updates.isZero) {
           stage.latestInfo.accumulables(id) = acc.toInfo(None, Some(acc.value))
@@ -1305,8 +1306,10 @@ class DAGScheduler(
     // we can post a task end event before any jobs or stages are updated. The accumulators are
     // only updated in certain cases.
     event.reason match {
+        // task成功地执行结束
       case Success =>
         task match {
+            // TODO read task的类型为ResultTask
           case rt: ResultTask[_, _] =>
             val resultStage = stage.asInstanceOf[ResultStage]
             resultStage.activeJob match {
@@ -1317,13 +1320,16 @@ class DAGScheduler(
                 }
               case None => // Ignore update if task's job has finished.
             }
+            // 否则，task的类型为ShuffleMapTask
           case _ =>
+            // TODO read
+            // 更新accumulators
             updateAccumulators(event)
         }
       case _: ExceptionFailure => updateAccumulators(event)
       case _ =>
     }
-    // 提交task end事件
+    // 通过ListenerBus提交task end事件
     postTaskEnd(event)
 
     event.reason match {
@@ -1359,25 +1365,34 @@ class DAGScheduler(
               case None =>
                 logInfo("Ignoring result from " + rt + " because its job has finished")
             }
-
+          // task的类型为ShuffleMapTask
           case smt: ShuffleMapTask =>
+            // 获取该task所属的ShuffleMapStage
             val shuffleStage = stage.asInstanceOf[ShuffleMapStage]
+            // 对于ShuffleMapTask，它的返回结果就是MapStatus
             val status = event.result.asInstanceOf[MapStatus]
+            // 获取该status所属的executorId（location其实就是BlockManagerId）
+            // executorId意味着我们知道了该task是在哪里完成的
             val execId = status.location.executorId
             logDebug("ShuffleMapTask finished on " + execId)
+            // 如果该task的stage attempt id正是该stage的attempt number（这里的id和number是一样的，
+            // 都表示第几次尝试），说明该task正是该stage现在想要的
             if (stageIdToStage(task.stageId).latestInfo.attemptNumber == task.stageAttemptId) {
+              // 哈??? 括号里的注释什么意思????
               // This task was for the currently running attempt of the stage. Since the task
               // completed successfully from the perspective of the TaskSetManager, mark it as
               // no longer pending (the TaskSetManager may consider the task complete even
               // when the output needs to be ignored because the task's epoch is too small below.
               // In this case, when pending partitions is empty, there will still be missing
               // output locations, which will cause the DAGScheduler to resubmit the stage below.)
+              // 说明该task对应的partition的计算任务已经完成啦
               shuffleStage.pendingPartitions -= task.partitionId
             }
+            // TODO read Epoch相关
             if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
               logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")
             } else {
-              // TODO read
+              // TODO read registerMapOutput
               // The epoch of the task is acceptable (i.e., the task was launched after the most
               // recent failure we're aware of for the executor), so mark the task's output as
               // available.
