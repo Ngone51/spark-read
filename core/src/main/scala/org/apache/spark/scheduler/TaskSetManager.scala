@@ -107,7 +107,9 @@ private[spark] class TaskSetManager(
   var stageId = taskSet.stageId
   val name = "TaskSet_" + taskSet.id
   var parent: Pool = null
+  // 统计目前已经获取的tasks的(序列化)结果的size
   private var totalResultSize = 0L
+  // 统计当前已经处理的成功结束的tasks的个数
   private var calculatedTasks = 0
 
   private[scheduler] val taskSetBlacklistHelperOpt: Option[TaskSetBlacklist] = {
@@ -772,7 +774,11 @@ private[spark] class TaskSetManager(
    */
   def handleTaskGettingResult(tid: Long): Unit = {
     val info = taskInfos(tid)
+    // 标记该Task获取结果的开始时间
     info.markGettingResult(clock.getTimeMillis())
+    // 同时通知DAG Scheduler该task正在获取结果的事件，DAG再把该事件
+    // post到ListenerBus上，Listener继而将该事件分发给注册建听了该
+    // 事件的listeners
     sched.dagScheduler.taskGettingResult(info)
   }
 
@@ -782,11 +788,14 @@ private[spark] class TaskSetManager(
   def canFetchMoreResults(size: Long): Boolean = sched.synchronized {
     totalResultSize += size
     calculatedTasks += 1
+    // 如果超过了maxResultSize（默认1G），则整个task set中止（why？maybe，超过
+    // 最大限制，对网络传输有影响???）
     if (maxResultSize > 0 && totalResultSize > maxResultSize) {
       val msg = s"Total size of serialized results of ${calculatedTasks} tasks " +
         s"(${Utils.bytesToString(totalResultSize)}) is bigger than spark.driver.maxResultSize " +
         s"(${Utils.bytesToString(maxResultSize)})"
       logError(msg)
+      // TODO read
       abort(msg)
       false
     } else {
@@ -795,17 +804,32 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 一定要记得，该方法是受TaskScheduler加锁保护的！！！所以，有些地方我们才能够不用担心线程安全
+   * 标记该task为成功状态，并且通知DAGScheduler这里有个task结束啦！！！（DAGScheduler继而又会
+   * 通过ListenerBus post一个task结束的事件）
    * Marks a task as successful and notifies the DAGScheduler that the task has ended.
    */
   def handleSuccessfulTask(tid: Long, result: DirectTaskResult[_]): Unit = {
     val info = taskInfos(tid)
     val index = info.index
+    // 标记该task结束，并记录结束时间
     info.markFinished(TaskState.FINISHED, clock.getTimeMillis())
+    // 如果开启了task推荐执行的策略，当有新的task执行完成的时候，
+    // 我们就要重新计算所有成功执行的tasks的运行耗时的中位数。
+    // 因为推荐执行策略会根据该中位数来发起推测执行的任务。
     if (speculationEnabled) {
+      // info.duration用于计算该task的执行耗时
+      // 更新所有成功执行的tasks的运行耗时的中位数
       successfulTaskDurations.insert(info.duration)
     }
+    // 从TaskSetManager#runnungTaskSet中移除该task(因为该task已经执行结束啦，
+    // 它已经不是正在执行的tasks的一员啦)
     removeRunningTask(tid)
 
+    // TODO：一个问题：是不是只有在task推测执行策略开启的情况下，才会有其它的attempts?
+    // 因为我们查看killedByOtherAttempt这个数据结构上的注释说明了解到，只有当推测执行
+    // 策略开启的时候，killedByOtherAttempt(index)才有可能设置为true。
+    // kill掉该task的其它attempts(因为所有attempts里已经有一个成功啦，其它的就没必要继续执行啦！)
     // Kill any other attempts for the same task (since those are unnecessary now that one
     // attempt completed successfully).
     for (attemptInfo <- taskAttempts(index) if attemptInfo.running) {
@@ -813,6 +837,13 @@ private[spark] class TaskSetManager(
         s"in stage ${taskSet.id} (TID ${attemptInfo.taskId}) on ${attemptInfo.host} " +
         s"as the attempt ${info.attemptNumber} succeeded on ${info.host}")
       killedByOtherAttempt(index) = true
+      // 考虑到网络IO，能否批量kill掉tasks???
+      // 答：显然不行的。原本推测执行的策略就是要让tasks在不同的executor上执行，所以怎么可能批量删除呢。
+      // 通过backend kill一个task
+      // （我们已经阅读了和kill task相关的代码，这部分代码大多是看起来只是给task打打被kill的标记
+      // ，而没有真正执行杀死的操作。那么，task又是如何被真正杀死的呢???感觉和线程的interrupt知识
+      // 相关）
+      // TODO 更好地理解kill task
       sched.backend.killTask(
         attemptInfo.taskId,
         attemptInfo.executorId,
@@ -826,20 +857,26 @@ private[spark] class TaskSetManager(
         s" ($tasksSuccessful/$numTasks)")
       // Mark successful and stop if all the tasks have succeeded.
       successful(index) = true
+      // 如果tasksSuccessful等于numTasks，则说明该TaskSet中所以的tasks能执行成功咯，
+      // 则我们可以让TaskSetManager自我毁灭啦。
       if (tasksSuccessful == numTasks) {
         isZombie = true
       }
     } else {
+      // TODO QUESTION 在什么情况下，一个task会成功两次???
       logInfo("Ignoring task-finished event for " + info.id + " in stage " + taskSet.id +
         " because task " + index + " has already completed successfully")
     }
+    // 原来如此，厉害啊！！！
     // This method is called by "TaskSchedulerImpl.handleSuccessfulTask" which holds the
     // "TaskSchedulerImpl" lock until exiting. To avoid the SPARK-7655 issue, we should not
     // "deserialize" the value when holding a lock to avoid blocking other threads. So we call
     // "result.value()" in "TaskResultGetter.enqueueSuccessfulTask" before reaching here.
     // Note: "result.value()" only deserializes the value when it's called at the first time, so
     // here "result.value()" just returns the value and won't block other threads.
+    // TODO read taskEnded()
     sched.dagScheduler.taskEnded(tasks(index), Success, result.value(), result.accumUpdates, info)
+    // TODO read maybeFinishTaskSet()
     maybeFinishTaskSet()
   }
 
@@ -855,7 +892,7 @@ private[spark] class TaskSetManager(
     }
     // 删除该正在运行的task
     removeRunningTask(tid)
-    // 标记该task为finish状态（Failed or Killed）
+    // 标记该task为finish状态（Failed or Killed，或者什么都不是???）
     info.markFinished(state, clock.getTimeMillis())
     val index = info.index
     // 该task正在running的副本数减1
@@ -956,6 +993,7 @@ private[spark] class TaskSetManager(
     maybeFinishTaskSet()
   }
 
+  // 终止该task set（这意味着一个stage的abort???）
   def abort(message: String, exception: Option[Throwable] = None): Unit = sched.synchronized {
     // TODO: Kill running tasks if we were not terminated due to a Mesos error
     sched.dagScheduler.taskSetFailed(taskSet, message, exception)
@@ -1035,11 +1073,13 @@ private[spark] class TaskSetManager(
     }
     // 对于ResultTask，该task正在running，我们才能resubmit（原因见上述注释）
     for ((tid, info) <- taskInfos if info.running && info.executorId == execId) {
+      // 判断executor的失联是否是由app造成的。
       val exitCausedByApp: Boolean = reason match {
         case exited: ExecutorExited => exited.exitCausedByApp
         case ExecutorKilled => false
         case _ => true
       }
+      // 处理failed task
       handleFailedTask(tid, TaskState.FAILED, ExecutorLostFailure(info.executorId, exitCausedByApp,
         Some(reason.toString)))
     }
