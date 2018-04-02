@@ -83,6 +83,8 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       classTag: ClassTag[_]): Future[Unit]
 
   /**
+   * 一种fetch blocks的特殊情况：一次只获取一个，并且会阻塞。
+   * (该方法会在BlockManager#getRemoteBytes()中被调用)
    * A special case of [[fetchBlocks]], as it fetches only one block and is blocking.
    *
    * It is also only available after [[init]] is invoked.
