@@ -723,6 +723,9 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 以序列化字节的形式从远程block managers处获取block（之所以manager加"s"是因为：
+   * 一个block可能存储在多个block managers。这是可能的。所以，如果我们在某个block
+   * manager上获取该block失败，我们就要尝试从下一个block manager获取该block。）
    * Get block from remote block managers as serialized bytes.
    */
   def getRemoteBytes(blockId: BlockId): Option[ChunkedByteBuffer] = {
@@ -733,8 +736,8 @@ private[spark] class BlockManager(
 
     // Because all the remote blocks are registered in driver, it is not necessary to ask
     // all the slave executors to get block status.
-    // 因为所有的远程块都会向driver注册，所以，我们不必要去询问所奴隶executor来获取该块的信息(只需要
-    // 询问driver就可以啦)
+    // 因为所有的远程块都会向driver注册，所以，我们不必要去询问所有的slave executors来获取
+    // 该块的信息(只需要询问driver就可以啦)
     // 获取Block的Location和Status(by rpc)
     val locationsAndStatus = master.getLocationsAndStatus(blockId)
     // 获取disk size和 memory size中较大的那个为block size
@@ -744,10 +747,12 @@ private[spark] class BlockManager(
     // 获取存有该block的所有location(其实就是BlockManagerId)
     val blockLocations = locationsAndStatus.map(_.locations).getOrElse(Seq.empty)
 
+    // 如果block的size超过了阈值maxRemoteBlockToMem，则我们需要把我们的FileManager传参给
+    // BlockTransferService，BTS会利用FileManager来spill该block(到磁盘)。如果没有，就传参
+    // null值给BlockTransferService，这意味这该block会被存储在内存中。
     // If the block size is above the threshold, we should pass our FileManger to
     // BlockTransferService, which will leverage it to spill the block; if not, then passed-in
     // null value means the block will be persisted in memory.
-    // TODO read
     val tempFileManager = if (blockSize > maxRemoteBlockToMem) {
       remoteBlockTempFileManager
     } else {
@@ -788,8 +793,10 @@ private[spark] class BlockManager(
           // take a significant amount of time. To get rid of these stale entries
           // we refresh the block locations after a certain number of fetch failures
           if (runningFailureCount >= maxFailuresBeforeLocationRefresh) {
-            // TODO maybe可以改进
             // refresh后的location是否会包含之前failure的那些个locations???
+            // 这个不确定的。如果有executor挂掉了，那么该executor上的block manager可能也就随之
+            // 挂掉了，这时候refresh肯定获取不到这个location。但其它情况可能还是会有。（所以，
+            // 要去除掉这些之前failure过的location吗？？？）
             locationIterator = sortLocations(master.getLocations(blockId)).iterator
             logDebug(s"Refreshed locations from the driver " +
               s"after ${runningFailureCount} fetch failures.")
