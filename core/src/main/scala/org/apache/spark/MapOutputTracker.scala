@@ -93,12 +93,14 @@ private class ShuffleStatus(numPartitions: Int) {
   private[this] var _numAvailableOutputs: Int = 0
 
   /**
+   * 注册一个map output。如果对于该map output已经注册了一个（获取的）位置，则该旧位置会被新位置替代。
    * Register a map output. If there is already a registered location for the map output then it
    * will be replaced by the new location.
    */
   def addMapOutput(mapId: Int, status: MapStatus): Unit = synchronized {
     if (mapStatuses(mapId) == null) {
       _numAvailableOutputs += 1
+      // 为什么每次注册一个新的MapOutput，就要去清空一次缓存???
       invalidateSerializedMapOutputStatusCache()
     }
     mapStatuses(mapId) = status
@@ -156,9 +158,11 @@ private class ShuffleStatus(numPartitions: Int) {
   }
 
   /**
+   * 返回丢失(未计算)的partitions的列表
    * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
    */
   def findMissingPartitions(): Seq[Int] = synchronized {
+    // 把mapStatuses(id)为null的partition过滤出来
     val missing = (0 until numPartitions).filter(id => mapStatuses(id) == null)
     assert(missing.size == numPartitions - _numAvailableOutputs,
       s"${missing.size} missing, expected ${numPartitions - _numAvailableOutputs}")
@@ -201,12 +205,14 @@ private class ShuffleStatus(numPartitions: Int) {
   }
 
   /**
+   * 清除缓存的serialized map output statuses。
    * Clears the cached serialized map output statuses.
    */
   def invalidateSerializedMapOutputStatusCache(): Unit = synchronized {
     if (cachedSerializedBroadcast != null) {
       // Prevent errors during broadcast cleanup from crashing the DAGScheduler (see SPARK-21444)
       Utils.tryLogNonFatalError {
+        // TODO read 销毁该cachedSerializedBroadcast变量
         // Use `blocking = false` so that this operation doesn't hang while trying to send cleanup
         // RPCs to dead executors.
         cachedSerializedBroadcast.destroy(blocking = false)
@@ -362,7 +368,8 @@ private[spark] class MapOutputTrackerMaster(
   // Exposed for testing
   // 存储ShuffleMapStage的statuses， Stage被划分为多个task，所以对应多个ShuffleStatus
   // 错！大错特错！ 这里，每个ShuffleMapStage对应一个ShuffleStatus，而在ShuffleStatus中，
-  // 有一个mapStatuses数组，用于记录每个在map端划分的task的状态
+  // 有一个mapStatuses数组，数组的每个元素（MapStatus）代表了一个task执行任务结束后的
+  // （partition相关的）output信息
   val shuffleStatuses = new ConcurrentHashMap[Int, ShuffleStatus]().asScala
 
   // 最大的rpc消息大小，默认128MB
@@ -494,6 +501,7 @@ private[spark] class MapOutputTrackerMaster(
   /** Check if the given shuffle is being tracked */
   def containsShuffle(shuffleId: Int): Boolean = shuffleStatuses.contains(shuffleId)
 
+  // 获取一个ShuffleStatus中可获取到的map output的个数
   def getNumAvailableOutputs(shuffleId: Int): Int = {
     shuffleStatuses.get(shuffleId).map(_.numAvailableOutputs).getOrElse(0)
   }
@@ -545,7 +553,7 @@ private[spark] class MapOutputTrackerMaster(
   def getStatistics(dep: ShuffleDependency[_, _, _]): MapOutputStatistics = {
     // withMapStatues加了synchronized关键字，保证mapStatus数组被线程安全的访问
     shuffleStatuses(dep.shuffleId).withMapStatuses { statuses =>
-      // 分区个数
+      // 注意：numPartitions是（reduce端的）分区个数
       val totalSizes = new Array[Long](dep.partitioner.numPartitions)
       // threshold ???（点进去，看看说明）
       val parallelAggThreshold = conf.get(
@@ -560,10 +568,16 @@ private[spark] class MapOutputTrackerMaster(
         // 单线程统计
         for (s <- statuses) {
           for (i <- 0 until totalSizes.length) {
+            // 统计每个reduce端的partition要从map端的partitions拉取的数据size大小
+            // 比如我map端有5个partition，每个partition都有一个map output信息，其实
+            // 就是MapStatus，而MapStatus里有一个Array[Byte]数组，该数组的下标就对应了
+            // reduce端的partition id。所以，一个reduce端的partition就要从所有map端的
+            // map output中找到属于自己的partition的数据size，并将它们累加起来。
             totalSizes(i) += s.getSizeForBlock(i)
           }
         }
       } else {
+        // TODO read 虽然其实已经read过一遍了 但这部分代码还是挺精彩的 下次遇到可以再读一遍
         // 多线程统计
         val threadPool = ThreadUtils.newDaemonFixedThreadPool(parallelism, "map-output-aggregate")
         try {
