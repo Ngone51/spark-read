@@ -210,10 +210,12 @@ private[spark] class TorrentBroadcast[T: ClassTag](obj: T, id: Long)
   }
 
   /**
+   * 在driver和所有executors上删除所有和该Torrent Broadcast相关的持久化的状态信息
    * Remove all persisted state associated with this Torrent broadcast on the executors
    * and driver.
    */
   override protected def doDestroy(blocking: Boolean) {
+    // TODO read unpersist
     TorrentBroadcast.unpersist(id, removeFromDriver = true, blocking)
   }
 
