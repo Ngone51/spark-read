@@ -245,6 +245,7 @@ private[spark] class TaskSchedulerImpl(
 
   override def cancelTasks(stageId: Int, interruptThread: Boolean): Unit = synchronized {
     logInfo("Cancelling stage " + stageId)
+    // 从这里可知，一个stage可能有多个attempts同时在运行???
     taskSetsByStageIdAndAttempt.get(stageId).foreach { attempts =>
       attempts.foreach { case (_, tsm) =>
         // There are two possible cases here:
@@ -253,10 +254,12 @@ private[spark] class TaskSchedulerImpl(
         //    the stage.
         // 2. The task set manager has been created but no tasks has been scheduled. In this case,
         //    simply abort the stage.
+        // 如果该TaskSetManager中有正在运行的tasks，则先将它们kill掉
         tsm.runningTasksSet.foreach { tid =>
             taskIdToExecutorId.get(tid).foreach(execId =>
               backend.killTask(tid, execId, interruptThread, reason = "Stage cancelled"))
         }
+        // 中止该TaskSetManager，相当于就是中止该stage
         tsm.abort("Stage %s cancelled".format(stageId))
         logInfo("Stage %d was cancelled".format(stageId))
       }
@@ -450,6 +453,7 @@ private[spark] class TaskSchedulerImpl(
     Random.shuffle(offers)
   }
 
+  // 这个是TaskSchedulerImpl的statusUpdate()。（backend也有该方法）
   def statusUpdate(tid: Long, state: TaskState, serializedData: ByteBuffer) {
     var failedExecutor: Option[String] = None
     var reason: Option[ExecutorLossReason] = None
@@ -485,6 +489,8 @@ private[spark] class TaskSchedulerImpl(
               if (state == TaskState.FINISHED) {
                 taskResultGetter.enqueueSuccessfulTask(taskSet, tid, serializedData)
               } else if (Set(TaskState.FAILED, TaskState.KILLED, TaskState.LOST).contains(state)) {
+                // 如果task的状态标记是FAILED、KILLED、LOST里的一种，
+                // 就以FailedTask交由TaskResultGetter来处理
                 taskResultGetter.enqueueFailedTask(taskSet, tid, state, serializedData)
               }
             }
@@ -499,6 +505,7 @@ private[spark] class TaskSchedulerImpl(
         case e: Exception => logError("Exception in statusUpdate", e)
       }
     }
+    // TODO read 如果发现有failed executor
     // Update the DAGScheduler without holding a lock on this, since that can deadlock
     if (failedExecutor.isDefined) {
       assert(reason.isDefined)
@@ -549,7 +556,9 @@ private[spark] class TaskSchedulerImpl(
       reason: TaskFailedReason): Unit = synchronized {
                                         // 注意这里是加同步锁的
     taskSetManager.handleFailedTask(tid, taskState, reason)
+    // 如果taskSetManager还没死，且该task在任何attempts中还没有成功过
     if (!taskSetManager.isZombie && !taskSetManager.someAttemptSucceeded(tid)) {
+      // TODO read
       // Need to revive offers again now that the task set manager state has been updated to
       // reflect failed tasks that need to be re-run.
       backend.reviveOffers()
