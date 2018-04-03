@@ -200,6 +200,7 @@ class DAGScheduler(
     sc.getConf.get(config.UNREGISTER_OUTPUT_ON_HOST_ON_FETCH_FAILURE)
 
   /**
+   * 一个stage在aborted之前最多可连续失败的次数，默认4次
    * Number of consecutive stage attempts allowed before a stage is aborted.
    */
   private[scheduler] val maxConsecutiveStageAttempts =
@@ -583,6 +584,7 @@ class DAGScheduler(
    * @param job The job whose state to cleanup.
    */
   private def cleanupStateForJobAndIndependentStages(job: ActiveJob): Unit = {
+    // 获取该job的注册stages（其实就是由该job划分出来的stages）
     val registeredStages = jobIdToStageIds.get(job.jobId)
     if (registeredStages.isEmpty || registeredStages.get.isEmpty) {
       logError("No stages registered for job " + job.jobId)
@@ -595,6 +597,7 @@ class DAGScheduler(
               "Job %d not registered for stage %d even though that stage was registered for the job"
               .format(job.jobId, stageId))
           } else {
+            // 清理和该stage相关的数据结构
             def removeStage(stageId: Int) {
               // data structures based on Stage
               for (stage <- stageIdToStage.get(stageId)) {
@@ -627,6 +630,7 @@ class DAGScheduler(
           }
       }
     }
+    // 清理和该job相关的数据结构
     jobIdToStageIds -= job.jobId
     jobIdToActiveJob -= job.jobId
     activeJobs -= job
@@ -857,9 +861,25 @@ class DAGScheduler(
     logTrace("running: " + runningStages)
     logTrace("waiting: " + waitingStages)
     logTrace("failed: " + failedStages)
+    // 有个问题：有没有一个stage有多个parents的??? 如果有，那么，只要它的parents
+    // 其中之一个stage结束就能开始执行了么???
+    // 答：首先，一个stage肯定会有多个parents，从stage的parents变量为List类型就可以看出；
+    // 其次，只有部分几个parent stages结束，就能直接提交该stage开始执行吗？
+    // 事实上，并不可以。虽然我们在下面调用了submitStage(stage)。但是，看该方法里的代码发现，
+    // 还是会先寻找这个stage的missing（没有执行完成的） parent stages执行。只有当该stage的
+    // 所有parent stages都执行完成的时候，才能轮到该stage去执行（其中的tasks）。
+    // （所以说，这个机制真的很完美！太厉害了！）
+
+    // 在waitingStages中，找出parent stages包含该stage的stages。
     val childStages = waitingStages.filter(_.parents.contains(parent)).toArray
+    // 从waitingStages移除这些将被提交的stages
+    // 如果在submitStage()发现该stage还有未执行完成的parent stages，那么会先
+    // 执行它的parent stages。然后，该stage又会重新被加入到waitingStages中。
     waitingStages --= childStages
+    // 根据job的先后顺序（体现FIFO的调度策略），提交stage
     for (stage <- childStages.sortBy(_.firstJobId)) {
+      // 提交该stage，不一定会真的执行。如果该stage还有为执行完的parent stages，那么会先
+      // 执行它的parent stages。且该stage会重新被加入到waitingStages中。
       submitStage(stage)
     }
   }
@@ -901,10 +921,12 @@ class DAGScheduler(
     listenerBus.post(SparkListenerSpeculativeTaskSubmitted(task.stageId))
   }
 
+  // 处理TaskSetFailed事件
   private[scheduler] def handleTaskSetFailed(
       taskSet: TaskSet,
       reason: String,
       exception: Option[Throwable]): Unit = {
+    // 也就是要abort该task set对应的stage
     stageIdToStage.get(taskSet.stageId).foreach { abortStage(_, reason, exception) }
   }
 
@@ -1054,6 +1076,8 @@ class DAGScheduler(
 
     // First figure out the indexes of partition ids to compute.
     // 首先获取到需要计算的(map端)分区（index或者说id吧）
+    // （因为有可能该stage是第二次或第三次重新提交，所以我们通过findMissingPartitions
+    // 来获取在前几次stage执行完成之后没有计算成功的parttions）
     val partitionsToCompute: Seq[Int] = stage.findMissingPartitions()
 
     // Use the scheduling pool, job group, description, etc. from an ActiveJob associated
@@ -1223,7 +1247,9 @@ class DAGScheduler(
    * but that's not our problem since there's nothing we can do about that.
    */
   private def updateAccumulators(event: CompletionEvent): Unit = {
+    // 获取结束的task
     val task = event.task
+    // 获取该task所属的stage
     val stage = stageIdToStage(task.stageId)
     try {
       event.accumUpdates.foreach { updates =>
@@ -1235,10 +1261,12 @@ class DAGScheduler(
             throw new SparkException(s"attempted to access non-existent accumulator $id")
         }
         acc.merge(updates.asInstanceOf[AccumulatorV2[Any, Any]])
-        // TODO read
+        // 如果updates为zero，也就没有更新的内容，那我们就不去管它
         // To avoid UI cruft, ignore cases where value wasn't updated
         if (acc.name.isDefined && !updates.isZero) {
+          // acc是merge之后的AccumulatorV2
           stage.latestInfo.accumulables(id) = acc.toInfo(None, Some(acc.value))
+          // taskInfo的accumulables存储了该task执行期间的每个阶段的更新信息
           event.taskInfo.setAccumulables(
             acc.toInfo(Some(updates.value), Some(acc.value)) +: event.taskInfo.accumulables)
         }
@@ -1322,7 +1350,6 @@ class DAGScheduler(
             }
             // 否则，task的类型为ShuffleMapTask
           case _ =>
-            // TODO read
             // 更新accumulators
             updateAccumulators(event)
         }
@@ -1392,12 +1419,18 @@ class DAGScheduler(
             if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
               logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")
             } else {
-              // TODO read registerMapOutput
+              // 该task的epoch被认可了。现在我们可以注册该task的output信息到mapOutputTracker上了
               // The epoch of the task is acceptable (i.e., the task was launched after the most
               // recent failure we're aware of for the executor), so mark the task's output as
               // available.
               mapOutputTracker.registerMapOutput(
                 shuffleStage.shuffleDep.shuffleId, smt.partitionId, status)
+              // 从该stage等待的pending partitions去除该task对应的partition（因为该task已经成功地完成
+              // 了任务，并将其对应的partition信息注册到了mapOutputTracker中）。虽然该partition可能已经
+              // 在上面被去除过了，但是也有可能还没有去除（比如，该task是在一个更早的stage attempt中执行的）
+              // 这能够让stage在每个task的任意一个副本执行成功的时候，标记为结束，即使说当前处于活跃状态的stage
+              // 仍然还有正在运行的tasks。（显然，我已经有每个分区的map output信息了，虽然还有task在运行，那
+              // 也是多余的。）
               // Remove the task's partition from pending partitions. This may have already been
               // done above, but will not have been done yet in cases where the task attempt was
               // from an earlier attempt of the stage (i.e., not the attempt that's currently
@@ -1407,13 +1440,19 @@ class DAGScheduler(
               shuffleStage.pendingPartitions -= task.partitionId
             }
 
+            // 如果该stage是正在运行的stage，且该stage的pending partitions已经空了
+            // 有个问题：既然一个stage要在上一个stage完成之后才能运行，那么，runningStage中会有
+            // 多个不同阶段的stage吗???还是说只可能会有同一个stage的不同attempts在同时运行???
+            // 不，还有一种可能，就是两个stage之间是那种"关系"，这就不需要谁等谁，可以同时运行。
             if (runningStages.contains(shuffleStage) && shuffleStage.pendingPartitions.isEmpty) {
+              // 则标记该stage为结束状态
               markStageAsFinished(shuffleStage)
               logInfo("looking for newly runnable stages")
               logInfo("running: " + runningStages)
               logInfo("waiting: " + waitingStages)
               logInfo("failed: " + failedStages)
 
+              // TODO read epoch相关
               // This call to increment the epoch may not be strictly necessary, but it is retained
               // for now in order to minimize the changes in behavior from an earlier version of the
               // code. This existing behavior of always incrementing the epoch following any
@@ -1423,23 +1462,39 @@ class DAGScheduler(
               // See https://github.com/apache/spark/pull/17955/files#r117385673 for more details.
               mapOutputTracker.incrementEpoch()
 
+              // 清除缓存的location???
               clearCacheLocs()
 
+              // 从上面的if条件中可以看到，pending partitions已经为空了，
+              // 而shuffleStage.isAvailable为false意味这numAvailableOutputs还是小于numPartitions，
+              // 这是什么情况???为什么会这样???pending partitions不就意味着所有的tasks都已经成功完成了吗。
+              // 而所有tasks都成功完成就会在上面的mapOutputTracker.registerMapOutput注册它的map output
+              // 信息。所有tasks注册完成后，不就会让numAvailableOutputs等于numPartitions吗???
+              // 在什么情况下，它俩会不等呢??? 还是说真的是代码逻辑的问题???
               if (!shuffleStage.isAvailable) {
+                // 某些tasks执行失败了，让我们来重新提交该stage
                 // Some tasks had failed; let's resubmit this shuffleStage.
                 // TODO: Lower-level scheduler should also deal with this
                 logInfo("Resubmitting " + shuffleStage + " (" + shuffleStage.name +
                   ") because some of its tasks had failed: " +
                   shuffleStage.findMissingPartitions().mkString(", "))
+                // 重新提交该stage（虽然，我们在上面已经标记为该stage结束了???）
                 submitStage(shuffleStage)
               } else {
+                // 标记任何在等待该stage的map-stage jobs为结束状态.(map-stage job好像是一种特殊
+                // 的job，它可以单独的提交一个stage（该stage没有任何的依赖）来执行。而该stage执行完成，
+                // 则该job也就完成了)
                 // Mark any map-stage jobs waiting on this stage as finished
                 if (shuffleStage.mapStageJobs.nonEmpty) {
+                  // 获取该stage的reduce端的每个partition需要从map端拉取的数据size大小
                   val stats = mapOutputTracker.getStatistics(shuffleStage.shuffleDep)
                   for (job <- shuffleStage.mapStageJobs) {
+                    // TODO read
+                    // 标记每个map-stage job为结束状态
                     markMapStageJobAsFinished(job, stats)
                   }
                 }
+                // 提交等待该stage结束的child stages
                 submitWaitingChildStages(shuffleStage)
               }
             }
@@ -1458,8 +1513,13 @@ class DAGScheduler(
               "tasks in ShuffleMapStages.")
         }
 
+        // 该task因为FetchFailed而失败
       case FetchFailed(bmAddress, shuffleId, mapId, reduceId, failureMessage) =>
+        // 获取该task所示的stage
         val failedStage = stageIdToStage(task.stageId)
+        // 获取该shuffle dependency对应的ShuffleMapStage
+        // TODO QUESTION
+        // （该mapStage是failedStage的上一个stage???如果failedStage有多个parent stages呢???）
         val mapStage = shuffleIdToMapStage(shuffleId)
 
         if (failedStage.latestInfo.attemptNumber != task.stageAttemptId) {
@@ -1473,13 +1533,22 @@ class DAGScheduler(
           if (runningStages.contains(failedStage)) {
             logInfo(s"Marking $failedStage (${failedStage.name}) as failed " +
               s"due to a fetch failure from $mapStage (${mapStage.name})")
+            // 标记failedStage以failureMessage结束
             markStageAsFinished(failedStage, Some(failureMessage))
           } else {
             logDebug(s"Received fetch failure from $task, but its from $failedStage which is no " +
               s"longer running")
           }
 
+          // 更新该stage的fetchFailedAttemptIds
+          // （要知道，stage始终是同一个stage，但是它可以发起多次attempts）
           failedStage.fetchFailedAttemptIds.add(task.stageAttemptId)
+          // QUESTION：fetchFailedAttemptIds里存储的attempt ids必定是连续的吗???
+          // 这不废话嘛，提出这问题也是脑子broken了。难道fetchFailedAttemptIds会存储
+          // 比如：[0, 1, 3, 5]。那第id = 2次的attempt怎么了呢？只可能成功了啊。而且stage
+          // 的某次attempt成功了，也不会有之后的其它attempts了。
+          // 如果该stage的连续失败次数已经超过阈值maxConsecutiveStageAttempts（默认4次），
+          // 则中止该stage
           val shouldAbortStage =
             failedStage.fetchFailedAttemptIds.size >= maxConsecutiveStageAttempts ||
             disallowStageRetryForTest
@@ -1493,6 +1562,7 @@ class DAGScheduler(
                  |times: $maxConsecutiveStageAttempts.
                  |Most recent failure reason: $failureMessage""".stripMargin.replaceAll("\n", " ")
             }
+            // 中止该stage
             abortStage(failedStage, abortMessage, None)
           } else { // update failedStages and make sure a ResubmitFailedStages event is enqueued
             // TODO: Cancel running tasks in the failed stage -- cf. SPARK-17064
@@ -1670,33 +1740,46 @@ class DAGScheduler(
   }
 
   /**
+   * 标记该stage为结束状态，并把它从running stages列表中删除
    * Marks a stage as finished and removes it from the list of running stages.
    */
   private def markStageAsFinished(stage: Stage, errorMessage: Option[String] = None): Unit = {
+    // 计算该stage的运行耗时
     val serviceTime = stage.latestInfo.submissionTime match {
       case Some(t) => "%.03f".format((clock.getTimeMillis() - t) / 1000.0)
       case _ => "Unknown"
     }
     if (errorMessage.isEmpty) {
       logInfo("%s (%s) finished in %s s".format(stage, stage.name, serviceTime))
+      // 记录该stage的完成时间（所以，上面的serviceTime就被抛弃了吗???反正是一个失败的stage，
+      // 没多大用处吧）
       stage.latestInfo.completionTime = Some(clock.getTimeMillis())
 
+      // 既然该stage已经执行成功了，那么，就删除该stage其它几次attempts失败的信息。
+      // 我们只会对一个stage的连续的多次失败有限制，而如果是在一个长时间运行的job中，如果该
+      // stage（断断续续地）尝试了多次，那么，这些无关的失败最终也不会造成该stage的aborted。
       // Clear failure count for this stage, now that it's succeeded.
       // We only limit consecutive failures of stage attempts,so that if a stage is
       // re-used many times in a long-running job, unrelated failures don't eventually cause the
       // stage to be aborted.
       stage.clearFailures()
     } else {
+      // 虽然stage结束了，但是是非正常的结束。
+      // 标记该stage最近一次失败的原因
       stage.latestInfo.stageFailed(errorMessage.get)
       logInfo(s"$stage (${stage.name}) failed in $serviceTime s due to ${errorMessage.get}")
     }
 
+    // TODO read outputCommitCoordinator相关
     outputCommitCoordinator.stageEnd(stage.id)
+    // 通过listener bus提交stage完成的事件
     listenerBus.post(SparkListenerStageCompleted(stage.latestInfo))
+    // 从runningStages中移除该stag
     runningStages -= stage
   }
 
   /**
+   * 中止所有依赖于该stage的（且处于活跃状态的）jobs。
    * Aborts all jobs depending on a particular Stage. This is called in response to a task set
    * being canceled by the TaskScheduler. Use taskSetFailed() to inject this event from outside.
    */
@@ -1708,10 +1791,33 @@ class DAGScheduler(
       // Skip all the actions if the stage has been removed.
       return
     }
+    // 通过调用stageDependsOn()，来判断该jobs是否依赖failedStage
+    // (感觉stageDependsOn()是一个非常耗时的方法，而且要对每个jobs都调用，能否改进???)
+    // 答：并不需要改进！而且这是非常必要的。在stageDependsOn()方法能为activeJobs中job
+    // 划分好所有的stages。而该信息会在failJobAndIndependentStages()被用到（在调用
+    // failJobAndIndependentStages()必须保证一个job的stages已经划分好）。
     val dependentJobs: Seq[ActiveJob] =
       activeJobs.filter(job => stageDependsOn(job.finalStage, failedStage)).toSeq
+    // 记录该failedStage的完成时间
+    // （感觉这部分及后面相关的代码有点"神奇"或者说"绕"？说说我的想法：虽然该方法的名字是abortStage，
+    // 但是，真正和abort stage有点关联的好像就像下面的设置该stage的完成时间。而设置好完成时间并不意味
+    // 该abort的行为就结束了。
+    // 显然，如果我们要abort一个stage，那些使用了该stage的jobs则同样需要被fail掉（因为这些jobs的
+    // 的某个stage注定无法完成了，所以该job的最终结果也是失败的）。问题的关键是，当我要fail掉那些jobs
+    // 时，比如job-A，我们就需要考虑，由job-A划分出来的stages，是否只和job-A有关；因为也有可能另一个
+    // job-B（不一定属于上述的jobs）依赖了job-A的某个stage，比如stage-1。所以，我们在fail掉job-A时，
+    // 只能abort（在fail job时，我们也需要abort stages）那些只有被job-A所使用的stages，而对于像
+    // stage-1这样的就不能被abort）
+    // 综上所述，本方法要abort一个stage，但是只在这里记录了完成时间，但是，当我们继续fail那些依赖
+    // 该stage的jobs的时候，如果只有一个job依赖它，那么它会被进一步fail掉（比如，cancel tasks；mark
+    // as finish）。而如果有其它jobs依赖，则不会被fail。
+    // 这。。。。感觉好悖论啊。。。一个stage要被abort掉，但是发现有多个jobs依赖它，然后它就只被记录了完成时间，
+    // 而没有其它的操作（比如 cancel tasks， etc.）。
+    // 但是无论如何，有一点是必然的，那就是和该stage相关联的jobs都会被fail掉！！！
+    // （详见failJobAndIndependentStages()）
     failedStage.latestInfo.completionTime = Some(clock.getTimeMillis())
     for (job <- dependentJobs) {
+      // fail掉job以及只和该job有关的stages
       failJobAndIndependentStages(job, s"Job aborted due to stage failure: $reason", exception)
     }
     if (dependentJobs.isEmpty) {
@@ -1731,26 +1837,35 @@ class DAGScheduler(
       if (job.properties == null) false
       else job.properties.getProperty(SparkContext.SPARK_JOB_INTERRUPT_ON_CANCEL, "false").toBoolean
 
+    // 取消和其它jobs没有关联的（只和该方法传参进来的job有关联的）且正在运行的stages
     // Cancel all independent, running stages.
+
+    // 先获取该job划分出来的所有stages。
     val stages = jobIdToStageIds(job.jobId)
     if (stages.isEmpty) {
       logError("No stages registered for job " + job.jobId)
     }
     stages.foreach { stageId =>
+      // 获取和该stage关联的所有jobs
       val jobsForStage: Option[HashSet[Int]] = stageIdToStage.get(stageId).map(_.jobIds)
       if (jobsForStage.isEmpty || !jobsForStage.get.contains(job.jobId)) {
         logError(
           "Job %d not registered for stage %d even though that stage was registered for the job"
             .format(job.jobId, stageId))
       } else if (jobsForStage.get.size == 1) {
+        // TODO 可能的改进 如果该jobsForStage中的jobs是我们要被fail掉的jobs，那么，虽然
+        // 该stage被多个jobs依赖，但是fail掉它也没关系吧???
         if (!stageIdToStage.contains(stageId)) {
           logError(s"Missing Stage for stage with id $stageId")
         } else {
+          // 说明该stage只有我们将要中止的这个job和它关联，如果它处于running状态，那么我们就可以中止它
           // This is the only job that uses this stage, so fail the stage if it is running.
           val stage = stageIdToStage(stageId)
           if (runningStages.contains(stage)) {
             try { // cancelTasks will fail if a SchedulerBackend does not implement killTask
+              // TODO read 删除该stage中的所有tasks
               taskScheduler.cancelTasks(stageId, shouldInterruptThread)
+              // 标记该stage为结束状态
               markStageAsFinished(stage, Some(failureReason))
             } catch {
               case e: UnsupportedOperationException =>
@@ -1762,11 +1877,16 @@ class DAGScheduler(
       }
     }
 
+    // 当该job中所有只和它相关的stages被fail掉之后，我们就可以来fail掉该job了
     if (ableToCancelStages) {
+      // 首先需要清理掉和那些刚刚被fail掉的stages相关的数据结构(e.g. stageIdToStage、runningStages)以及
+      // 和该job相关的数据结构(e.g. jobIdToStageIds, activeJobs)
       // SPARK-15783 important to cleanup state first, just for tests where we have some asserts
       // against the state.  Otherwise we have a *little* bit of flakiness in the tests.
       cleanupStateForJobAndIndependentStages(job)
+      // 清理完上述states后，我们通知job的listener，该job fail了
       job.listener.jobFailed(error)
+      // 将该job end事件上传到监听总线
       listenerBus.post(SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobFailed(error)))
     }
   }
@@ -1868,6 +1988,7 @@ class DAGScheduler(
 
   /** Mark a map stage job as finished with the given output stats, and report to its listener. */
   def markMapStageJobAsFinished(job: ActiveJob, stats: MapOutputStatistics): Unit = {
+    // 这里的"task"貌似和那个task的含义不一样。
     // In map stage jobs, we only create a single "task", which is to finish all of the stage
     // (including reusing any previous map outputs, etc); so we just mark task 0 as done
     job.finished(0) = true
