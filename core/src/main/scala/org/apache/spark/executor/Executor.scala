@@ -577,9 +577,12 @@ private[spark] class Executor(
         execBackend.statusUpdate(taskId, TaskState.FINISHED, serializedResult)
 
       } catch {
+        // 该task执行过程中发生了Fetch Failure
         case t: Throwable if hasFetchFailure && !Utils.isFatalError(t) =>
           val reason = task.context.fetchFailed.get.toTaskFailedReason
           if (!t.isInstanceOf[FetchFailedException]) {
+            // 在task的执行过程中产生了fetch failure，但是某些用户代码将该异常包装了起来并且抛出了
+            // 其它的异常。不管它了，我们就把该异常当作fetch failure来处理。
             // there was a fetch failure in the task, but some user code wrapped that exception
             // and threw something else.  Regardless, we treat it as a fetch failure.
             val fetchFailedCls = classOf[FetchFailedException].getName
@@ -588,7 +591,10 @@ private[spark] class Executor(
               s"exception.  Spark is handling this like a fetch failure and ignoring the " +
               s"other exception: $t")
           }
+          // 标记该task为结束状态，并且清除中断标志
           setTaskFinishedAndClearInterruptStatus()
+          // 调用execBackend的statusUpdate()，注意在这里，TaskState为FAILED，
+          // 并且reason是一个FetchFailedException（reason会先序列化，因为需要rpc传输）
           execBackend.statusUpdate(taskId, TaskState.FAILED, ser.serialize(reason))
 
         case t: TaskKilledException =>
