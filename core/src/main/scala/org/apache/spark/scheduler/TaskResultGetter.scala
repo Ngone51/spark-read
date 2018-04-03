@@ -81,7 +81,7 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
             case IndirectTaskResult(blockId, size) =>
               if (!taskSetManager.canFetchMoreResults(size)) {
                 // 如果累计的size超过maxResultSize，则删除该block
-                // TODO 难到我们不应该删除该TaskSet中所有已经完成的tasks
+                // 难到我们不应该删除该TaskSet中所有已经完成的tasks
                 // 在之前通过IndirectTaskResult存储的的blocks吗？
                 // 答：不用了。看115L，在task的结果被driver成功获取之后，就会删除
                 // executor上的block
@@ -159,9 +159,11 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
     try {
       getTaskResultExecutor.execute(new Runnable {
         override def run(): Unit = Utils.logUncaughtExceptions {
+          // 获取classloader
           val loader = Utils.getContextOrSparkClassLoader
           try {
             if (serializedData != null && serializedData.limit() > 0) {
+              // 试图反序列化serializedData中的TaskFailedReason
               reason = serializer.get().deserialize[TaskFailedReason](
                 serializedData, loader)
             }
@@ -173,6 +175,8 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
                 "Could not deserialize TaskEndReason: ClassNotFound with classloader " + loader)
             case ex: Exception => // No-op
           } finally {
+            // 如果在反序列化TaskEndReason期间产生了一个error，该Runnable就会挂掉。但是，仍然需要
+            // 通知scheduler有关task失败的情况，以避免scheduler认为该task还在一直运行而hang在那里
             // If there's an error while deserializing the TaskEndReason, this Runnable
             // will die. Still tell the scheduler about the task failure, to avoid a hang
             // where the scheduler thinks the task is still running.
