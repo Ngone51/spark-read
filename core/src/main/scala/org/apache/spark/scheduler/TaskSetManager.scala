@@ -874,7 +874,6 @@ private[spark] class TaskSetManager(
     // "result.value()" in "TaskResultGetter.enqueueSuccessfulTask" before reaching here.
     // Note: "result.value()" only deserializes the value when it's called at the first time, so
     // here "result.value()" just returns the value and won't block other threads.
-    // TODO read taskEnded()
     sched.dagScheduler.taskEnded(tasks(index), Success, result.value(), result.accumUpdates, info)
     // TODO read maybeFinishTaskSet()
     maybeFinishTaskSet()
@@ -901,14 +900,26 @@ private[spark] class TaskSetManager(
     val failureReason = s"Lost task ${info.id} in stage ${taskSet.id} (TID $tid, ${info.host}," +
       s" executor ${info.executorId}): ${reason.toErrorString}"
     val failureException: Option[Throwable] = reason match {
+        // 该reason是一个FetchFailed
       case fetchFailed: FetchFailed =>
         logWarning(failureReason)
+        // 如果该task没有成功过，
         if (!successful(index)) {
+          // 我们就标记该task成功???（都已经fetch fail了，为什么要标记它成功？）
+          // 答：看看该方法的倒数几行`if (successful(index)) `里的说明就明白了。
+          // 我们虽然在这里标记该task为success，但是该task并没有获取到它想要的数据，显然
+          // 它肯定没能执行成功。既然它是fetch fail，说明它无法获取上一个stage输出的
+          // 数据（而此时的task已经是下一个执行的stage了（说明上一个stage之前是被认为正常
+          // 结束的）），所以我们需要再重新执行一下上一个stage。既然需要重新执行上一个stage，
+          // 那么这个stage中的tasks的一些信息也无关紧要了。可以看到，我们一获得一个FetchFailure，
+          // 该TaskSetManager的状态也立即设置为僵尸状态了。
           successful(index) = true
           tasksSuccessful += 1
         }
+        // 然后直接让TaskSetManager变成僵尸状态
         isZombie = true
 
+        // TODO readblacklistTracker
         if (fetchFailed.bmAddress != null) {
           blacklistTracker.foreach(_.updateBlacklistForFetchFailure(
             fetchFailed.bmAddress.host, fetchFailed.bmAddress.executorId))
@@ -963,12 +974,13 @@ private[spark] class TaskSetManager(
         logWarning(failureReason)
         None
     }
-    // 通知dagSheduler taskend 事件，这样listener就会知道有个task结束了
+    // 通知dagScheduler task end 事件，这样listener就会知道有个task结束了
     sched.dagScheduler.taskEnded(tasks(index), reason, null, accumUpdates, info)
 
+    // TODO read
     if (!isZombie && reason.countTowardsTaskFailures) {
       assert (null != failureReason)
-      // TODO read
+      // TODO read taskSetBlacklistHelperOpt
       taskSetBlacklistHelperOpt.foreach(_.updateBlacklistForFailedTask(
         info.host, info.executorId, index, failureReason))
       numFailures(index) += 1
@@ -981,6 +993,11 @@ private[spark] class TaskSetManager(
       }
     }
 
+    // 首先，我们该方法本身就是用来处理failed task的，所以进来的task肯定是以不同的理由执行fail了。
+    // 但是，也有可能successful(index)为true，这有两种可能：
+    // 一：该task因为fetch failure而失败了，但不需要重新执行，而需要重新执行上一个stage（如果该task
+    // 本身重新执行，显然它还是会因为拉取不到上一个stage的输出数据而失败）
+    // 二：之前有该task的不同副本已经执行成功啦。
     if (successful(index)) {
       logInfo(s"Task ${info.id} in stage ${taskSet.id} (TID $tid) failed, but the task will not" +
         s" be re-executed (either because the task failed with a shuffle data fetch failure," +
@@ -989,11 +1006,11 @@ private[spark] class TaskSetManager(
     } else {
       addPendingTask(index)
     }
-
+    // TODO read maybeFinishTaskSet
     maybeFinishTaskSet()
   }
 
-  // 终止该task set（这意味着一个stage的abort???）
+  // 终止该task set（这意味着一个stage的abort??? 是的，确实没错）
   def abort(message: String, exception: Option[Throwable] = None): Unit = sched.synchronized {
     // TODO: Kill running tasks if we were not terminated due to a Mesos error
     sched.dagScheduler.taskSetFailed(taskSet, message, exception)
