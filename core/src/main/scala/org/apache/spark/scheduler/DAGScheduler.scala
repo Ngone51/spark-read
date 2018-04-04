@@ -1815,6 +1815,7 @@ class DAGScheduler(
     // 而没有其它的操作（比如 cancel tasks， etc.）。
     // 但是无论如何，有一点是必然的，那就是和该stage相关联的jobs都会被fail掉！！！
     // （详见failJobAndIndependentStages()）
+    // 疑问解决了，没有问题的。详见failJobAndIndependentStages#jobsForStage那边的注释。
     failedStage.latestInfo.completionTime = Some(clock.getTimeMillis())
     for (job <- dependentJobs) {
       // fail掉job以及只和该job有关的stages
@@ -1853,8 +1854,23 @@ class DAGScheduler(
           "Job %d not registered for stage %d even though that stage was registered for the job"
             .format(job.jobId, stageId))
       } else if (jobsForStage.get.size == 1) {
-        // TODO 可能的改进 如果该jobsForStage中的jobs是我们要被fail掉的jobs，那么，虽然
+        // 可能的改进 如果该jobsForStage中的jobs是我们要被fail掉的jobs，那么，虽然
         // 该stage被多个jobs依赖，但是fail掉它也没关系吧???
+        // 答：针对上述改进，我花了（2018.4.4）一下午的时间来改进这点并且增加单元测试(see spark fork
+        // 项目中的分支WRONG-dev-stage-should-be-failed-when-shared-by-multiple-failing-jobs
+        // -only)。但是，我后来发现这个改进点是没有必要的（虽然改进的方式是没有问题的）。由此，我们继续来
+        // 说说从abortStage()到调用该方法再到调用cleanupStateForJobAndIndependentStages()时发生的
+        // 事情。之前，一直觉得，在abortStage()中，只记录了我们想要abort的stage的完成时间，而没有其它多余
+        // 的操作，好像该stage最终也没有fail掉，但其实不是这样的（虽然那个完成时间的设置确实没什么必要）。
+        // 假设我们现在要abort stage0，且stage0是被job1和job2使用。然后我们看到该方法中来，假如传参进来
+        // 的是job1，对于stage0，jobsForStage包含job1和job2，而这两个job又都是因为abort stage0而导致
+        // 的fail。现在，jobsForStage大于1，显然我们不能fail任何stage0。但是，我们最终还是可以fail job1。
+        // 而fail job1之后会调用方法cleanupStateForJobAndIndependentStages，该方法会清理和job1相关的
+        // 数据结构。这会导致，当下一次该方法传参进来的时候是job2时，对于stage0，jobsForStage只包含了job2
+        // （因为我们在job1的cleanupStateForJobAndIndependentStages方法中去除了stage0对于job1的依赖）
+        // 而此时jobsForStage的size就等于1了。则我们最终会fail stage0！其它的stage也是一样道理的。所以，
+        // 那些只属于fail掉的jobs的stage最终也是会被fail掉的。
+
         if (!stageIdToStage.contains(stageId)) {
           logError(s"Missing Stage for stage with id $stageId")
         } else {
