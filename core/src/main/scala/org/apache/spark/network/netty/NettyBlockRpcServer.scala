@@ -33,6 +33,7 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage.{BlockId, StorageLevel}
 
 /**
+ * 该server只处理OpenBlocks和UploadBlock两种类型的requests
  * Serves requests to open blocks by simply registering one chunk per block requested.
  * Handles opening and uploading arbitrary（随意地？？？） BlockManager blocks.
  *
@@ -83,7 +84,9 @@ class NettyBlockRpcServer(
         logTrace(s"Registered streamId $streamId with $blocksNum buffers")
         responseContext.onSuccess(new StreamHandle(streamId, blocksNum).toByteBuffer)
 
+        // 上传Block：将从远程节点传输过来的Block存储到本地的BlockManager中
       case uploadBlock: UploadBlock =>
+        // 将StorageLevel和ClassTag通过我们的JavaSerializer反序列化出来
         // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
         val (level: StorageLevel, classTag: ClassTag[_]) = {
           serializer
@@ -91,9 +94,13 @@ class NettyBlockRpcServer(
             .deserialize(ByteBuffer.wrap(uploadBlock.metadata))
             .asInstanceOf[(StorageLevel, ClassTag[_])]
         }
+        // TODO read NioManagedBuffer
         val data = new NioManagedBuffer(ByteBuffer.wrap(uploadBlock.blockData))
         val blockId = BlockId(uploadBlock.blockId)
+        // TODO read 我们需要再回顾一下BlockManager的那些方法
+        // 通过BlockManager将其存储到本地
         blockManager.putBlockData(blockId, data, level, classTag)
+        // 也不管putBlockData有没有成功...直接就返回success了...
         responseContext.onSuccess(ByteBuffer.allocate(0))
     }
   }
