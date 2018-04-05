@@ -279,6 +279,7 @@ private[storage] class BlockInfoManager extends Logging {
   }
 
   /**
+   * 将一个排他的写锁降级为一个读锁
    * Downgrades an exclusive write lock to a shared read lock.
    */
   def downgradeLock(blockId: BlockId): Unit = synchronized {
