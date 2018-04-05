@@ -137,6 +137,8 @@ private class ShuffleStatus(numPartitions: Int) {
   }
 
   /**
+   * 和上面removeOutputsOnHost()和removeOutputsOnExecutor()结合起来看，
+   * 这就是函数型编程的魅力所在啊
    * Removes all shuffle outputs which satisfies the filter. Note that this will also
    * remove outputs which are served by an external shuffle server (if one exists).
    */
