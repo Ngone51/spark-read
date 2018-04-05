@@ -1515,14 +1515,36 @@ class DAGScheduler(
 
         // 该task因为FetchFailed而失败
       case FetchFailed(bmAddress, shuffleId, mapId, reduceId, failureMessage) =>
-        // 获取该task所示的stage
+        // 获取该task所属的stage
         val failedStage = stageIdToStage(task.stageId)
         // 获取该shuffle dependency对应的ShuffleMapStage
-        // TODO QUESTION
-        // （该mapStage是failedStage的上一个stage???如果failedStage有多个parent stages呢???）
+        /**
+         * 该mapStage是failedStage的上一个stage???如果failedStage有多个parent stages呢???
+         * 那么，mapStage会是多个吗???
+         * 答：不可能的。虽然一个stage可能会有多个parent stages（从rdd的角度来看，比如下图，rdd5
+         * 所在的stage有三个parent stages，于是rdd5会存储3个ShuffleDependency依赖，每个依赖的rdd
+         * 又分别是rdd4、rdd1、rdd2）。但是，一个shuffle它只能对应一个stage！所以我们在这里获得mapStage
+         * 只可能有一个！rdd5所在的stage，比如生成了9个tasks。这9个tasks的计算方法是一样，但是它们获取的
+         * 数据源却不一样，有的可能通过shuffle1获取rdd1所在的stage的输出数据，而其它的则可能通过shuffle2
+         * 或shuffle3（至于怎么划分的，需要看看DAGScheduler提交task的过程）。而不同的shuffle注定只对应了
+         * 一个上层stage。
+         * rdd4           rdd1            rdd2
+         *   |              |               |
+         * shuffle3       shuffle1        shuffle2
+         *   |\             |              /|
+         *   | \------------|-------------/ |
+         *   |              |               |
+         *  rdd6           rdd5            rdd3
+         *
+         *  job2           job3             job1
+         *
+         */
         val mapStage = shuffleIdToMapStage(shuffleId)
 
         if (failedStage.latestInfo.attemptNumber != task.stageAttemptId) {
+          // 如果该task的stage attempt id比最新的stage attempt id小，则直接忽略该失败的
+          // task。因为我们可能已经有更新的task在执行了（说不定新的task意识到了之前的问题，就
+          // 成功了呢）。
           logInfo(s"Ignoring fetch failure from $task as it's from $failedStage attempt" +
             s" ${task.stageAttemptId} and there is a more recent attempt for that stage " +
             s"(attempt ${failedStage.latestInfo.attemptNumber}) running")
@@ -1533,9 +1555,11 @@ class DAGScheduler(
           if (runningStages.contains(failedStage)) {
             logInfo(s"Marking $failedStage (${failedStage.name}) as failed " +
               s"due to a fetch failure from $mapStage (${mapStage.name})")
-            // 标记failedStage以failureMessage结束
+            // 标记failedStage以failureMessage结束（fail掉该stage）
             markStageAsFinished(failedStage, Some(failureMessage))
           } else {
+            // 因为stage中的tasks是在多个executor上并发执行的。所以，很有可能在其它executor上执行的task，
+            // 早早地就返回了一个FetchFailure，并且fail掉了该stage。
             logDebug(s"Received fetch failure from $task, but its from $failedStage which is no " +
               s"longer running")
           }
@@ -1547,6 +1571,7 @@ class DAGScheduler(
           // 这不废话嘛，提出这问题也是脑子broken了。难道fetchFailedAttemptIds会存储
           // 比如：[0, 1, 3, 5]。那第id = 2次的attempt怎么了呢？只可能成功了啊。而且stage
           // 的某次attempt成功了，也不会有之后的其它attempts了。
+          // 不不不！！！！ 上面的理解不对！ [0, 1, 3, 5]说不定也是可能的！
           // 如果该stage的连续失败次数已经超过阈值maxConsecutiveStageAttempts（默认4次），
           // 则中止该stage
           val shouldAbortStage =
@@ -1562,11 +1587,16 @@ class DAGScheduler(
                  |times: $maxConsecutiveStageAttempts.
                  |Most recent failure reason: $failureMessage""".stripMargin.replaceAll("\n", " ")
             }
-            // 中止该stage
+            // 注意abort一个stage和mark stage as finished非常不同！abort意味这该stage不能再执行了；
+            // 而finish则可以之后再执行。finish并一定意味着成功啊。比如，我们上面对failedStage标记为finish了
+            // 但是该stage又没有执行成功，我们之后还会resubmit它的。
+
+            // 中止该stage（连带反应：和该stage相关的jobs）
             abortStage(failedStage, abortMessage, None)
           } else { // update failedStages and make sure a ResubmitFailedStages event is enqueued
             // TODO: Cancel running tasks in the failed stage -- cf. SPARK-17064
             val noResubmitEnqueued = !failedStages.contains(failedStage)
+            // 把failedStage和mapStage加入到failedStages中，等待resubmit
             failedStages += failedStage
             failedStages += mapStage
             if (noResubmitEnqueued) {
@@ -1591,6 +1621,9 @@ class DAGScheduler(
               )
             }
           }
+          // 我们无法获取该map stage的output，则我们把它在mapOutputTracker的注册
+          // 信息清理掉（反正这些信息也不能帮我们正确的获取到数据，而我们之后resubmit的stage
+          // 会重新向mapOutputTracker注册我们新的mapStage的信息。
           // Mark the map whose fetch failed as broken in the map stage
           if (mapId != -1) {
             mapOutputTracker.unregisterMapOutput(shuffleId, mapId, bmAddress)
@@ -1598,6 +1631,8 @@ class DAGScheduler(
 
           // TODO: mark the executor as failed only if there were lots of fetch failures on it
           if (bmAddress != null) {
+            // 如果我们启用了外部shuffle服务，并且配置了"当有fetch failure发生时，则清除该host上
+            // 所有executor的output信息"为true
             val hostToUnregisterOutputs = if (env.blockManager.externalShuffleServiceEnabled &&
               unRegisterOutputOnHostOnFetchFailure) {
               // We had a fetch failure with the external shuffle service, so we
@@ -1608,6 +1643,7 @@ class DAGScheduler(
               // reason to believe shuffle data has been lost for the entire host).
               None
             }
+            // TODO read
             removeExecutorAndUnregisterOutputs(
               execId = bmAddress.executorId,
               fileLost = true,
@@ -1663,19 +1699,27 @@ class DAGScheduler(
       hostToUnregisterOutputs: Option[String],
       maybeEpoch: Option[Long] = None): Unit = {
     val currentEpoch = maybeEpoch.getOrElse(mapOutputTracker.getEpoch)
+    // TODO epoch啊epoch
+    // 如果failedEpoch已经包含了execId，说明该executor之前挂掉过。
+    // 然后呢？它后来又恢复了，现在又挂掉了???
     if (!failedEpoch.contains(execId) || failedEpoch(execId) < currentEpoch) {
+      // 更新该executor对应的epoch number
       failedEpoch(execId) = currentEpoch
       logInfo("Executor lost: %s (epoch %d)".format(execId, currentEpoch))
+      // TODO read（居然是）通过blockManagerMaster删除该executor
       blockManagerMaster.removeExecutor(execId)
       if (fileLost) {
         hostToUnregisterOutputs match {
           case Some(host) =>
             logInfo("Shuffle files lost for host: %s (epoch %d)".format(host, currentEpoch))
+            // 删除在该host上的所有output信息
             mapOutputTracker.removeOutputsOnHost(host)
           case None =>
             logInfo("Shuffle files lost for executor: %s (epoch %d)".format(execId, currentEpoch))
+            // 删除在该executor上的所有output信息
             mapOutputTracker.removeOutputsOnExecutor(execId)
         }
+        // TODO read clearCacheLocs
         clearCacheLocs()
 
       } else {
