@@ -131,6 +131,7 @@ abstract class BlockTransferService extends ShuffleClient with Closeable with Lo
       blockData: ManagedBuffer,
       level: StorageLevel,
       classTag: ClassTag[_]): Unit = {
+    // TODO read 我们需要了解future和awaitResult()，awaitResult是如何实现阻塞的？
     val future = uploadBlock(hostname, port, execId, blockId, blockData, level, classTag)
     ThreadUtils.awaitResult(future, Duration.Inf)
   }
