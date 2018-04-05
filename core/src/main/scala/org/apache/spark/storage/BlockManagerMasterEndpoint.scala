@@ -71,11 +71,13 @@ class BlockManagerMasterEndpoint(
     mapper
   }
 
+  // 是否在Block缺少了一个副本之后，在其它的executor上补上该副本
   val proactivelyReplicate = conf.get("spark.storage.replication.proactive", "false").toBoolean
 
   logInfo("BlockManagerMasterEndpoint up")
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+    // slave向master注册自己的BlockManager
     case RegisterBlockManager(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint) =>
       context.reply(register(blockManagerId, maxOnHeapMemSize, maxOffHeapMemSize, slaveEndpoint))
 
@@ -125,7 +127,7 @@ class BlockManagerMasterEndpoint(
       context.reply(true)
 
     case RemoveExecutor(execId) =>
-      // 在BlockManagerMasterEndPonit中，即使是收到RemoveExecutor事件，删除的也只是BlockManager
+      // 在BlockManagerMasterEndPoint中，即使是收到RemoveExecutor事件，删除的也只是BlockManager
       removeExecutor(execId)
       context.reply(true)
 
@@ -208,7 +210,7 @@ class BlockManagerMasterEndpoint(
   private def removeBlockManager(blockManagerId: BlockManagerId) {
     val info = blockManagerInfo(blockManagerId)
 
-    // 删除该BlockManager对应的executorId
+    // 从blockManagerIdByExecutor中删除该BlockManager
     // Remove the block manager from blockManagerIdByExecutor.
     blockManagerIdByExecutor -= blockManagerId.executorId
 
@@ -220,10 +222,11 @@ class BlockManagerMasterEndpoint(
     val iterator = info.blocks.keySet.iterator
     while (iterator.hasNext) { // 注意这里是个while循环
       val blockId = iterator.next
-      // locations指包含该被删除block的所有BlocManager
+      // locations指包含该被删除block的所有BlockManager
       // 所以，这就意味着，下面代码中，随机选择的用来复制该block的executor是已经包含了该block块的，
-      // 只是在原先的基础上多了一个复制
+      // 只是在原先的基础上多了一个副本
       val locations = blockLocations.get(blockId)
+      // 从locations中删除该BlockManagerId（因为该BlockManager要被删除啦）
       locations -= blockManagerId
       // De-register the block if none of the block managers have it. Otherwise, if pro-active
       // replication is enabled, and a block is either an RDD or a test block (the latter is used
@@ -233,11 +236,14 @@ class BlockManagerMasterEndpoint(
       if (locations.size == 0) {
         blockLocations.remove(blockId)
         logWarning(s"No more replicas available for $blockId !")
+      } else if (proactivelyReplicate && (blockId.isRDD || blockId.isInstanceOf[TestBlockId])) {
         // 我猜，之所以是要设置proactivelyReplicate（积极主动地复制），是因为，其实随机选择的executor已经有该block的副本了,
         // 然后你还要复制一份，这不积极吗？
-      } else if (proactivelyReplicate && (blockId.isRDD || blockId.isInstanceOf[TestBlockId])) {
         // As a heursitic, assume single executor failure to find out the number of replicas that
         // existed before failure
+        // TODO QUESTION 有没有可能被删除的BlockManager中存了该Block的两个副本???
+        // 如果可以，那么这两个副本的id一样吗？废话肯定不一样啊，一样不就是一个了。
+        // 如果可以又有什么用，如果BlockManager挂了，还不是两个副本都没了...
         val maxReplicas = locations.size + 1
         val i = (new Random(blockId.hashCode)).nextInt(locations.size)
         val blockLocations = locations.toSeq
@@ -246,7 +252,9 @@ class BlockManagerMasterEndpoint(
           // foreach里的bm是指BlockManagerInfo，filter里的bm是指BlockManagerId（为什么要这么命名，是故意让人看不懂吗？？？）
           val remainingLocations = locations.toSeq.filter(bm => bm != candidateBMId)
           val replicateMsg = ReplicateBlock(blockId, remainingLocations, maxReplicas)
-          // bm(BlockManagerId)作为随机选择的executor，来复制该block（该executor原先就有该block的一个副本，现在又多了一个）
+          // bm(BlockManagerId)作为随机选择的executor，来复制该block
+          // （该executor原先就有该block的一个副本，现在又多了一个。所以一个BlockManager可以存一个Block的两个副本???
+          // 那这样的副本也没用啊，因为如果BlockManager挂了，那么两个副本一样都没了）
           bm.slaveEndpoint.ask[Boolean](replicateMsg)
         }
       }
@@ -259,6 +267,8 @@ class BlockManagerMasterEndpoint(
 
   private def removeExecutor(execId: String) {
     logInfo("Trying to remove executor " + execId + " from BlockManagerMaster.")
+    // 发现没有，removeExecutor真正干的事是remove BlockManager
+    // 那么，我们不需要处理executor正在运行的tasks吗???
     blockManagerIdByExecutor.get(execId).foreach(removeBlockManager)
   }
 
@@ -375,7 +385,9 @@ class BlockManagerMasterEndpoint(
       idWithoutTopologyInfo.executorId,
       idWithoutTopologyInfo.host,
       idWithoutTopologyInfo.port,
-      topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host)) // 补充拓扑信息，貌似和机架感知有关系
+      // 补充拓扑信息，貌似和机架感知有关系
+      // TODO read getTopologyForHost
+      topologyMapper.getTopologyForHost(idWithoutTopologyInfo.host))
 
     val time = System.currentTimeMillis()
     if (!blockManagerInfo.contains(id)) {
@@ -389,14 +401,19 @@ class BlockManagerMasterEndpoint(
           // A block manager of the same executor already exists, so remove it (assumed dead)
           logError("Got two different block manager registrations on same executor - "
               + s" will replace old one $oldId with new one $id")
-          // 删除该executor（在这里并没有真的删除executor，只是删除了BlockManager，只是把BlockManager当做‘executor’来对待）
+          // 删除该executor（在这里并没有真的删除executor，只是删除了BlockManager，
+          // 只是把BlockManager当做‘executor’来对待）
           // 感觉这里传参oldId.executorId更好，毕竟删除的是旧的，不是吗？？？
+          // （上面的注释是刚开始读源码的时候留下的，理解不太正确。但是对于删除executor其实
+          // 底层是删除BlockManager的原因还是的好好想想为什么是这样的。）
           removeExecutor(id.executorId)
         case None =>
       }
       logInfo("Registering block manager %s with %s RAM, %s".format(
         id.hostPort, Utils.bytesToString(maxOnHeapMemSize + maxOffHeapMemSize), id))
 
+      // 这应该就说明了一台机器上只有一个BlockManager，只有一个executor，
+      // 以及BlockManager和executor一一对应！！！
       // executor <-> BlockManagerId <-> BlockMangerInfo
       blockManagerIdByExecutor(id.executorId) = id
 
@@ -406,10 +423,11 @@ class BlockManagerMasterEndpoint(
     // AppStatusListener会监听该事件，同时会把BlockManager的添加事件当做‘executor’来对待
     listenerBus.post(SparkListenerBlockManagerAdded(time, id, maxOnHeapMemSize + maxOffHeapMemSize,
         Some(maxOnHeapMemSize), Some(maxOffHeapMemSize)))
+    // 返回更新后的BlockManagerId（可能增加了主机的拓扑信息）
     id
   }
 
-  // 更新block信息
+  // 在master登记一个新的block或者更新一个已经存在的block
   private def updateBlockInfo(
       blockManagerId: BlockManagerId,
       blockId: BlockId,
@@ -424,6 +442,8 @@ class BlockManagerMasterEndpoint(
         // so we should not indicate failure.
         return true
       } else {
+        // blockManagerId对于的BlockManager没有事先向master登记（slave需要
+        // 先向master登记自己的BlockManager，才能再向master登记自己的Blocks）
         // 此时，可能需要re-register
         return false
       }
@@ -434,7 +454,7 @@ class BlockManagerMasterEndpoint(
       return true
     }
 
-    // 有可能是更新blockInfo(其实看updateBlockInfo代码，似乎是
+    // 有可能是更新BlockInfo(其实看updateBlockInfo代码，似乎是
     // BlockStatus更为确切)，也有可能是新增BlockInfo
     blockManagerInfo(blockManagerId).updateBlockInfo(blockId, storageLevel, memSize, diskSize)
 
@@ -490,7 +510,11 @@ class BlockManagerMasterEndpoint(
   private def getPeers(blockManagerId: BlockManagerId): Seq[BlockManagerId] = {
     val blockManagerIds = blockManagerInfo.keySet
     if (blockManagerIds.contains(blockManagerId)) {
-      // 只要blockManagerId不是driver的，且不是自己，就是peers???
+      // 只要blockManagerId不是driver的，且不是自己，就是peers
+      // 所谓的peers就是该集群中的其它BlockManager节点（或机器节点???）
+      // 一个机器上只有一个BlockManager（用于管理block的读写）。
+      // 是这样的吧??? 那worker呢？一个executor可以有多个worker???
+      // 那一个机器上可以有多个executors吗???可以的吧???
       blockManagerIds.filterNot { _.isDriver }.filterNot { _ == blockManagerId }.toSeq
     } else {
       Seq.empty
@@ -556,6 +580,7 @@ private[spark] class BlockManagerInfo(
       memSize: Long,
       diskSize: Long) {
 
+    // 更新最近一次该BlockManager和master互动的时间
     updateLastSeenMs()
 
     val blockExists = _blocks.containsKey(blockId)
@@ -563,6 +588,7 @@ private[spark] class BlockManagerInfo(
     var originalDiskSize: Long = 0
     var originalLevel: StorageLevel = StorageLevel.NONE
 
+    // 如果该block已经在master登记过了
     if (blockExists) {
       // The block exists on the slave already.
       val blockStatus: BlockStatus = _blocks.get(blockId)
@@ -577,8 +603,8 @@ private[spark] class BlockManagerInfo(
         _remainingMem += originalMemSize
       }
     }
-    // TODO read
     if (storageLevel.isValid) {
+      // TODO 还是没理解这里dropped memory的意思
       /* isValid means it is either stored in-memory or on-disk.
        * The memSize here indicates the data size in or dropped from memory,
        * externalBlockStoreSize here indicates the data size in or dropped from externalBlockStore,
@@ -613,14 +639,20 @@ private[spark] class BlockManagerInfo(
             s" (size: ${Utils.bytesToString(diskSize)})")
         }
       }
+      // 如果该Block不是BroadcastBlock类型，且已经内存或磁盘中存储，
+      // 则将其添加到_cachedBlocks
       if (!blockId.isBroadcast && blockStatus.isCached) {
         _cachedBlocks += blockId
       }
     } else if (blockExists) {
+      // 如果Block现在的storageLevel已经是inValid了，但是它之前已经在master中登记过了，
+      // 那么，现在我们将其从master中清除
       // If isValid is not true, drop the block.
       _blocks.remove(blockId)
       _cachedBlocks -= blockId
       if (originalLevel.useMemory) {
+        // 我们在该方法里开始的时候，就让_remainingMem += originalMemSize，所以
+        // 这边_remainingMem是没错的。
         logInfo(s"Removed $blockId on ${blockManagerId.hostPort} in memory" +
           s" (size: ${Utils.bytesToString(originalMemSize)}," +
           s" free: ${Utils.bytesToString(_remainingMem)})")
