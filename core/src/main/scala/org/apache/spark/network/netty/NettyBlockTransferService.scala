@@ -152,6 +152,7 @@ private[spark] class NettyBlockTransferService(
       level: StorageLevel,
       classTag: ClassTag[_]): Future[Unit] = {
     val result = Promise[Unit]()
+    // 每次一个服务发起的时候，我们都需要创建一个新的client
     val client = clientFactory.createClient(hostname, port)
 
     // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
