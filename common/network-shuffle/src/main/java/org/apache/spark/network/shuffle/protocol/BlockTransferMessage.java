@@ -75,8 +75,8 @@ public abstract class BlockTransferMessage implements Encodable {
 
   /** Serializes the 'type' byte followed by the message itself. */
   public ByteBuffer toByteBuffer() {
-    // 先用ByteBuf编码，然后再将ByteBufer转乘ByteBuffer；
-    // 解码的时候，又先将ByterBuffer分装成ByteBuf，然后再根据ByteBuf进行解码
+    // 先用ByteBuf编码，然后再将ByteBuf转成ByteBuffer；
+    // 解码的时候，又先将ByteBuffer分装成ByteBuf，然后再根据ByteBuf进行解码
     // Allow room for encoded message, plus the type byte
     ByteBuf buf = Unpooled.buffer(encodedLength() + 1);
     buf.writeByte(type().id);
