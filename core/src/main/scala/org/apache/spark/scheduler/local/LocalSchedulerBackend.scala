@@ -70,6 +70,8 @@ private[spark] class LocalEndpoint(
 
     case StatusUpdate(taskId, state, serializedData) =>
       scheduler.statusUpdate(taskId, state, serializedData)
+      // 如果该task已经结束（不管它是正常finish，还是failed、killed、lost），
+      // 则释放该task之前占用的cpu资源
       if (TaskState.isFinished(state)) {
         freeCores += scheduler.CPUS_PER_TASK
         reviveOffers()
