@@ -116,15 +116,16 @@ private[spark] class TaskSchedulerImpl(
     executorIdToRunningTaskIds.toMap.mapValues(_.size)
   }
 
+  // 记录每个节点上的executor集合。可以用来计算hostsAlive，也可以用来判断是否可以在给定的节点上获取本地数据
+  // (这个数据结构说明一个主机上可以有多个executors???对于这个问题，我越来越混...omg..)
   // The set of executors we have on each host; this is used to compute hostsAlive, which
   // in turn(怎么翻译？？？) is used to decide when we can attain data locality on a given host
-  // 记录每个节点上的executor集合。可以用来计算hostsAlive，也可以用来判断是否可以在给定的节点上获取本地数据
   protected val hostToExecutors = new HashMap[String, HashSet[String]]
 
   // 一个机架上有哪些节点？？？
   protected val hostsByRack = new HashMap[String, HashSet[String]]
 
-  // 每个executorId对应的节点
+  // 每个executorId对应的host节点
   protected val executorIdToHost = new HashMap[String, String]
 
   // 哈？
@@ -210,7 +211,8 @@ private[spark] class TaskSchedulerImpl(
       val conflictingTaskSet = stageTaskSets.exists { case (_, ts) =>
         ts.taskSet != taskSet && !ts.isZombie
       }
-      // 在一个stage多个attempt的taskSet中，处于active状态的taskSet只能有一个
+      // 一个stage（虽然可以有多个attempts，但是）只能有一个处于active状态的taskSet(Manager)
+      // 所以这就说明了，虽然stage可以有多个attempts，但是同一时间内在运行的attempt只能有一个！
       if (conflictingTaskSet) {
         throw new IllegalStateException(s"more than one active taskSet for stage $stage:" +
           s" ${stageTaskSets.toSeq.map{_._2.taskSet.id}.mkString(",")}")
@@ -233,6 +235,7 @@ private[spark] class TaskSchedulerImpl(
       }
       hasReceivedTask = true
     }
+    // 开始通过backend分配资源，执行任务
     backend.reviveOffers()
   }
 
@@ -324,9 +327,11 @@ private[spark] class TaskSchedulerImpl(
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
             tasks(i) += task
             val tid = task.taskId
+            // 更新和task相关的数据结构
             taskIdToTaskSetManager(tid) = taskSet
             taskIdToExecutorId(tid) = execId
             executorIdToRunningTaskIds(execId).add(tid)
+            // 空闲资源减少
             availableCpus(i) -= CPUS_PER_TASK
             assert(availableCpus(i) >= 0)
             launchedTask = true
@@ -345,6 +350,8 @@ private[spark] class TaskSchedulerImpl(
   }
 
   /**
+   * 注意！！！一个WorkOffer表示的是一个executor的空闲资源，而不是一个host的。另外，一个host上可能
+   * 会有多个executors。
    * 集群管理者调用该方法来为slave节点提供资源。我们通过以任务的优先级顺序询问我们处于active状态的task sets来作
    * 为响应。我们通过轮询的方式，让每个节点都能分配到任务，以此来平衡整个集群的负载。
    * Called by cluster manager to offer resources on slaves. We respond by asking our active task
@@ -356,6 +363,7 @@ private[spark] class TaskSchedulerImpl(
     // Also track if new executor is added
     var newExecAvail = false
     for (o <- offers) {
+      // 说明这是一个新出现的主机
       if (!hostToExecutors.contains(o.host)) {
         hostToExecutors(o.host) = new HashSet[String]()
       }
@@ -394,7 +402,7 @@ private[spark] class TaskSchedulerImpl(
     // 随机打乱offers，避免重复在同一个节点上分配任务，以达到集群整体的负载均衡
     val shuffledOffers = shuffleOffers(filteredOffers)
     // Build a list of tasks to assign to each worker.
-    // o.cores / CPUS_PER_TASK表示每个节点最多能分配的任务个数(那么，有可能等于0咯)
+    // o.cores / CPUS_PER_TASK表示每个executor最多能分配的任务个数(那么，有可能等于0咯)
     // So，tasks.size就是shuffledOffers的size
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
@@ -415,7 +423,7 @@ private[spark] class TaskSchedulerImpl(
     // Take each TaskSet in our scheduling order, and then offer it each node in increasing order
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
-    // 首先按照调度策略(FIFO FAIR)遍历每个TaskSet
+    // 首先按照调度策略(FIFO／FAIR)遍历每个TaskSet
     for (taskSet <- sortedTaskSets) {
       var launchedAnyTask = false
       var launchedTaskAtCurrentMaxLocality = false
@@ -433,12 +441,17 @@ private[spark] class TaskSchedulerImpl(
         } while (launchedTaskAtCurrentMaxLocality)
       } // end for：这个for循环加里面的while循环，能保证成功分配完
       // TaskSet中的所有任务到offers上吗???(貌似不能啊)
+
+      // 如果该taskSet中的task在所有的executor上都不能执行，那我们就需要检查
+      // 一下是怎么回事了
+      // TODO read abortIfCompletelyBlacklisted
       if (!launchedAnyTask) {
         taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
       }
     }
 
     // tasks初始化后，它的size不就是大于0的吗???
+    // 唯一的可能是shuffledOffers = 0，则size = 0
     if (tasks.size > 0) {
       hasLaunchedTask = true
     }
@@ -556,7 +569,9 @@ private[spark] class TaskSchedulerImpl(
       reason: TaskFailedReason): Unit = synchronized {
                                         // 注意这里是加同步锁的
     taskSetManager.handleFailedTask(tid, taskState, reason)
-    // 如果taskSetManager还没死，且该task在任何attempts中还没有成功过
+    // 如果taskSetManager还没死(isZobmbie可能已经为true，比如处理该failed task过程发现
+    // 该task已经失败了很多次，则我们会abort该task所在的taskSetManager)，
+    // 且该task在任何attempts中还没有成功过
     if (!taskSetManager.isZombie && !taskSetManager.someAttemptSucceeded(tid)) {
       // TODO read
       // Need to revive offers again now that the task set manager state has been updated to
@@ -722,6 +737,10 @@ private[spark] class TaskSchedulerImpl(
   }
 
   def executorAdded(execId: String, host: String) {
+    // 在看接下来的源码之前，自己先想想，一个executor的增加，
+    // 会带来哪些变化???
+    // （该executor有没有可能是之前挂掉过的，现在又恢复的???）
+    // 答：看后面的代码发现，是有可能的。
     dagScheduler.executorAdded(execId, host)
   }
 
