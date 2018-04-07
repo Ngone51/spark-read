@@ -484,6 +484,8 @@ class BlockManagerMasterEndpoint(
     true
   }
 
+  // 给定一个BlockId，获取对应的Block的存储位置(注意：一个block可能对应多个locations，
+  // 比如，该block在不同的节点上存储了副本)
   private def getLocations(blockId: BlockId): Seq[BlockManagerId] = {
     // blockLocations是在什么时候初始化的啊？？？
     if (blockLocations.containsKey(blockId)) blockLocations.get(blockId).toSeq else Seq.empty
@@ -500,7 +502,8 @@ class BlockManagerMasterEndpoint(
     }
   }
 
-  // 根据block id，获取location
+  // 根据多个block ids，获取各自对应的locations(注意：一个block可能对应多个locations，
+  // 比如，该block在不同的节点上存储了副本)
   private def getLocationsMultipleBlockIds(
       blockIds: Array[BlockId]): IndexedSeq[Seq[BlockManagerId]] = {
     blockIds.map(blockId => getLocations(blockId))
