@@ -882,6 +882,8 @@ private[spark] class BlockManager(
   }
 
   /**
+   * 如果该Block已经存储在BlockManager，则直接拉取；否则，调用该方法提供的makeIterator方法来计算该Block，
+   * 并将其持久化，然后返回它的值。
    * Retrieve the given block if it exists, otherwise call the provided `makeIterator` method
    * to compute the block, persist it, and return its values.
    *
