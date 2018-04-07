@@ -165,6 +165,8 @@ class DAGScheduler(
   private[scheduler] val activeJobs = new HashSet[ActiveJob]
 
   /**
+   * 包含了每个rdd的每个partitions的缓存的位置。这个HashMap的key值是rdd的id，而value值是一个有partition的id
+   * 索引的数组。数组中的每个元素表示一组该partition缓存的位置。
    * Contains the locations that each RDD's partitions are cached on.  This map's keys are RDD ids
    * and its values are arrays indexed by partition numbers. Each array value is the set of
    * locations where that RDD partition is cached.
@@ -292,6 +294,7 @@ class DAGScheduler(
     eventProcessLoop.post(SpeculativeTaskSubmitted(task))
   }
 
+  // 这个方法很重要啊...相当重要...但是还没看懂
   private[scheduler]
   def getCacheLocs(rdd: RDD[_]): IndexedSeq[Seq[TaskLocation]] = cacheLocs.synchronized {
     // Note: this doesn't use `getOrElse()` because this method is called O(num tasks) times
@@ -305,7 +308,14 @@ class DAGScheduler(
         // RDDBlockId所包含的信息只是告知了这是哪个rdd，以及这是该rdd的哪个分片
         val blockIds =
           rdd.partitions.indices.map(index => RDDBlockId(rdd.id, index)).toArray[BlockId]
-        // 再通过请求master节点，获取location信息（这里的请求应该是master到master吧）
+        // 再通过请求blockManagerMaster，获取location信息（如果该rdd的partition计算还没完成，
+        // 则返回空）
+        // 这个rdd的blocks是在shuffle writer中存储的（在内存中存储或这spill的时候存储到磁盘），
+        // 然后在master登记的。所以，如果locs为空，说明该rdd所在的stage的task还没有计算完成。
+        // 需要再看看shuffle writer的代码，然后把两部分联系起来。(不对，可能理解的不对!!)
+        // （问题是shuffle writer怎么知道我的rdd.id??? 或者我们的rdd shuffle writer是不知道的，
+        // 但是，它知道我们的rdd的shuffleDependency的对应的parent rdd的Block信息？然后我们的rdd通过
+        // getPreferredLocsInternal来间接的获取该location信息???）
         blockManagerMaster.getLocations(blockIds).map { bms =>
           bms.map(bm => TaskLocation(bm.host, bm.executorId))
         }
@@ -366,6 +376,7 @@ class DAGScheduler(
     // 应该已经把所有的stage都创建好了。在这里只会有get的过程，没有create的过程了。不知道我理解的对不对？？？
     // [[理解的不对！]] “这里”其实属于创建ResultStage的一部分，所以，不可能所有的Stage创建好了
     val parents = getOrCreateParentStages(rdd, jobId)
+    // 获取一个新的stage id
     val id = nextStageId.getAndIncrement()
     val stage = new ShuffleMapStage(
       id, rdd, numTasks, parents, jobId, rdd.creationSite, shuffleDep, mapOutputTracker)
@@ -428,8 +439,11 @@ class DAGScheduler(
     }.toList
   }
 
-  // 这个函数会通过getShuffleDependencies()一层一层往上找到所有还未在shuffleIdToMapStage里注册的ShuffleDependency
-  /** Find ancestor shuffle dependencies that are not registered in shuffleToMapStage yet */
+  /**
+   * 这个函数会通过getShuffleDependencies()一层一层往上
+   * 找到所有还未在shuffleIdToMapStage里注册的ShuffleDependency。注意，只找ShuffleDependency
+   * Find ancestor shuffle dependencies that are not registered in shuffleToMapStage yet
+   */
   private def getMissingAncestorShuffleDependencies(
       rdd: RDD[_]): ArrayStack[ShuffleDependency[_, _, _]] = {
     val ancestors = new ArrayStack[ShuffleDependency[_, _, _]]
@@ -443,11 +457,12 @@ class DAGScheduler(
       val toVisit = waitingForVisit.pop()
       if (!visited(toVisit)) {
         visited += toVisit
-        /**
-         * TODO 感觉这边可以把rdd之间的"直接shuffle dependency关系"保存起来(比如Map[id, HashSet[sdep]])，
-         * 这样，在createShuffleMapStage#L359时，就不用再重新找直接地shuffleDependencies了。
-         */
+
+        // TODO 感觉这边可以把rdd之间的"直接shuffle dependency关系"保存起来(比如Map[id, HashSet[dep]])，
+        // 这样，在createShuffleMapStage#L359时，就不用再重新找直接地shuffleDependencies了。
+        // 寻常toVisit（rdd）的ShuffleDependencies
         getShuffleDependencies(toVisit).foreach { shuffleDep =>
+          // 如果该ShuffleDependency还未在shuffleIdToMapStage中注册
           if (!shuffleIdToMapStage.contains(shuffleDep.shuffleId)) {
             ancestors.push(shuffleDep)
             waitingForVisit.push(shuffleDep.rdd)
@@ -481,6 +496,7 @@ class DAGScheduler(
   private[scheduler] def getShuffleDependencies(
       rdd: RDD[_]): HashSet[ShuffleDependency[_, _, _]] = {
     // 虽然定义了HashSet，但是最多只会存储一个parent的吧，可能是为了之后使用算子操作（map）？？？不对！
+    // （错误的注解，看方法上的注释说明）
     val parents = new HashSet[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
     val waitingForVisit = new ArrayStack[RDD[_]]
@@ -494,6 +510,8 @@ class DAGScheduler(
           case shuffleDep: ShuffleDependency[_, _, _] =>
             // 按照注释的意思，shuffleDep应该只有一个
             // 这样，我们是否可以认为，一个RDD最多只有一个ShuffleDependency呢？ 不对，理解有问题，看函数说明
+            // （哈哈，早几个月前自己留下的注释，显然不对。一个RDD怎么可能最多只有一个ShuffleDependency呢???
+            // 不过，我在方法上写的注释现在看起来倒是不错。）
             parents += shuffleDep
           case dependency =>
             waitingForVisit.push(dependency.rdd)
@@ -513,8 +531,11 @@ class DAGScheduler(
     def visit(rdd: RDD[_]) {
       if (!visited(rdd)) {
         visited += rdd
-        // TODO read
+        // 妙不可言...啧啧啧...
+
         // rdd有未被缓存的分区？？？
+        // 如果为true，说明该rdd所在的stage的tasks还没有计算完成，所以我们需要
+        // 提交该stage（当然还是需要先找找有没有未完成的parent stages)
         val rddHasUncachedPartitions = getCacheLocs(rdd).contains(Nil)
         if (rddHasUncachedPartitions) {
           for (dep <- rdd.dependencies) {
@@ -523,7 +544,7 @@ class DAGScheduler(
                 // 为什么又是一个rdd一个rdd的往上找，而不是一个stage一个Stage的往上找？难道下面真的有可能创建新的Stage吗？
                 // TODO：在这里还会有创建stage的情况吗？如果有，在什么情形下呢？
                 val mapStage = getOrCreateShuffleMapStage(shufDep, stage.firstJobId)
-                // 如果该stage还未完成？？则加入missing
+                // 如果该stage还未完成，则加入missing（missing是我们先要完成的parent stages）
                 if (!mapStage.isAvailable) {
                   missing += mapStage
                 }
@@ -834,6 +855,7 @@ class DAGScheduler(
   }
 
   /**
+   * 重新提交所有的failed stages。通常，该方法会等待一小会儿，直到最后一个FetchFailure到达。
    * Resubmit any failed stages. Ordinarily called after a small amount of time has passed since
    * the last fetch failure.
    */
@@ -842,10 +864,14 @@ class DAGScheduler(
       // Failed stages may be removed by job cancellation, so failed might be empty even if
       // the ResubmitFailedStages event has been scheduled.
       logInfo("Resubmitting failed stages")
+      // TODO read clearCacheLocs
       clearCacheLocs()
       val failedStagesCopy = failedStages.toArray
       failedStages.clear()
+      // 执行所有的failed stages
+      // （这些failed stage应该没有"直接"的父子关系???）
       for (stage <- failedStagesCopy.sortBy(_.firstJobId)) {
+        // 优先执行job id小的stages(体现job调度的FIFO策略)
         submitStage(stage)
       }
     }
@@ -1049,10 +1075,10 @@ class DAGScheduler(
       // 如果该Stage既不是在等待parent stage执行完，又不是正在running，且不是需要被resubmit的，
       // 就尝试提交它（不一定提交，因为还要递归检查它的parent stage是否已经提交）
       if (!waitingStages(stage) && !runningStages(stage) && !failedStages(stage)) {
-        // 获取未执行的parent stage
+        // 获取未执行的parent stages
         val missing = getMissingParentStages(stage).sortBy(_.id)
         logDebug("missing: " + missing)
-        // 如果没有parent stage了，就直接提交该stage中tasks
+        // 如果所有parent stages都已经完成了，就直接提交该stage中tasks
         if (missing.isEmpty) {
           logInfo("Submitting " + stage + " (" + stage.rdd + "), which has no missing parents")
           submitMissingTasks(stage, jobId.get)
@@ -1061,6 +1087,8 @@ class DAGScheduler(
             // 递归寻找
             submitStage(parent)
           }
+          // 如果有parent stage还没有执行，则优先执行parent stage，
+          // 并该stage暂时存储发哦waitingStages中
           waitingStages += stage
         }
       }
@@ -1069,8 +1097,7 @@ class DAGScheduler(
     }
   }
 
-  // TODO 修改注释
-  /** Called when stage's parents are（not吧？？？）available and we can now do its task. */
+  /** Called when stage's parents are available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {
     logDebug("submitMissingTasks(" + stage + ")")
 
@@ -1105,6 +1132,7 @@ class DAGScheduler(
     val taskIdToLocations: Map[Int, Seq[TaskLocation]] = try {
       stage match {
         case s: ShuffleMapStage =>
+          // 注意，在这里，taskId和partition的id还是对应的
           partitionsToCompute.map { id => (id, getPreferredLocs(stage.rdd, id))}.toMap
         case s: ResultStage =>
           partitionsToCompute.map { id =>
@@ -1114,6 +1142,7 @@ class DAGScheduler(
       }
     } catch {
       case NonFatal(e) =>
+        // 如果有NonFatal的异常抛出，则直接abort该stage（意味着该job也就直接挂咯）
         stage.makeNewStageAttempt(partitionsToCompute.size)
         listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
@@ -1149,6 +1178,7 @@ class DAGScheduler(
           JavaUtils.bufferToArray(
             closureSerializer.serialize((stage.rdd, stage.shuffleDep): AnyRef))
         case stage: ResultStage =>
+          // TODO read 我们对于ResultStage/Task的了解太少啦
           JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
       }
       // 时隔近半个月，终于又回到了这里！！！(讲道理，上面看过的都有点忘了...还好打了注释)
@@ -1157,13 +1187,14 @@ class DAGScheduler(
     } catch {
       // In the case of a failure during serialization, abort the stage.
       case e: NotSerializableException =>
-        // TODO read abortStage()
+        // 如果序列化失败，则直接abort该stage
         abortStage(stage, "Task not serializable: " + e.toString, Some(e))
         runningStages -= stage
 
         // Abort execution
         return
       case NonFatal(e) =>
+        // 如果有NonFatal的异常，也直接abort该stage
         abortStage(stage, s"Task serialization failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
         return
@@ -1176,21 +1207,22 @@ class DAGScheduler(
       val serializedTaskMetrics = closureSerializer.serialize(stage.latestInfo.taskMetrics).array()
       stage match {
         case stage: ShuffleMapStage =>
+          // 重新设置该stage的pendingPartitions
           stage.pendingPartitions.clear()
           partitionsToCompute.map { id =>
             // taskIdToLocations可能为空啊
-            // locs是集群节点的位置（host、port）信息
+            // locs是集群节点的位置（host、executor）信息
             val locs = taskIdToLocations(id)
-            // part是rdd的某个partitions
+            // part是rdd的某个partition
             val part = stage.rdd.partitions(id)
-            // 更新pendingPartitions，说明该id对于的part正在计算中
+            // 更新pendingPartitions，说明需要等待该id对应的part计算完成
             stage.pendingPartitions += id
             // 构建ShuffleMapTask
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
               Option(sc.applicationId), sc.applicationAttemptId)
           }
-
+        // TODO read ResultStage
         case stage: ResultStage =>
           partitionsToCompute.map { id =>
             // 注意：stage.partitions???stage.rdd.partitions???
@@ -1204,6 +1236,7 @@ class DAGScheduler(
           }
       }
     } catch {
+      // 如果在构建task的过程中抛出NonFetal的异常，则也直接abort该stage
       case NonFatal(e) =>
         abortStage(stage, s"Task creation failed: $e\n${Utils.exceptionString(e)}", Some(e))
         runningStages -= stage
@@ -1213,6 +1246,7 @@ class DAGScheduler(
     if (tasks.size > 0) {
       logInfo(s"Submitting ${tasks.size} missing tasks from $stage (${stage.rdd}) (first 15 " +
         s"tasks are for partitions ${tasks.take(15).map(_.partitionId)})")
+      // TODO read submitTasks
       // 最终通过TaskScheduler提交Task(多个Task封装成一个TaskSet)
       taskScheduler.submitTasks(new TaskSet(
         tasks.toArray, stage.id, stage.latestInfo.attemptNumber, jobId, properties))
@@ -1231,7 +1265,7 @@ class DAGScheduler(
           s"Stage ${stage} is actually done; (partitions: ${stage.numPartitions})"
       }
       logDebug(debugString)
-      // 如果没有task需要执行，且该stage结束，则检查其它需要被执行的stage
+      // 如果没有task需要执行（且该stage结束），则检查其它需要被执行的child stages
       submitWaitingChildStages(stage)
     }
   }
@@ -1508,7 +1542,7 @@ class DAGScheduler(
             sms.pendingPartitions += task.partitionId
 
           case _ =>
-            // TaskSerManagers只能resummitted ShuffleMapStage里的tasks（为啥???）
+            // TaskSerManagers只能resubmitted ShuffleMapStage里的tasks（为啥???）
             assert(false, "TaskSetManagers should only send Resubmitted task statuses for " +
               "tasks in ShuffleMapStages.")
         }
@@ -1643,7 +1677,7 @@ class DAGScheduler(
               // reason to believe shuffle data has been lost for the entire host).
               None
             }
-            // TODO read
+            // 移除该executor，以及清除在master上登记的outputs
             removeExecutorAndUnregisterOutputs(
               execId = bmAddress.executorId,
               fileLost = true,
