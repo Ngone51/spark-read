@@ -55,6 +55,9 @@ sealed trait TaskFailedReason extends TaskEndReason {
   def toErrorString: String
 
   /**
+   * 该task的失败是否需要被统计。当该统计结果超过一个task最大的失败次数时，其所在的stage将被abort。
+   * 如果设置为false，说明该task的失败和task本身没有关系。比如：该task所在的executor被kill了，导致
+   * task失败了。对于这样的task失败，我们不用将其统计进去。
    * Whether this task failure should be counted towards the maximum number of times the task is
    * allowed to fail before the stage is aborted.  Set to false in cases where the task's failure
    * was unrelated to the task; for example, if the task failed because the executor it was running
