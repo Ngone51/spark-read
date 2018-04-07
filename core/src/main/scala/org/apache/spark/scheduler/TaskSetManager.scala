@@ -82,6 +82,8 @@ private[spark] class TaskSetManager(
 
   val tasks = taskSet.tasks
   val numTasks = tasks.length
+  // 如果开启了推测执行策略，则copiesRunning(i)可能会大于1；
+  // 否则，不超过1。
   val copiesRunning = new Array[Int](numTasks)
 
   // 对于每个任务，记录是否有任务的某个副本执行成功。如果某个任务因fetch failure而执行失败，也有可能被
@@ -195,7 +197,6 @@ private[spark] class TaskSetManager(
   // Map of recent exceptions (identified by string representation and top stack frame) to
   // duplicate count (how many times the same exception has appeared) and time the full exception
   // was printed. This should ideally be an LRU map that can drop old exceptions automatically.
-  // 那为什么不用LinkedHashMap呢???
   private val recentExceptions = HashMap[String, (Int, Long)]()
 
   // So，epoch的作用???
@@ -319,6 +320,7 @@ private[spark] class TaskSetManager(
       // 又是倒着来的，因为要模拟栈
       indexOffset -= 1
       val index = list(indexOffset)
+      // TODO read taskSetBlacklistHelperOpt
       // 又要先确认executor或host没有加入黑名单
       if (!isTaskBlacklistedOnExecOrNode(index, execId, host)) {
         // 这里的remove相当于trimEnd(1),也就删除列表尾部的一个元素(因为模拟了栈)
@@ -336,6 +338,8 @@ private[spark] class TaskSetManager(
 
   /** Check whether a task is currently running an attempt on a given host */
   private def hasAttemptOnHost(taskIndex: Int, host: String): Boolean = {
+    // 如果copiesRunning(taskIndex)最多只有一个，那么，是否说明正在running的
+    // attempt也只有一个???
     taskAttempts(taskIndex).exists(_.host == host)
   }
 
@@ -370,7 +374,7 @@ private[spark] class TaskSetManager(
         val executors = prefs.flatMap(_ match {
           case e: ExecutorCacheTaskLocation => Some(e.executorId)
           case _ => None
-        });
+        })
         if (executors.contains(execId)) {
           speculatableTasks -= index
           return Some((index, TaskLocality.PROCESS_LOCAL))
@@ -452,6 +456,10 @@ private[spark] class TaskSetManager(
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.NO_PREF)) {
       // Look for noPref tasks after NODE_LOCAL for minimize cross-rack traffic
       for (index <- dequeueTaskFromList(execId, host, pendingTasksWithNoPrefs)) {
+        // 啊??? 为什么从NO_PREF的pending队列中取出task，但是返回的locality
+        // 是PROCESS_LOCAL???
+        // 答：是不是因为：NO_PREF也就说我这个task随便去哪里执行都无所谓。那么，既然你无所谓，
+        // 那么我们就安排你在同一个进程中执行，因为本地执行对于我们来说是最方便的啊。
         return Some((index, TaskLocality.PROCESS_LOCAL, false))
       }
     }
@@ -471,7 +479,6 @@ private[spark] class TaskSetManager(
       }
     }
 
-    // TODO read
     // 如果所有其它任务都已经被调度过了，那么，尝试找一个推测执行的任务
     // find a speculative task if all others tasks have been scheduled
     dequeueSpeculativeTask(execId, host, maxLocality).map {
@@ -499,6 +506,8 @@ private[spark] class TaskSetManager(
   {
     // 从TaskSchedulerImpl.resourceOfferSingleTaskSet()过来的时候不是已经
     // 过滤黑名单了吗???（除非是为了测试，再过滤一遍）
+    // 答：这个好像不是在过滤黑名单，而是在检查什么东西（我们差不多是时候阅读一下
+    // taskSetBlacklistHelperOpt的源码了）
     val offerBlacklisted = taskSetBlacklistHelperOpt.exists { blacklist =>
       blacklist.isNodeBlacklistedForTaskSet(host) ||
         blacklist.isExecutorBlacklistedForTaskSet(execId)
@@ -515,6 +524,8 @@ private[spark] class TaskSetManager(
         // 说明之前的locality超时了
         if (allowedLocality > maxLocality) {
           // 我们不允许去搜索更远的任务???
+          // 答：因为我们之前已经限定了maxLocality（see
+          // TaskSchedulerImpl#resourceOffers）
           // We're not allowed to search for farther-away tasks
           allowedLocality = maxLocality
         }
@@ -525,8 +536,10 @@ private[spark] class TaskSetManager(
       dequeueTask(execId, host, allowedLocality).map { case ((index, taskLocality, speculative)) =>
         // Found a task; do some bookkeeping and return a task description
         val task = tasks(index)
+        // 如果一个stage resubmit，那么，它的task的id和原来的也不一样了
         val taskId = sched.newTaskId()
-        // 该task的运行副本+1
+        // 该task的运行副本+1（一直在想，task的运行副本同一时间是不是只有一个???
+        // 答：如果开启了推测执行策略，则copiesRunning(i)可能会大于1；否则，不超过1。）
         // Do various bookkeeping
         copiesRunning(index) += 1
         val attemptNum = taskAttempts(index).size
@@ -541,6 +554,7 @@ private[spark] class TaskSetManager(
         // NO_PREF will not affect the variables related to delay scheduling
         if (maxLocality != TaskLocality.NO_PREF) {
           currentLocalityIndex = getLocalityIndex(taskLocality)
+          // 更新上一次发起一个task的时间
           lastLaunchTime = curTime
         }
         // 又要序列化task??? 这是哪里的task，我已经晕了...
@@ -550,6 +564,8 @@ private[spark] class TaskSetManager(
         val serializedTask: ByteBuffer = try {
           ser.serialize(task)
         } catch {
+          // 如果task不能被序列化，则没有理由再去重新attempt该task，因为重新attempt还是会不能被序列化。
+          // 所以，我们直接abort整个TaskSetManager
           // If the task cannot be serialized, then there's no point to re-attempt the task,
           // as it will always fail. So just abort the whole task-set.
           case NonFatal(e) =>
@@ -621,6 +637,8 @@ private[spark] class TaskSetManager(
         val index = pendingTaskIds(indexOffset)
         // 如果该task(index是task在TaskSet中的索引)的运行副本为0，且从未记录成功，
         // 说明有还未被调度执行的task，则返回true
+        // （在这里，能否说明一个task的正在运行的副本个数最多为1???
+        // 答：如果开启了推测执行策略，则copiesRunning(i)可能会大于1；否则，不超过1。）
         if (copiesRunning(index) == 0 && !successful(index)) {
           return true
         } else {
@@ -826,9 +844,11 @@ private[spark] class TaskSetManager(
     // 它已经不是正在执行的tasks的一员啦)
     removeRunningTask(tid)
 
-    // TODO：一个问题：是不是只有在task推测执行策略开启的情况下，才会有其它的attempts?
+    // QUESTION：是不是只有在task推测执行策略开启的情况下，才会有其它的attempts?
     // 因为我们查看killedByOtherAttempt这个数据结构上的注释说明了解到，只有当推测执行
     // 策略开启的时候，killedByOtherAttempt(index)才有可能设置为true。
+    // 答：不对的。如果一个task被resubmit，则也会有其它的attempts。killedByOtherAttempt上的
+    // 注释是说，只有当任务的推测执行策略开启的时候，它才可能设置为true，跟taskAttempts没有关系。
     // kill掉该task的其它attempts(因为所有attempts里已经有一个成功啦，其它的就没必要继续执行啦！)
     // Kill any other attempts for the same task (since those are unnecessary now that one
     // attempt completed successfully).
@@ -919,7 +939,7 @@ private[spark] class TaskSetManager(
         // 然后直接让TaskSetManager变成僵尸状态
         isZombie = true
 
-        // TODO readblacklistTracker
+        // TODO read blacklistTracker
         if (fetchFailed.bmAddress != null) {
           blacklistTracker.foreach(_.updateBlacklistForFetchFailure(
             fetchFailed.bmAddress.host, fetchFailed.bmAddress.executorId))
@@ -934,6 +954,7 @@ private[spark] class TaskSetManager(
           // If the task result wasn't serializable, there's no point in trying to re-execute it.
           logError("Task %s in stage %s (TID %d) had a not serializable result: %s; not retrying"
             .format(info.id, taskSet.id, tid, ef.description))
+          // 如果该异常类似是NotSerializableException，则直接abort该TaskSetManager
           abort("Task %s in stage %s (TID %d) had a not serializable result: %s".format(
             info.id, taskSet.id, tid, ef.description))
           return
@@ -942,6 +963,8 @@ private[spark] class TaskSetManager(
         val now = clock.getTimeMillis()
         val (printFull, dupCount) = {
           if (recentExceptions.contains(key)) {
+            // dupCount：该异常重复的次数
+            // printTime：该异常上一次打印的时间
             val (dupCount, printTime) = recentExceptions(key)
             if (now - printTime > EXCEPTION_PRINT_INTERVAL) {
               recentExceptions(key) = (0, now)
@@ -983,7 +1006,10 @@ private[spark] class TaskSetManager(
       // TODO read taskSetBlacklistHelperOpt
       taskSetBlacklistHelperOpt.foreach(_.updateBlacklistForFailedTask(
         info.host, info.executorId, index, failureReason))
+      // 该task由于自身原因造成的失败次数加1
       numFailures(index) += 1
+      // 如果该task的由于自身原因造成的失败次数，超过了其最多可以失败的次数，
+      // 则abort整个TaskSet，进而会abort整个job
       if (numFailures(index) >= maxTaskFailures) {
         logError("Task %d in stage %s failed %d times; aborting job".format(
           index, taskSet.id, maxTaskFailures))
@@ -1004,6 +1030,7 @@ private[spark] class TaskSetManager(
         s" so the previous stage needs to be re-run, or because a different copy of the task" +
         s" has already succeeded).")
     } else {
+      // resubmit该task
       addPendingTask(index)
     }
     // TODO read maybeFinishTaskSet
