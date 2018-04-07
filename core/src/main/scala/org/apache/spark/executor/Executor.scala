@@ -660,6 +660,7 @@ private[spark] class Executor(
             uncaughtExceptionHandler.uncaughtException(Thread.currentThread(), t)
           }
       } finally {
+        // 最后，从executor中的runningTasks中删除该task／TaskRunner
         runningTasks.remove(taskId)
       }
     }
