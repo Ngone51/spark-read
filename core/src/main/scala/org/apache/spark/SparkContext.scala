@@ -2097,6 +2097,12 @@ class SparkContext(config: SparkConf) extends Logging {
     }
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
+    // 会在一个job执行完成之后，调用rdd的doCheckpoint
+    // QUESTION：runJob是在driver端被调用的，但是我们的rdd checkpoint需要在executor进行啊（吗）???
+    // 所以为什么是在driver端调doCheckpoint()???
+    // 答：checkpoint一个rdd的过程，其实会把该rdd当final rdd来发起一个job，而该job又是分布式进行的。
+    // 由此，我们的executors就会计算该rdd不同分区的数据，然后我们将不同分区的数据保存在hdfs的目录下。
+    // 它们具有统一的目录格式：比如hdfs://c1a51ee9-1daf-4169-991e-b290f88bac20/rdd-0/part-00000
     rdd.doCheckpoint()
   }
 
@@ -2365,6 +2371,9 @@ class SparkContext(config: SparkConf) extends Logging {
   }
 
   /**
+   * 设置RDD被checkpointed后的（结果文件）存储路径。注意：如果是在集群的环境中，
+   * 在该存储路径必须为HDFS路径（因为如果在集群环境中运行的话，rdd是在executor
+   * 上运行的。所以，checkpoint的结果也只能保存在executor所在的机器上）
    * Set the directory under which RDDs are going to be checkpointed.
    * @param directory path to the directory where checkpoint files will be stored
    * (must be HDFS path if running in cluster)
@@ -2382,6 +2391,7 @@ class SparkContext(config: SparkConf) extends Logging {
     }
 
     checkpointDir = Option(directory).map { dir =>
+      // 在HDFS上创建目录
       val path = new Path(dir, UUID.randomUUID().toString)
       val fs = path.getFileSystem(hadoopConfiguration)
       fs.mkdirs(path)
