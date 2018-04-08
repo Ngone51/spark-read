@@ -33,6 +33,7 @@ class InterruptibleIterator[+T](val context: TaskContext, val delegate: Iterator
     // is allowed. The assumption is that Thread.interrupted does not have a memory fence in read
     // (just a volatile field in C), while context.interrupted is a volatile in the JVM, which
     // introduces an expensive read fence.
+    // 检查该task是否被kill，如果被kill了，则中止该task
     context.killTaskIfInterrupted()
     delegate.hasNext
   }
