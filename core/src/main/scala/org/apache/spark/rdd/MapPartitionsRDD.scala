@@ -29,12 +29,16 @@ private[spark] class MapPartitionsRDD[U: ClassTag, T: ClassTag](
     f: (TaskContext, Int, Iterator[T]) => Iterator[U],  // (TaskContext, partition index, iterator)
     preservesPartitioning: Boolean = false)
   extends RDD[U](prev) {
+  // 我们点进去看RDD[U](prev)，该方法的形参名字是：oneParent。说明，MapPartitionsRDD确实是只有一个
+  // parent rdd。下面的QUESTION也就解决啦。
 
   override val partitioner = if (preservesPartitioning) firstParent[T].partitioner else None
 
   override def getPartitions: Array[Partition] = firstParent[T].partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[U] =
+    // QUESTION 其中，使用firstParent是不是意味着，MapPartitionsRDD只可能会有一个parent rdd???
+    // f()会在parent rdd的split分区的计算结果返回后，应该在该结果上
     f(context, split.index, firstParent[T].iterator(split, context))
 
   override def clearDependencies() {
