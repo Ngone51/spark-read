@@ -171,9 +171,11 @@ abstract class RDD[T: ClassTag](
       throw new UnsupportedOperationException(
         "Cannot change storage level of an RDD after it was already assigned a level")
     }
+    // 所以，即使之后unpersist,也不能再persist咯???
     // If this is the first time this RDD is marked for persisting, register it
     // with the SparkContext for cleanups and accounting. Do this only once.
     if (storageLevel == StorageLevel.NONE) {
+      // TODO read SparkContext Cleaner
       sc.cleaner.foreach(_.registerRDDForCleanup(this))
       sc.persistRDD(this)
     }
@@ -236,6 +238,9 @@ abstract class RDD[T: ClassTag](
    * RDD is checkpointed or not.
    */
   final def dependencies: Seq[Dependency[_]] = {
+    // 到今天（2018.04.08）才明白这个checkpointRDD在这里的用法啊！
+    // 如果该rdd被checkpoint了，那么，它的parent rdd会变成持有它的checkpoint
+    // 数据的checkpoint rdd。
     checkpointRDD.map(r => List(new OneToOneDependency(r))).getOrElse {
       if (dependencies_ == null) {
         dependencies_ = getDependencies
@@ -283,10 +288,15 @@ abstract class RDD[T: ClassTag](
    * subclasses of RDD.
    */
   final def iterator(split: Partition, context: TaskContext): Iterator[T] = {
-    // TODO read
+    // 如果storageLevel != None,  说明在该rdd上调用了cache或persist。
+    // 然后我们调用getOrCompute，会先从BlockManager中去获取该rdd的计算结果。
+    // 如果获取不到，说明这是该rdd第一次计算，则执行该rdd的计算，并将结果保存到BlockManage中
     if (storageLevel != StorageLevel.NONE) {
       getOrCompute(split, context)
     } else {
+      // 如果storageLevel为None：
+      // 则可能它还没有被计算过???
+      // 也可能它被CheckPointing了，则从CheckPoint读取???
       computeOrReadCheckpoint(split, context)
     }
   }
@@ -316,18 +326,25 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 计算一个RDD的分区数据或者从一个checkpoint读取（如果该rdd被checkpointing了的话）
    * Compute an RDD partition or read it from a checkpoint if the RDD is checkpointing.
    */
   private[spark] def computeOrReadCheckpoint(split: Partition, context: TaskContext): Iterator[T] =
   {
+    // 如果该rdd已经checkpointed了,则我们通过checkpoint方式读取该rdd的计算结果
     if (isCheckpointedAndMaterialized) {
+      // 这里的firstParent点进去看看
       firstParent[T].iterator(split, context)
     } else {
+      // 好了，我们要开始第一次计算该rdd的split对应的partition
       compute(split, context)
     }
   }
 
   /**
+   * 如果该rdd被cache或persist了，则会通过RDD.iterator调用该方法。
+   * 该方法会先从BlockManager中去获取该rdd的计算结果。如果获取不到，说明这是该rdd的第一次计算。
+   * 则我们计算该rdd，并将计算结果保存到BlockManager中（体现rdd的cache/persist）。
    * Gets or computes an RDD partition. Used by RDD.iterator() when an RDD is cached.
    */
   private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
@@ -337,6 +354,7 @@ abstract class RDD[T: ClassTag](
     // This method is called on executors, so we need call SparkEnv.get instead of sc.env.
     SparkEnv.get.blockManager.getOrElseUpdate(blockId, storageLevel, elementClassTag, () => {
       readCachedBlock = false
+      // 如果该rdd的计算结果没在BlockManager中，则我们需要计算该rdd的结果或者从checkpoint中读取
       computeOrReadCheckpoint(partition, context)
     }) match {
       case Left(blockResult) =>
@@ -1540,6 +1558,7 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 和doCheckpoint()相比，该方法其实只能算是标记一下该rdd倒时候需要checkpoint
    * Mark this RDD for checkpointing. It will be saved to a file inside the checkpoint
    * directory set with `SparkContext#setCheckpointDir` and all references to its parent
    * RDDs will be removed. This function must be called before any job has been
@@ -1679,6 +1698,7 @@ abstract class RDD[T: ClassTag](
 
   private[spark] var checkpointData: Option[RDDCheckpointData[T]] = None
 
+  // 是否checkpoint所有被标记为checkpointing的祖先rdds
   // Whether to checkpoint all ancestor RDDs that are marked for checkpointing. By default,
   // we stop as soon as we find the first such RDD, an optimization that allows us to write
   // less data but is not safe for all workloads. E.g. in streaming we may checkpoint both
@@ -1721,6 +1741,10 @@ abstract class RDD[T: ClassTag](
   @transient private var doCheckpointCalled = false
 
   /**
+   * 该方法会在job使用完该rdd后被调用（比如SparkContext#runJob():L2100）。因为只有当该rdd使用完之后，
+   * 该rdd才算"实现"（这个materialized好难翻译，我觉得大概意思是该rdd的整个lineage被执行过了,你才能再
+   * 去checkpoint，因为checkpoint会销毁该rdd的lineage嘛），而且有可能会被缓存在内存中（比如调用
+   * 了cache/persist）。doCheckpoint()还会在parent rdd上递归调用。
    * Performs the checkpointing of this RDD by saving this. It is called after a job using this RDD
    * has completed (therefore the RDD has been materialized and potentially stored in memory).
    * doCheckpoint() is called recursively on the parent RDDs.
@@ -1730,6 +1754,8 @@ abstract class RDD[T: ClassTag](
       if (!doCheckpointCalled) {
         doCheckpointCalled = true
         if (checkpointData.isDefined) {
+          // 如果需要checkpoint parent rdds，则先checkpoint它们。因为如果先checkpoint我们自己的话，
+          // 那么rdd的line age就会被销毁，也就无法再checkpoint parent rdds了。
           if (checkpointAllMarkedAncestors) {
             // TODO We can collect all the RDDs that needs to be checkpointed, and then checkpoint
             // them in parallel.
@@ -1739,6 +1765,8 @@ abstract class RDD[T: ClassTag](
           }
           checkpointData.get.checkpoint()
         } else {
+          // checkpointData没有设置，说明我们自己不需要checkpoint，
+          // 则递归向上找需要checkpoint的parent rdds
           dependencies.foreach(_.rdd.doCheckpoint())
         }
       }
@@ -1746,6 +1774,8 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 当一个rdd完成checkpoint时，则清除掉它原先的dependencies和partitions。到时候
+   * 需要找该rdd的dependency时，则去找它的checkpointData
    * Changes the dependencies of this RDD from its original parents to a new RDD (`newRDD`)
    * created from the checkpoint file, and forget its old dependencies and partitions.
    */
