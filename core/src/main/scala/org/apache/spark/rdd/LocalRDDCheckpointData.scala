@@ -46,11 +46,16 @@ private[spark] class LocalRDDCheckpointData[T: ClassTag](@transient private val 
 
     // Not all actions compute all partitions of the RDD (e.g. take). For correctness, we
     // must cache any missing partitions. TODO: avoid running another job here (SPARK-8582).
+    // 这里的action应该只是象征性的执行动作，只是为了发起（触发）下面的job
     val action = (tc: TaskContext, iterator: Iterator[T]) => Utils.getIteratorSize(iterator)
     val missingPartitionIndices = rdd.partitions.map(_.index).filter { i =>
       !SparkEnv.get.blockManager.master.contains(RDDBlockId(rdd.id, i))
     }
     if (missingPartitionIndices.nonEmpty) {
+      // 在这里发起一个job来计算以该rdd为final rdd的结果。
+      // QUESTION: 在此处计算完的rdd的结果就会被保存到BlockManager中去吗???
+      // 回答：看到方法进来的第一行，就要求该rdd的level必须可以使用磁盘。所以，当
+      // 调用该rdd.iterator()方法时，就会将其存储到BlockManager中。
       rdd.sparkContext.runJob(rdd, action, missingPartitionIndices)
     }
 

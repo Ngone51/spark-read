@@ -34,6 +34,8 @@ private[spark] class ReliableRDDCheckpointData[T: ClassTag](@transient private v
   // The directory to which the associated RDD has been checkpointed to
   // This is assumed to be a non-local path that points to some reliable storage
   private val cpDir: String =
+    // 完成这一步，checkpoint的文件路径目前为止为
+    // hdfs://c1a51ee9-1daf-4169-991e-b290f88bac20/rdd-0/
     ReliableRDDCheckpointData.checkpointPath(rdd.context, rdd.id)
       .map(_.toString)
       .getOrElse { throw new SparkException("Checkpoint dir must be specified.") }
@@ -59,6 +61,7 @@ private[spark] class ReliableRDDCheckpointData[T: ClassTag](@transient private v
 
     // Optionally clean our checkpoint files if the reference is out of scope
     if (rdd.conf.getBoolean("spark.cleaner.referenceTracking.cleanCheckpoints", false)) {
+      // TODO read SparkContext cleaner
       rdd.context.cleaner.foreach { cleaner =>
         cleaner.registerRDDCheckpointDataForCleanup(newRDD, rdd.id)
       }
@@ -72,7 +75,19 @@ private[spark] class ReliableRDDCheckpointData[T: ClassTag](@transient private v
 
 private[spark] object ReliableRDDCheckpointData extends Logging {
 
-  /** Return the path of the directory to which this RDD's checkpoint data is written. */
+  /**
+   * 返回该rdd的checkpoint data将要写入的目录。
+   * 最终checkpoint文件的目录形式可能是这样的：
+   * hdfs://c1a51ee9-1daf-4169-991e-b290f88bac20/rdd-0/part-00000
+   * 第一个是（高可靠）文件系统的schema；
+   * 第二个是uuid
+   * 第三个是由字符串"rdd"和该rdd的id组成
+   * 第四个是由字符串"part"和分区的id组成
+   *
+   * 注意：本方法完成了第三步；第二步由SparkContext的setCheckpointDirectory完成；
+   * 第四步由ReliableCheckpointRDD的checkpointFileName()完成；
+   * Return the path of the directory to which this RDD's checkpoint data is written.
+   */
   def checkpointPath(sc: SparkContext, rddId: Int): Option[Path] = {
     sc.checkpointDir.map { dir => new Path(dir, s"rdd-$rddId") }
   }
