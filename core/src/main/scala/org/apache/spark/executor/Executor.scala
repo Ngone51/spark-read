@@ -556,7 +556,7 @@ private[spark] class Executor(
             ser.serialize(new IndirectTaskResult[Any](TaskResultBlockId(taskId), resultSize))
           } else if (resultSize > maxDirectResultSize) {
             // 如果该task的serializedDirectResult大小比maxDirectResultSize还大，
-            // 则我们将其存储到本地的BlockManager中，后续通过BlockMananger来传送（我估计
+            // 则我们将其存储到本地的BlockManager中，后续通过BlockManager来传送（我估计
             // 会通过BlockTransferService来传输啦～～～）
             val blockId = TaskResultBlockId(taskId)
             env.blockManager.putBytes(
