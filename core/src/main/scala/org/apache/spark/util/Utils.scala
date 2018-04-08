@@ -1386,6 +1386,10 @@ private[spark] object Utils extends Logging {
         finallyBlock
       } catch {
         case t: Throwable if (originalThrowable != null && originalThrowable != t) =>
+          // 根据if判断逻辑可知，在finallyBlock中产生的异常是一个新的异常
+          // 则把它加入到originalThrowable中，一起返回给上层调用者。（如果我们不调用addSuppressed
+          // 则会导致originalThrowable被finally中产生的异常t覆盖。上层调用者只会接收到异常t，而收不到
+          // 异常originalThrowable。而有时候，上层调用者可能更关注try中产生的异常。）
           originalThrowable.addSuppressed(t)
           logWarning(s"Suppressing exception in finally: ${t.getMessage}", t)
           throw originalThrowable
