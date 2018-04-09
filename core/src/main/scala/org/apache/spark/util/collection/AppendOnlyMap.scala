@@ -154,6 +154,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
     var i = 1
     while (true) {
       val curKey = data(2 * pos)
+      // 如果curKey[data(2*pos)]为null，说明该位置还没有元素插入
       if (curKey.eq(null)) {
         // 在这里，updateFunc会创建一个新的combiner
         val newValue = updateFunc(false, null.asInstanceOf[V])
@@ -167,7 +168,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
         val newValue = updateFunc(true, data(2 * pos + 1).asInstanceOf[V])
         data(2 * pos + 1) = newValue.asInstanceOf[AnyRef]
         return newValue
-      } else {
+      } else { // key冲突，则用散列法，向后找，直到找到一个空位置
         val delta = i
         pos = (pos + delta) & mask
         i += 1
@@ -179,6 +180,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
 
   /** Iterator method from Iterable */
   override def iterator: Iterator[(K, V)] = {
+    // 此时该map还是在内存中的，所以destroyed = false
     assert(!destroyed, destructionMessage)
     new Iterator[(K, V)] {
       var pos = -1
@@ -192,7 +194,10 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
           pos += 1
         }
         while (pos < capacity) {
+          // 还没有经过结构性破坏的map的data中会有null的元素
           if (!data(2 * pos).eq(null)) {
+            // 注意：在返回之前，我们的pos是没有变化的。
+            // 所以，当next()再次调用nextValue()时，还是该值
             return (data(2 * pos).asInstanceOf[K], data(2 * pos + 1).asInstanceOf[V])
           }
           pos += 1
@@ -296,6 +301,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
     var keyIndex, newIndex = 0
     while (keyIndex < capacity) {
       // 去除array中为空的那些bucket(或者说slot)
+      // (不用担心数组的元素被覆盖，因为，newIndex只能小于等于keyIndex)
       if (data(2 * keyIndex) != null) {
         data(2 * newIndex) = data(2 * keyIndex)
         data(2 * newIndex + 1) = data(2 * keyIndex + 1)
@@ -305,7 +311,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
     }
     assert(curSize == newIndex + (if (haveNullValue) 1 else 0))
 
-    // 再重新调整好array数组后，再根据keyComparator进行排序
+    // 在重新调整好array数组后，再根据keyComparator进行排序
     // 排序的范围是data数组的0-newIndex区间，该区间的后面已经全部为空
     new Sorter(new KVArraySortDataFormat[K, AnyRef]).sort(data, 0, newIndex, keyComparator)
 
@@ -314,6 +320,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
       var nullValueReady = haveNullValue
       def hasNext: Boolean = (i < newIndex || nullValueReady)
       def next(): (K, V) = {
+        // 优先读取nullValue(当然也只能读取一次)
         if (nullValueReady) {
           nullValueReady = false
           (null.asInstanceOf[K], nullValue)
