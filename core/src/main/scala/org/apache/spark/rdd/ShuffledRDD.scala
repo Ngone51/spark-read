@@ -76,30 +76,46 @@ class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
   }
 
   override def getDependencies: Seq[Dependency[_]] = {
+    // 如果用户指定了序列化器，则使用用户指定的，反之使用spark
+    // 默认的（kryoSerializer or javaSerializer）
     val serializer = userSpecifiedSerializer.getOrElse {
       val serializerManager = SparkEnv.get.serializerManager
       if (mapSideCombine) {
+        // 如果map端指定需要combine，则第二个参数的类型就是Combiner，反之就是Value
         serializerManager.getSerializer(implicitly[ClassTag[K]], implicitly[ClassTag[C]])
       } else {
         serializerManager.getSerializer(implicitly[ClassTag[K]], implicitly[ClassTag[V]])
       }
     }
+    // 创建一个ShuffleDependency(说明ShuffleRDD也是只有一个parent rdd)
     List(new ShuffleDependency(prev, part, serializer, keyOrdering, aggregator, mapSideCombine))
   }
 
   override val partitioner = Some(part)
 
   override def getPartitions: Array[Partition] = {
+    // 注意：这个part是ShuffleRDD上的Partitioner（应该到时候就是reducer端的分区个数）
     Array.tabulate[Partition](part.numPartitions)(i => new ShuffledRDDPartition(i))
   }
 
+  /**
+   * 该函数的作用是说，我们的shuffle要执行了，现在我们需要从map端所有的map outputs中读取属于reduce端
+   * partition分区的数据。我们知道，map端每个task都会输出一个map output文件到本地的机器上。然后，
+   * 该map output文件中还存储了reduce端各个分区的数据。比如，对于partition分区，可能task0的map output
+   * 里的partition分区的数据有5个size；而task1的map output里的partition分区的数据有100个size。那么，
+   * 你说，我们进行shuffle时，去哪个host上读取该partition分区的数据并执行计算任务呢？显然是task1所在的
+   * host嘛。这样，我们就可以尽可能地从本地读取数据，而不需要远程去拉取large size的数据。
+   */
   override protected def getPreferredLocations(partition: Partition): Seq[String] = {
     val tracker = SparkEnv.get.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]
     val dep = dependencies.head.asInstanceOf[ShuffleDependency[K, V, C]]
+    // 获取该ShuffleDependency的对应partition分区的比较倾向的task执行位置（主机）
+    // 注意，这里的partition是reduce端的
     tracker.getPreferredLocationsForShuffle(dep, partition.index)
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[(K, C)] = {
+    // ShuffleRDD只有唯一一个ShuffleDependency依赖，所以我们用head
     val dep = dependencies.head.asInstanceOf[ShuffleDependency[K, V, C]]
     SparkEnv.get.shuffleManager.getReader(dep.shuffleHandle, split.index, split.index + 1, context)
       .read()
