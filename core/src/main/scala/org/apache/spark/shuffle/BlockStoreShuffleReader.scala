@@ -76,17 +76,32 @@ private[spark] class BlockStoreShuffleReader[K, C](
         readMetrics.incRecordsRead(1)
         record
       },
+      // 当metricIter的元素遍历完成时，会合并shuffle read过程中的统计信息
       context.taskMetrics().mergeShuffleReadMetrics())
 
+    // 为了支持task撤销(杀死)，我们需要在这里使用interruptible iterator
     // An interruptible iterator must be used here in order to support task cancellation
     val interruptibleIter = new InterruptibleIterator[(Any, Any)](context, metricIter)
 
+    // 首先，我们需要在这里明确一个事实：map端输出的map outputs中的某个partition中的数据(k, v)
+    // 虽然被分到了同一个partition中，但是,它们的key并不一定一样。它们之所以被分到同一个partition，
+    // 是key经过Partitioner(key)计算之后得到的对应的partition。比如，我们有一个Partition(key)
+    // = {key % 2}。那么，key为奇数的(k, v)健值对就会被分配到同一个partition中，而key为偶数的则会
+    // 被分配到另一个partition中。
     val aggregatedIter: Iterator[Product2[K, C]] = if (dep.aggregator.isDefined) {
+      // 如果在map端（？）定义了aggregator且mapSideCombine = true,
+      // 则我们需要根据key合并values。（我们不是在map端写outputs的时候也合并过吗？然后现在把所有map
+      // 端的outputs的某个partition的数据都读出来后，又要合并了？如果我们只读取一个partition呢？
+      // 那岂不是都合并到一个combiner里去了???）
+      // 答：在map端写output文件的时候，我们是根据key合并values，而在reduce端读的时候，
+      // 我们是根据key合并combiners
       if (dep.mapSideCombine) {
+        // 我们读取的values是已经在map端经过合并的
         // We are reading values that are already combined
         val combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
         dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)
       } else {
+        // 如果未曾在map端指定过合并，则在reduce端读取的时候，执行根据key进行合并
         // We don't know the value type, but also don't care -- the dependency *should*
         // have made sure its compatible w/ this aggregator, which will convert the value
         // type to the combined type C
@@ -94,6 +109,7 @@ private[spark] class BlockStoreShuffleReader[K, C](
         dep.aggregator.get.combineValuesByKey(keyValuesIterator, context)
       }
     } else {
+      // 啥都不合并
       require(!dep.mapSideCombine, "Map-side combine without Aggregator specified!")
       interruptibleIter.asInstanceOf[Iterator[Product2[K, C]]]
     }
