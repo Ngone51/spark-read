@@ -179,6 +179,8 @@ abstract class DeserializationStream extends Closeable {
   }
 
   /**
+   * 以健值队的形式通过一个iterator来从该反序列化流中读取元素。该方法只能被调用一次，因为每次读取元素都会
+   * 消耗原始的数据输入源
    * Read the elements of this stream through an iterator over key-value pairs. This can only be
    * called once, as reading each element will consume data from the input source.
    */
