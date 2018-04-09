@@ -378,6 +378,7 @@ class DAGScheduler(
     val parents = getOrCreateParentStages(rdd, jobId)
     // 获取一个新的stage id
     val id = nextStageId.getAndIncrement()
+    // 注意！！！这里的shuffleDep是该stage自己的shuffleDep啊，而不是parent的。
     val stage = new ShuffleMapStage(
       id, rdd, numTasks, parents, jobId, rdd.creationSite, shuffleDep, mapOutputTracker)
 
