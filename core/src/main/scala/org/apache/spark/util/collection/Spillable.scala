@@ -129,6 +129,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   }
 
   /**
+   * 强啊，宝贝！
    * Spill some data to disk to release memory, which will be called by TaskMemoryManager
    * when there is not enough memory for the task.
    */
