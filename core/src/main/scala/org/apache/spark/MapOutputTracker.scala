@@ -351,7 +351,8 @@ private[spark] class MapOutputTrackerMaster(
   /** Whether to compute locality preferences for reduce tasks */
   private val shuffleLocalityEnabled = conf.getBoolean("spark.shuffle.reduceLocality.enabled", true)
 
-  // 看不懂。。。？？？
+  // 如果map端或reduce端的task个数超过了以下两个阈值，我们就不给reduce端的task分配它们倾向的执行host了。因为，
+  // 这两端的task个数一多，再去计算倾向执行的hosts，会使计算非常耗时。（可能还如多进行几次远程拉取数据来的节约时间）
   // Number of map and reduce tasks above which we do not assign preferred locations based on map
   // output sizes. We limit the size of jobs for which assign preferred locations as computing the
   // top locations by size becomes expensive.
@@ -359,7 +360,8 @@ private[spark] class MapOutputTrackerMaster(
   // NOTE: This should be less than 2000 as we use HighlyCompressedMapStatus beyond that
   private val SHUFFLE_PREF_REDUCE_THRESHOLD = 1000
 
-  // 看不懂。。。？？？
+  // 如果某个partition的数据size占整个map output文件的比例超过了该阈值，则认为该partition的size是比较大，且
+  // 该map output所在的host可以被认为是reduce端task可以倾向执行的一个location
   // Fraction of total map output that must be at a location for it to considered as a preferred
   // location for a reduce task. Making this larger will focus on fewer locations where most data
   // can be read locally, but may lead to more delay in scheduling if those locations are busy.
@@ -602,6 +604,13 @@ private[spark] class MapOutputTrackerMaster(
   }
 
   /**
+   * 该函数的作用是说，我们的shuffle要执行了，现在我们需要从map端所有的map outputs中读取属于reduce端
+   * partition分区的数据。我们知道，map端每个task都会输出一个map output文件到本地的机器上。然后，
+   * 该map output文件中还存储了reduce端各个分区的数据。比如，对于partition分区，可能task0的map output
+   * 里的partition分区的数据有5个size；而task1的map output里的partition分区的数据有100个size。那么，
+   * 你说，我们进行shuffle时，去哪个host上读取该partition分区的数据并执行计算任务呢？显然是task1所在的
+   * host嘛。这样，我们就可以尽可能地从本地读取数据，而不需要远程去拉取large size的数据。
+   *
    * Return the preferred hosts on which to run the given map output partition in a given shuffle,
    * i.e. the nodes that the most outputs for that partition are on.
    *
@@ -611,7 +620,7 @@ private[spark] class MapOutputTrackerMaster(
    */
   def getPreferredLocationsForShuffle(dep: ShuffleDependency[_, _, _], partitionId: Int)
       : Seq[String] = {
-    // 注意：dep.rdd.partitions.length是rdd并行化的个数，也是map side的map output的个数，
+    // 注意：dep.rdd.partitions.length是map端分区的个数，也是map side的map output的个数，
     // dep.partitioner.numPartitions是partitioner的个数，是reduce side的reducer个数
     if (shuffleLocalityEnabled && dep.rdd.partitions.length < SHUFFLE_PREF_MAP_THRESHOLD &&
         dep.partitioner.numPartitions < SHUFFLE_PREF_REDUCE_THRESHOLD) {
@@ -644,8 +653,9 @@ private[spark] class MapOutputTrackerMaster(
       fractionThreshold: Double)
     : Option[Array[BlockManagerId]] = {
 
-    // 那么，问题又来了，shuffleStatuses是什么时候被写入的？？？（在DAGScheduler#createShuffleMapStage()中）
-    // 首先获取该shuffleId对应的ShuffleStatue
+    // 那么，问题又来了，shuffleStatuses是什么时候被写入的？？？
+    // 答：在一个task完成的时候被写入（当task所在的stage完成的时候，
+    // 整个shuffleStatus写完）
     val shuffleStatus = shuffleStatuses.get(shuffleId).orNull
     if (shuffleStatus != null) {
       shuffleStatus.withMapStatuses { statuses =>
@@ -654,14 +664,16 @@ private[spark] class MapOutputTrackerMaster(
           val locs = new HashMap[BlockManagerId, Long]
           var totalOutputSize = 0L
           var mapIdx = 0
-          // statuses存储该shuffle的多个map output的status
+          // statuses存储了map端多个map outputs的status
           while (mapIdx < statuses.length) {
+            // 获取map端mapIdx所对应的task输出的的map output的status
             val status = statuses(mapIdx)
             // status may be null here if we are called between registerShuffle, which creates an
             // array with null entries for each output, and registerMapOutputs, which populates it
             // with valid status entries. This is possible if one thread schedules a job which
             // depends on an RDD which is currently being computed by another thread.
             if (status != null) {
+              // TODO read getSizeForBlock
               val blockSize = status.getSizeForBlock(reducerId)
               if (blockSize > 0) {
                 locs(status.location) = locs.getOrElse(status.location, 0L) + blockSize
@@ -670,6 +682,9 @@ private[spark] class MapOutputTrackerMaster(
             }
             mapIdx = mapIdx + 1
           }
+          // 如果在某个location上，reduceId对应的partition的数据占整个output的size的比例
+          // 超过了fractionThreshold，我们就任务该partition的size是比较大的，并且认为该location
+          // 是可以倾向有task去执行的。
           val topLocs = locs.filter { case (loc, size) =>
             size.toDouble / totalOutputSize >= fractionThreshold
           }
