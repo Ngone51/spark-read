@@ -67,6 +67,7 @@ private[spark] class StandaloneSchedulerBackend(
       launcherBackend.connect()
     }
 
+    // 用于让executor来跟我们通信的endpoint地址(driver端)
     // The endpoint for executors to talk to us
     val driverUrl = RpcEndpointAddress(
       sc.conf.get("spark.driver.host"),
@@ -79,10 +80,13 @@ private[spark] class StandaloneSchedulerBackend(
       "--cores", "{{CORES}}",
       "--app-id", "{{APP_ID}}",
       "--worker-url", "{{WORKER_URL}}")
+    // 解析额外的java命令
     val extraJavaOpts = sc.conf.getOption("spark.executor.extraJavaOptions")
       .map(Utils.splitCommandString).getOrElse(Seq.empty)
+    // 解析额外的类加载路径
     val classPathEntries = sc.conf.getOption("spark.executor.extraClassPath")
       .map(_.split(java.io.File.pathSeparator).toSeq).getOrElse(Nil)
+    // 解析额外的library路径
     val libraryPathEntries = sc.conf.getOption("spark.executor.extraLibraryPath")
       .map(_.split(java.io.File.pathSeparator).toSeq).getOrElse(Nil)
 
@@ -99,9 +103,11 @@ private[spark] class StandaloneSchedulerBackend(
     // Start executors with a few necessary configs for registering with the scheduler
     val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isExecutorStartupConf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
+    // 创建command
     val command = Command("org.apache.spark.executor.CoarseGrainedExecutorBackend",
       args, sc.executorEnvs, classPathEntries ++ testingClassPath, libraryPathEntries, javaOpts)
     val webUrl = sc.ui.map(_.webUrl).getOrElse("")
+    // 每个executor的核数
     val coresPerExecutor = conf.getOption("spark.executor.cores").map(_.toInt)
     // If we're using dynamic allocation, set our initial executor limit to 0 for now.
     // ExecutorAllocationManager will send the real initial limit to the Master later.
@@ -111,6 +117,7 @@ private[spark] class StandaloneSchedulerBackend(
       } else {
         None
       }
+    // 创建应用描述
     val appDesc = ApplicationDescription(sc.appName, maxCores, sc.executorMemory, command,
       webUrl, sc.eventLogDir, sc.eventLogCodec, coresPerExecutor, initialExecutorLimit)
     client = new StandaloneAppClient(sc.env.rpcEnv, masters, appDesc, this, conf)

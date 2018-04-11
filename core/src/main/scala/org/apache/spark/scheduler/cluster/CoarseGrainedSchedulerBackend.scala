@@ -44,23 +44,35 @@ private[spark]
 class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: RpcEnv)
   extends ExecutorAllocationClient with SchedulerBackend with Logging {
 
+  // 当前集群的总核数
   // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
   protected val totalCoreCount = new AtomicInteger(0)
+  // 目前为止注册的所有executors的总数
   // Total number of executors that are currently registered
   protected val totalRegisteredExecutors = new AtomicInteger(0)
   protected val conf = scheduler.sc.conf
+  // 最大的rpc消息的大小，默认128mb
   private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
+  // rpc询问超时，默认120秒
   private val defaultAskTimeout = RpcUtils.askRpcTimeout(conf)
+  // _minRegisteredRatio（最小的资源注册比例）
+  // 只有当资源注册比例大于等于_minRegisteredRatio（默认为0，意思是说，只要有资源注册，就立即
+  // 提交tasks吗???）时，才能提交tasks
   // Submit tasks only after (registered resources / total expected resources)
   // is equal to at least this value, that is double between 0 and 1.
   private val _minRegisteredRatio =
     math.min(1, conf.getDouble("spark.scheduler.minRegisteredResourcesRatio", 0))
+  // maxRegisteredWaitingTime（最长的等待资源注册比例达到_minRegisteredRatio的等待时间）
+  // 也就是说，如果等待时间超过了maxRegisteredWaitingTime，然而资源注册比例还是没有达到最低
+  // 的_minRegisteredRatio，那就不管了，直接提交tasks。
   // Submit tasks after maxRegisteredWaitingTime milliseconds
   // if minRegisteredRatio has not yet been reached
   private val maxRegisteredWaitingTimeMs =
     conf.getTimeAsMs("spark.scheduler.maxRegisteredResourcesWaitingTime", "30s")
+  // 记录该Backend创建时间
   private val createTime = System.currentTimeMillis()
 
+  // executor和executorData之间的map映射。其中，ExecutorData包含了该executor的诸多基本信息。
   // Accessing `executorDataMap` in `DriverEndpoint.receive/receiveAndReply` doesn't need any
   // protection. But accessing `executorDataMap` out of `DriverEndpoint.receive/receiveAndReply`
   // must be protected by `CoarseGrainedSchedulerBackend.this`. Besides, `executorDataMap` should
@@ -68,16 +80,23 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // `CoarseGrainedSchedulerBackend.this`.
   private val executorDataMap = new HashMap[String, ExecutorData]
 
+  // 从cluster manager那里请求得到的executors的总数???（这个requested的被动语态是这么翻译的吧???
+  // 搞不清楚谁请求谁了...但是按类的设计来看应该是backend请求cluster manager啊）
   // Number of executors requested by the cluster manager, [[ExecutorAllocationManager]]
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
   private var requestedTotalExecutors = 0
 
+  // 从cluster manager那里请求的但还未注册的executors
   // Number of executors requested from the cluster manager that have not registered yet
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
   private var numPendingExecutors = 0
 
+  // 监听总线
   private val listenerBus = scheduler.sc.listenerBus
 
+  // executorsPendingToRemove存储的是那些我们请求cluster manager去kill掉但是目前还没死掉的executors。
+  // HashMap存储了executorId到是否由driver所kill的映射(如果是driver要求kill掉的，则我们认为这是和app无关
+  // 的失败)
   // Executors we have requested the cluster manager to kill that have not died yet; maps
   // the executor ID to whether it was explicitly killed by the driver (and thus shouldn't
   // be considered an app-related failure).
@@ -378,6 +397,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
   protected def minRegisteredRatio: Double = _minRegisteredRatio
 
+  // 该start的主要工作就是创建DriverEndpoint，并对
+  // driverEndpoint赋值其引用（ref）
   override def start() {
     val properties = new ArrayBuffer[(String, String)]
     for ((key, value) <- scheduler.sc.conf.getAll) {
