@@ -34,6 +34,7 @@ import org.apache.spark.rpc._
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 
 /**
+ * applications和Spark standalone cluster manager对话的接口
  * Interface allowing applications to speak with a Spark standalone cluster manager.
  *
  * Takes a master URL, an app description, and a listener for cluster events, and calls
