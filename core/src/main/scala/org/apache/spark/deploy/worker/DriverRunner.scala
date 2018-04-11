@@ -132,6 +132,7 @@ private[deploy] class DriverRunner(
   }
 
   /**
+   * 创建driver的工作目录
    * Creates the working directory for this driver.
    * Will throw an exception if there are errors preparing the directory.
    */
@@ -144,14 +145,19 @@ private[deploy] class DriverRunner(
   }
 
   /**
+   * 下载用户的jar包到指定的目录下，并返回该目录的本地路径。
+   * 如果在下载jar包过程中发生错误，则会抛出异常。
    * Download the user jar into the supplied directory and return its local path.
    * Will throw an exception if there are errors downloading the jar.
    */
   private def downloadUserJar(driverDir: File): String = {
+    // 获取该jar包的名称
     val jarFileName = new URI(driverDesc.jarUrl).getPath.split("/").last
+    // 生成该jar包在指定目录driverDir下的文件名
     val localJarFile = new File(driverDir, jarFileName)
     if (!localJarFile.exists()) { // May already exist if running multiple workers on one node
       logInfo(s"Copying user jar ${driverDesc.jarUrl} to $localJarFile")
+      // TODO read Utils.fetchFile （水好深...）
       Utils.fetchFile(
         driverDesc.jarUrl,
         driverDir,
@@ -165,11 +171,14 @@ private[deploy] class DriverRunner(
           s"Can not find expected jar $jarFileName which should have been loaded in $driverDir")
       }
     }
+    // else: 该jar包已经存在（比如在同一个node上运行了多个workers（同时???））
     localJarFile.getAbsolutePath
   }
 
   private[worker] def prepareAndRunDriver(): Int = {
+    // 创建driver的工作目录
     val driverDir = createWorkingDirectory()
+    // 下载用户指定的jar包
     val localJarFilename = downloadUserJar(driverDir)
 
     def substituteVariables(argument: String): String = argument match {
@@ -178,6 +187,7 @@ private[deploy] class DriverRunner(
       case other => other
     }
 
+    // TODO read CommandUtils.buildProcessBuilder
     // TODO: If we add ability to submit multiple jars they should also be added here
     val builder = CommandUtils.buildProcessBuilder(driverDesc.command, securityManager,
       driverDesc.mem, sparkHome.getAbsolutePath, substituteVariables)
