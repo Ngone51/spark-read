@@ -574,8 +574,10 @@ private[deploy] class Worker(
         workerUri,
         securityMgr)
       drivers(driverId) = driver
+      // 在该worker上启动该driver线程（也就说，该worker现在就是一个driver了）
       driver.start()
 
+      // worker的资源变化什么时候同步到master???
       coresUsed += driverDesc.cores
       memoryUsed += driverDesc.mem
 
