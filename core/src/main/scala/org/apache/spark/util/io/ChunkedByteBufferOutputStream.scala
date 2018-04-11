@@ -130,7 +130,9 @@ private[spark] class ChunkedByteBufferOutputStream(
         chunks(lastChunkIndex).flip()
         ret(lastChunkIndex).put(chunks(lastChunkIndex))
         ret(lastChunkIndex).flip()
-        // TODO 为什么最后一个chunk需要dispose,而其它的chunk不需要???
+        // TODO 为什么最后一个chunk需要dispose,而其它的chunks不需要???
+        // 因为最后一个chunk在这里是直接把它的内容put()到了ret(lastChunkIndex),所以自己
+        // 这一份已经不需要了。而其它的chunks只是res(index)对其的引用，所以不能dispose.
         StorageUtils.dispose(chunks(lastChunkIndex))
       }
       new ChunkedByteBuffer(ret)
