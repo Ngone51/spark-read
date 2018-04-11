@@ -46,9 +46,11 @@ private[deploy] class Master(
     val conf: SparkConf)
   extends ThreadSafeRpcEndpoint with Logging with LeaderElectable {
 
+  // master信息转发线程
   private val forwardMessageThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("master-forward-message-thread")
 
+  // hadoop配置(这个是不是只和hadoop有关???)
   private val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
 
   // For application IDs
@@ -58,6 +60,7 @@ private[deploy] class Master(
   private val RETAINED_APPLICATIONS = conf.getInt("spark.deploy.retainedApplications", 200)
   private val RETAINED_DRIVERS = conf.getInt("spark.deploy.retainedDrivers", 200)
   private val REAPER_ITERATIONS = conf.getInt("spark.dead.worker.persistence", 15)
+  // 默认为NONE，也就是说默认不能恢复咯???
   private val RECOVERY_MODE = conf.get("spark.deploy.recoveryMode", "NONE")
   private val MAX_EXECUTOR_RETRIES = conf.getInt("spark.deploy.maxExecutorRetries", 10)
 
@@ -98,6 +101,7 @@ private[deploy] class Master(
   private val masterUrl = address.toSparkURL
   private var masterWebUiUrl: String = _
 
+  // Master初始状态：STANDBY（待机）
   private var state = RecoveryState.STANDBY
 
   private var persistenceEngine: PersistenceEngine = _
@@ -175,6 +179,9 @@ private[deploy] class Master(
           .asInstanceOf[StandaloneRecoveryModeFactory]
         (factory.createPersistenceEngine(), factory.createLeaderElectionAgent(this))
       case _ =>
+        // 默认为NONE，我们就创建BlackHolePersistenceEngine和MonarchyLeaderAgent
+        // 注意，在创建MonarchyLeaderAgent时，就会调用electedLeader()方法，以触发
+        // master节点的选举，然后使得master的状态由STANDBY转为ALIVE(可以开始工作了)
         (new BlackHolePersistenceEngine(), new MonarchyLeaderAgent(this))
     }
     persistenceEngine = persistenceEngine_
@@ -211,12 +218,16 @@ private[deploy] class Master(
   override def receive: PartialFunction[Any, Unit] = {
     case ElectedLeader =>
       val (storedApps, storedDrivers, storedWorkers) = persistenceEngine.readPersistedData(rpcEnv)
+      // 如果没有任何持久化的apps、drivers、workers，说明不需要recover之间挂掉的master
       state = if (storedApps.isEmpty && storedDrivers.isEmpty && storedWorkers.isEmpty) {
+        // 我们已经被选举为Master，且状态已经更新为ALIVE，现在我们就可以开始正式工作了
         RecoveryState.ALIVE
       } else {
         RecoveryState.RECOVERING
       }
       logInfo("I have been elected leader! New state: " + state)
+      // TODO recover
+      // 如果需要recover，则开始recover
       if (state == RecoveryState.RECOVERING) {
         beginRecovery(storedApps, storedDrivers, storedWorkers)
         recoveryCompletionTask = forwardMessageThread.schedule(new Runnable {
@@ -418,15 +429,22 @@ private[deploy] class Master(
         context.reply(SubmitDriverResponse(self, false, None, msg))
       } else {
         logInfo("Driver submitted " + description.command.mainClass)
+        // 根据从client传过来的DriverDescription创建DriverInfo
         val driver = createDriver(description)
+        // 持久化该driver(为了recovery需要)
         persistenceEngine.addDriver(driver)
+        // 将该driver添加到waitingDrivers中
         waitingDrivers += driver
+        // 将该driver添加到drivers中
+        // QUESTION：waitingDrivers和drivers的各自作用???
         drivers.add(driver)
+        // 为新加入的app调度可用资源
         schedule()
 
         // TODO: It might be good to instead have the submission client poll the master to determine
         //       the current status of the driver. For now it's simply "fire and forget".
 
+        // 注意，self返回的是master的ref
         context.reply(SubmitDriverResponse(self, true, Some(driver.id),
           s"Driver successfully submitted as ${driver.id}"))
       }
@@ -718,6 +736,8 @@ private[deploy] class Master(
     if (state != RecoveryState.ALIVE) {
       return
     }
+    // Drivers比executor有更高的优先级（说白了，就是我们必须先
+    // 发起driver线程
     // Drivers take strict precedence over executors
     val shuffledAliveWorkers = Random.shuffle(workers.toSeq.filter(_.state == WorkerState.ALIVE))
     val numWorkersAlive = shuffledAliveWorkers.size
@@ -732,6 +752,7 @@ private[deploy] class Master(
         val worker = shuffledAliveWorkers(curPos)
         numWorkersVisited += 1
         if (worker.memoryFree >= driver.desc.mem && worker.coresFree >= driver.desc.cores) {
+          // 如果该worker的资源（内存、cpu核数）满足driver描述，则在该worker上发起一个driver线程
           launchDriver(worker, driver)
           waitingDrivers -= driver
           launched = true
@@ -994,7 +1015,9 @@ private[deploy] class Master(
   }
 
   private def newDriverId(submitDate: Date): String = {
+    // driverId相当于appId
     val appId = "driver-%s-%04d".format(createDateFormat.format(submitDate), nextDriverNumber)
+    // 我们的master是线程安全的RpcEndpoint，所以这里不需要加锁
     nextDriverNumber += 1
     appId
   }
@@ -1048,6 +1071,7 @@ private[deploy] object Master extends Logging {
     val conf = new SparkConf
     val args = new MasterArguments(argStrings, conf)
     val (rpcEnv, _, _) = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, conf)
+    // TODO read awaitTermination()
     rpcEnv.awaitTermination()
   }
 
