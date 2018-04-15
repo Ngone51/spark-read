@@ -42,6 +42,9 @@ private[spark] class ApplicationInfo(
   @transient var endTime: Long = _
   @transient var appSource: ApplicationSource = _
 
+  // 在任何时间内，该app的申请executors总数不超过executorLimit。默认情况，app申请的executors数量是
+  // 不受限制的。如果我们使用了dynamic allocation，那么，在该app第一次发起申请特定数量的executors的请
+  // 求后，executorLimit被设置为有限值。
   // A cap on the number of executors this application can have at any given time.
   // By default, this is infinite. Only after the first allocation request is issued by the
   // application will this be set to a finite value. This is used for dynamic allocation.
@@ -49,6 +52,7 @@ private[spark] class ApplicationInfo(
 
   @transient private var nextExecutorId: Int = _
 
+  // 创建ApplicationInfo对象时调用init()
   init()
 
   private def readObject(in: java.io.ObjectInputStream): Unit = Utils.tryOrIOException {
@@ -57,13 +61,19 @@ private[spark] class ApplicationInfo(
   }
 
   private def init() {
+    // 初始化该app的状态为WAITING（等待master调度）
     state = ApplicationState.WAITING
+    // 用于表示该app所使用的executors
     executors = new mutable.HashMap[Int, ExecutorDesc]
+    // 该app目前为止分配到的cpu核数
     coresGranted = 0
     endTime = -1L
+    // app source：记录app的状态、运行时间、目前分配cpu核数
     appSource = new ApplicationSource(this)
     nextExecutorId = 0
     removedExecutors = new ArrayBuffer[ExecutorDesc]
+    // 该app可分配的executor个数???
+    // 如果是MAX_VALUE，相当于就是没有限制咯
     executorLimit = desc.initialExecutorLimit.getOrElse(Integer.MAX_VALUE)
   }
 
@@ -97,8 +107,11 @@ private[spark] class ApplicationInfo(
     }
   }
 
+  // 该app申请的cpu核数（如果没有指定，则默认defaultCores：几乎可以申请
+  // 任意多个cores，只要不超过Int.MaxValue）
   private val requestedCores = desc.maxCores.getOrElse(defaultCores)
 
+  // 该app还需要被分配的cpu核数
   private[master] def coresLeft: Int = requestedCores - coresGranted
 
   private var _retryCount = 0
@@ -127,6 +140,7 @@ private[spark] class ApplicationInfo(
    */
   private[deploy] def getExecutorLimit: Int = executorLimit
 
+  // 该app的运行时长
   def duration: Long = {
     if (endTime != -1) {
       endTime - startTime

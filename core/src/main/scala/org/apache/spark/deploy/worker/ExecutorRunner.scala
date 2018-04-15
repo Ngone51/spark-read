@@ -33,6 +33,7 @@ import org.apache.spark.util.{ShutdownHookManager, Utils}
 import org.apache.spark.util.logging.FileAppender
 
 /**
+ * 用于管理一个executor进程的执行。当前只在standalone模式下使用。
  * Manages the execution of one executor process.
  * This is currently only used in standalone mode.
  */
@@ -141,6 +142,7 @@ private[deploy] class ExecutorRunner(
    */
   private def fetchAndRunExecutor() {
     try {
+      // 从这里我们也可以看到，executor也是以一个进程的方式在worker上运行！
       // Launch the process
       val builder = CommandUtils.buildProcessBuilder(appDesc.command, new SecurityManager(conf),
         memory, sparkHome.getAbsolutePath, substituteVariables)
@@ -164,6 +166,8 @@ private[deploy] class ExecutorRunner(
       builder.environment.put("SPARK_LOG_URL_STDERR", s"${baseUrl}stderr")
       builder.environment.put("SPARK_LOG_URL_STDOUT", s"${baseUrl}stdout")
 
+      // 启动executor进程
+      // (怎么说呢？我们在一个线程内部开启了一个进程？)
       process = builder.start()
       val header = "Spark Executor Command: %s\n%s\n\n".format(
         formattedCommand, "=" * 40)
@@ -181,6 +185,7 @@ private[deploy] class ExecutorRunner(
       val exitCode = process.waitFor()
       state = ExecutorState.EXITED
       val message = "Command exited with code " + exitCode
+      // 通知worker该executor已经运行结束
       worker.send(ExecutorStateChanged(appId, execId, state, Some(message), Some(exitCode)))
     } catch {
       case interrupted: InterruptedException =>

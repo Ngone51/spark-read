@@ -175,6 +175,7 @@ private[deploy] class Worker(
   def memoryFree: Int = memory - memoryUsed
 
   private def createWorkDir() {
+    // 如果用户没有定义workDirPath，则默认worker的工作目录为$SPARK_HOME/work/
     workDir = Option(workDirPath).map(new File(_)).getOrElse(new File(sparkHome, "work"))
     try {
       // This sporadically fails - not sure why ... !workDir.exists() && !workDir.mkdirs()
@@ -198,12 +199,16 @@ private[deploy] class Worker(
       host, port, cores, Utils.megabytesToString(memory)))
     logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
     logInfo("Spark home: " + sparkHome)
+    // 创建worker的工作目录
     createWorkDir()
+    // TODO read ExternalShuffleService
+    // 如果启用了外部shuffle服务，则启动它
     startExternalShuffleService()
     webUi = new WorkerWebUI(this, workDir, webUiPort)
     webUi.bind()
 
     workerWebUiUrl = s"http://$publicAddress:${webUi.boundPort}"
+    // 向master注册
     registerWithMaster()
 
     metricsSystem.registerSource(workerSource)
@@ -213,6 +218,7 @@ private[deploy] class Worker(
   }
 
   /**
+   * 将该worker的master调整为传参进来的那个master
    * Change to use the new master.
    *
    * @param masterRef the new master ref
@@ -230,6 +236,8 @@ private[deploy] class Worker(
     if (reverseProxy) {
       logInfo(s"WorkerWebUI is available at $activeMasterWebUiUrl/proxy/$workerId")
     }
+    // TODO read cancelLastRegistrationRetry
+    // 由于我们已经找到了一个新的master，所以撤销任何其它的尝试注册行为
     // Cancel any outstanding re-registration attempts because we found a new master
     cancelLastRegistrationRetry()
   }
@@ -240,6 +248,7 @@ private[deploy] class Worker(
         override def run(): Unit = {
           try {
             logInfo("Connecting to master " + masterAddress + "...")
+            // TODO read setupEndpointRef
             val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
             sendRegisterMessageToMaster(masterEndpoint)
           } catch {
@@ -391,16 +400,22 @@ private[deploy] class Worker(
 
   private def handleRegisterResponse(msg: RegisterWorkerResponse): Unit = synchronized {
     msg match {
+      // 收到来自master注册成功的消息
       case RegisteredWorker(masterRef, masterWebUiUrl, masterAddress) =>
         if (preferConfiguredMasterAddress) {
           logInfo("Successfully registered with master " + masterAddress.toSparkURL)
         } else {
           logInfo("Successfully registered with master " + masterRef.address.toSparkURL)
         }
+        // 标记该worker注册成功
         registered = true
+        // 切换该worker的master为masterRef对应的master（好绕，希望你能明白我的意思）
         changeMaster(masterRef, masterWebUiUrl, masterAddress)
+        // 通过消息转发执行器发起一个心跳线程：（默认）每隔15秒发送一个心跳给master
         forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
           override def run(): Unit = Utils.tryLogNonFatalError {
+            // 注意：这里的send(SendHeartbeat)只会发送给worker自己
+            // worker接收到该消息后，开始向master发送心跳信息。
             self.send(SendHeartbeat)
           }
         }, 0, HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
@@ -420,10 +435,11 @@ private[deploy] class Worker(
         masterRef.send(WorkerLatestState(workerId, execs.toList, drivers.keys.toSeq))
 
       case RegisterWorkerFailed(message) =>
+        // 如果worker收到注册失败的消息，而worker确实未注册成功，则报错，退出进程
         if (!registered) {
           logError("Worker registration failed: " + message)
           System.exit(1)
-        }
+        } // else：该worker向master重复注册。在此忽略它。
 
       case MasterInStandby =>
         // Ignore. Master not yet ready.
@@ -435,6 +451,9 @@ private[deploy] class Worker(
       handleRegisterResponse(msg)
 
     case SendHeartbeat =>
+      // 如果处于连接状态，则向master发送心跳
+      // 注意：我们发现从worker到master的心跳信息非常的简单。只能用来说明
+      // 我这个worker还活着，没有挂掉，也没有失联。
       if (connected) { sendToMaster(Heartbeat(workerId, self)) }
 
     case WorkDirCleanup =>
@@ -472,23 +491,28 @@ private[deploy] class Worker(
         map(e => new ExecutorDescription(e.appId, e.execId, e.cores, e.state))
       masterRef.send(WorkerSchedulerStateResponse(workerId, execs.toList, drivers.keys.toSeq))
 
+    // 我们从master接收到要求该worker重连的请求
     case ReconnectWorker(masterUrl) =>
       logInfo(s"Master with url $masterUrl requested this worker to reconnect.")
+      // TODO read registerWithMaster
       registerWithMaster()
 
     case LaunchExecutor(masterUrl, appId, execId, appDesc, cores_, memory_) =>
+      // 我们要的是自己的master啊
       if (masterUrl != activeMasterUrl) {
         logWarning("Invalid Master (" + masterUrl + ") attempted to launch executor.")
       } else {
         try {
           logInfo("Asked to launch executor %s/%d for %s".format(appId, execId, appDesc.name))
 
+          // 创建该executor的工作目录
           // Create the executor's working directory
           val executorDir = new File(workDir, appId + "/" + execId)
           if (!executorDir.mkdirs()) {
             throw new IOException("Failed to create directory " + executorDir)
           }
 
+          // 这里的appLocalDirs干嘛的？上面的executorDir又是干嘛的???
           // Create local dirs for the executor. These are passed to the executor via the
           // SPARK_EXECUTOR_DIRS environment variable, and deleted by the Worker when the
           // application finishes.
@@ -512,6 +536,7 @@ private[deploy] class Worker(
             dirs
           })
           appDirectories(appId) = appLocalDirs
+          // 创建一个ExecutorRunner
           val manager = new ExecutorRunner(
             appId,
             execId,
@@ -528,7 +553,9 @@ private[deploy] class Worker(
             workerUri,
             conf,
             appLocalDirs, ExecutorState.RUNNING)
+          // 在worker的executors数据结构中，添加该executorRunner
           executors(appId + "/" + execId) = manager
+          // 启动该executorRunner
           manager.start()
           coresUsed += cores_
           memoryUsed += memory_
@@ -717,6 +744,7 @@ private[deploy] class Worker(
 
   private[worker] def handleExecutorStateChanged(executorStateChanged: ExecutorStateChanged):
     Unit = {
+    // 把该executor状态改变的消息，也告诉master
     sendToMaster(executorStateChanged)
     val state = executorStateChanged.state
     if (ExecutorState.isFinished(state)) {
@@ -725,6 +753,7 @@ private[deploy] class Worker(
       val message = executorStateChanged.message
       val exitStatus = executorStateChanged.exitStatus
       executors.get(fullId) match {
+          // 在worker中清理掉该executor的信息还是毕竟简明清晰的
         case Some(executor) =>
           logInfo("Executor " + fullId + " finished with state " + state +
             message.map(" message " + _).getOrElse("") +
@@ -753,6 +782,7 @@ private[deploy] object Worker extends Logging {
       exitOnUncaughtException = false))
     Utils.initDaemon(log)
     val conf = new SparkConf
+    // 解析worker的配置参数
     val args = new WorkerArguments(argStrings, conf)
     val rpcEnv = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, args.cores,
       args.memory, args.masters, args.workDir, conf = conf)
@@ -784,8 +814,13 @@ private[deploy] object Worker extends Logging {
     // The LocalSparkCluster runs multiple local sparkWorkerX RPC Environments
     val systemName = SYSTEM_NAME + workerNumber.map(_.toString).getOrElse("")
     val securityMgr = new SecurityManager(conf)
+    // TODO read RpcEnv
+    // 创建rpc env（应该是每个worker都有一个自己的rpc env??? 毕竟host不一样啊）
     val rpcEnv = RpcEnv.create(systemName, host, port, conf, securityMgr)
+    // 根据master url构建master address（masterUrls虽然是一个Array，但是只会有一个url吧???
+    // 答：不一定哦，可能有多个urls）
     val masterAddresses = masterUrls.map(RpcAddress.fromSparkURL(_))
+    // TODO read setupEndpoint
     rpcEnv.setupEndpoint(ENDPOINT_NAME, new Worker(rpcEnv, webUiPort, cores, memory,
       masterAddresses, ENDPOINT_NAME, workDir, conf, securityMgr))
     rpcEnv

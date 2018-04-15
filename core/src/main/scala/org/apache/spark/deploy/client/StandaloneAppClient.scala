@@ -84,6 +84,7 @@ private[spark] class StandaloneAppClient(
 
     override def onStart(): Unit = {
       try {
+        // '1'表示第一次尝试
         registerWithMaster(1)
       } catch {
         case e: Exception =>
@@ -94,17 +95,24 @@ private[spark] class StandaloneAppClient(
     }
 
     /**
-     *  Register with all masters asynchronously and returns an array `Future`s for cancellation.
+     * 向所有masters异步得发起注册，并返回一个Future数组，用于之后取消正在注册中的任务。
+     * QUESTION：哪里来的这么多masters???
+     * Register with all masters asynchronously and returns an array `Future`s for cancellation.
      */
     private def tryRegisterAllMasters(): Array[JFuture[_]] = {
       for (masterAddress <- masterRpcAddresses) yield {
         registerMasterThreadPool.submit(new Runnable {
           override def run(): Unit = try {
+            // 如果该app已经注册了(by 其它线程)，then no-op
             if (registered.get) {
               return
             }
             logInfo("Connecting to master " + masterAddress.toSparkURL + "...")
+            // TODO read setupEndpointRef
             val masterRef = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            // 向master发送RegisterApplication注册消息
+            // self表示driver的ref，虽然其实是ClientEndpoint的ref，
+            // 但是ClientEndpoint也就代表了driver的endpoint
             masterRef.send(RegisterApplication(appDescription, self))
           } catch {
             case ie: InterruptedException => // Cancelled
@@ -115,6 +123,9 @@ private[spark] class StandaloneAppClient(
     }
 
     /**
+     * 向所有masters异步得发起注册。该方法会每隔REGISTRATION_TIMEOUT_SECONDS（默认20秒）执行一次，
+     * 直到重试次数超过REGISTRATION_RETRIES(默认2次)。一旦我们成功得在一个master上完成了注册，所有
+     * 其它正在注册的任务都会被撤销。
      * Register with all masters asynchronously. It will call `registerWithMaster` every
      * REGISTRATION_TIMEOUT_SECONDS seconds until exceeding REGISTRATION_RETRIES times.
      * Once we connect to a master successfully, all scheduling work and Futures will be cancelled.
@@ -125,12 +136,22 @@ private[spark] class StandaloneAppClient(
       registerMasterFutures.set(tryRegisterAllMasters())
       registrationRetryTimer.set(registrationRetryThread.schedule(new Runnable {
         override def run(): Unit = {
+          // 如果app已经注册成功了
           if (registered.get) {
+            // 则撤销Futures对应的注册任务
             registerMasterFutures.get.foreach(_.cancel(true))
+            // shutDownNow执行注册任务的线程池
             registerMasterThreadPool.shutdownNow()
           } else if (nthRetry >= REGISTRATION_RETRIES) {
+            // REGISTRATION_RETRIES默认为3，而nthRetry的初始值为0。
+            // 也就是说，其实默认最多重试2次???
+            // 在尝试了最大限制次数后，该app还是没有注册成功(太惨了。。。),
+            // 则放弃该app，标记它为Dead
+            // TODO read markDead()
             markDead("All masters are unresponsive! Giving up.")
           } else {
+            // retry
+            // 在retry之前，先撤销之前发起的注册任务
             registerMasterFutures.get.foreach(_.cancel(true))
             registerWithMaster(nthRetry + 1)
           }
@@ -169,10 +190,12 @@ private[spark] class StandaloneAppClient(
         markDead("Master removed our application: %s".format(message))
         stop()
 
+        // 接收到master通知该driver的消息：已经为该（driver所对应的）app新增一个executor
       case ExecutorAdded(id: Int, workerId: String, hostPort: String, cores: Int, memory: Int) =>
         val fullId = appId + "/" + id
         logInfo("Executor added: %s on %s (%s) with %d core(s)".format(fullId, workerId, hostPort,
           cores))
+        // 通知listener，有executorAdd事件
         listener.executorAdded(fullId, workerId, hostPort, cores, memory)
 
       case ExecutorUpdated(id, state, message, exitStatus, workerLost) =>
@@ -298,6 +321,7 @@ private[spark] class StandaloneAppClient(
    */
   def requestTotalExecutors(requestedTotal: Int): Future[Boolean] = {
     if (endpoint.get != null && appId.get != null) {
+      // endpoint即在StandaloneAppClinet中创建的ClientEndpoint
       endpoint.get.ask[Boolean](RequestExecutors(appId.get, requestedTotal))
     } else {
       logWarning("Attempted to request executors before driver fully initialized.")

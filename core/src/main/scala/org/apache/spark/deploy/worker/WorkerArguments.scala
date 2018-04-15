@@ -28,10 +28,13 @@ import org.apache.spark.util.{IntParam, MemoryParam, Utils}
  * Command-line parser for the worker.
  */
 private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
+  // 获取worker的localhost
   var host = Utils.localHostName()
   var port = 0
   var webUiPort = 8081
+  // 获取worker默认的可用核数
   var cores = inferDefaultCores()
+  // 获取worker默认的内存资源
   var memory = inferDefaultMemory()
   var masters: Array[String] = null
   var workDir: String = null
@@ -42,9 +45,11 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
     port = System.getenv("SPARK_WORKER_PORT").toInt
   }
   if (System.getenv("SPARK_WORKER_CORES") != null) {
+    // 获取配置的worker可用核数
     cores = System.getenv("SPARK_WORKER_CORES").toInt
   }
   if (conf.getenv("SPARK_WORKER_MEMORY") != null) {
+    // 获取配置的worker可用内存
     memory = Utils.memoryStringToMb(conf.getenv("SPARK_WORKER_MEMORY"))
   }
   if (System.getenv("SPARK_WORKER_WEBUI_PORT") != null) {
@@ -105,10 +110,12 @@ private[worker] class WorkerArguments(args: Array[String], conf: SparkConf) {
       printUsageAndExit(0)
 
     case value :: tail =>
+      // 说明可能给了两个master url
       if (masters != null) {  // Two positional arguments were given
         printUsageAndExit(1)
       }
       masters = Utils.parseStandaloneMasterUrls(value)
+      // 理论上来说，如果args格式正确的话，那么此时，剩下的tail为Nil
       parse(tail)
 
     case Nil =>

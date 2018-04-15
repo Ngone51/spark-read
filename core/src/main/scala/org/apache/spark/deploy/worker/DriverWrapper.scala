@@ -28,6 +28,8 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.util.{ChildFirstURLClassLoader, MutableURLClassLoader, Utils}
 
 /**
+ * 启动driver进程的工具类。启动driver进程能和worker进程保持共同的命运。
+ * 该类只在standalone集群模式中使用。
  * Utility object for launching driver programs such that they share fate with the Worker process.
  * This is used in standalone cluster mode only.
  */
