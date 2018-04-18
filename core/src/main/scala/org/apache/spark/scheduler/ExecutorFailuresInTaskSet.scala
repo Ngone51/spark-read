@@ -32,6 +32,7 @@ private[scheduler] class ExecutorFailuresInTaskSet(val node: String) {
   def updateWithFailure(taskIndex: Int, failureTime: Long): Unit = {
     val (prevFailureCount, prevFailureTime) =
       taskToFailureCountAndFailureTime.getOrElse(taskIndex, (0, -1L))
+    // from the driver??? really???
     // these times always come from the driver, so we don't need to worry about skew, but might
     // as well still be defensive in case there is non-monotonicity in the clock
     val newFailureTime = math.max(prevFailureTime, failureTime)

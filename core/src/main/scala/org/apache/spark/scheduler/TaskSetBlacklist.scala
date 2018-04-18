@@ -43,14 +43,21 @@ private[scheduler] class TaskSetBlacklist(
     val stageAttemptId: Int,
     val clock: Clock) extends Logging {
 
+  // 同一个task在同一个executor上最大的失败（attempts）次数，默认1次
   private val MAX_TASK_ATTEMPTS_PER_EXECUTOR = conf.get(config.MAX_TASK_ATTEMPTS_PER_EXECUTOR)
+  // 同一个task在同一个host上最大的尝试失败（attempts）次数
   private val MAX_TASK_ATTEMPTS_PER_NODE = conf.get(config.MAX_TASK_ATTEMPTS_PER_NODE)
+  // 一个stage中的task在同一个executor上的最大失败个数（不包含attempts， 即如果有task0.0在该executor
+  // 上执行失败，且task1.0，task1.1在该executor上执行失败，失败个数 = 2， 而不是3）（超过该值，
+  // stage会把该executor加入自己的黑名单中）
   private val MAX_FAILURES_PER_EXEC_STAGE = conf.get(config.MAX_FAILURES_PER_EXEC_STAGE)
+  // 同一个host上，已经被一个stage加入黑名单的executors的最大个数
+  // （超过该值，stage会把该host也加入自己的黑名单中）
   private val MAX_FAILED_EXEC_PER_NODE_STAGE = conf.get(config.MAX_FAILED_EXEC_PER_NODE_STAGE)
 
   /**
    * A map from each executor to the task failures on that executor.  This is used for blacklisting
-   * within this taskset, and it is also relayed onto [[BlacklistTracker]] for app-level
+   * within this taskset, and it is also relayed（传达给） onto [[BlacklistTracker]] for app-level
    * blacklisting if this taskset completes successfully.
    */
   val execToFailures = new HashMap[String, ExecutorFailuresInTaskSet]()
@@ -62,7 +69,11 @@ private[scheduler] class TaskSetBlacklist(
    */
   private val nodeToExecsWithFailures = new HashMap[String, HashSet[String]]()
   private val nodeToBlacklistedTaskIndexes = new HashMap[String, HashSet[Int]]()
+  // 被该TaskSet（或者说stage）加入黑名单的executors
+  // (也就是说，该TaskSet/stage中的task不会再去这些executors上执行tasks)
   private val blacklistedExecs = new HashSet[String]()
+  // 被该TaskSet（或者说stage）加入黑名单的hosts
+  // (也就是说，该TaskSet/stage中的task不会再去这些hosts上执行tasks)
   private val blacklistedNodes = new HashSet[String]()
 
   private var latestFailureReason: String = null
@@ -83,6 +94,8 @@ private[scheduler] class TaskSetBlacklist(
    */
   def isExecutorBlacklistedForTask(executorId: String, index: Int): Boolean = {
     execToFailures.get(executorId).exists { execFailures =>
+      // 如果该task在该executor的失败次数超过阈值MAX_TASK_ATTEMPTS_PER_EXECUTOR（默认1次）时，
+      // 才算blacklist了。
       execFailures.getNumTaskFailures(index) >= MAX_TASK_ATTEMPTS_PER_EXECUTOR
     }
   }
@@ -112,6 +125,7 @@ private[scheduler] class TaskSetBlacklist(
       failureReason: String): Unit = {
     latestFailureReason = failureReason
     val execFailures = execToFailures.getOrElseUpdate(exec, new ExecutorFailuresInTaskSet(host))
+    // 更新index对应的task的在该executor上的失败次数以及最近一次的失败时间
     execFailures.updateWithFailure(index, clock.getTimeMillis())
 
     // check if this task has also failed on other executors on the same host -- if its gone
@@ -127,13 +141,19 @@ private[scheduler] class TaskSetBlacklist(
         failures.getNumTaskFailures(index)
       }
     }.sum
+    // 如果在该主机上的失败次数已经超过了阈值MAX_TASK_ATTEMPTS_PER_NODE，
+    // 则将该主机加入到该index所对应的task的黑名单中（也就说，该task不会再去
+    // 该主机上执行）
     if (failuresOnHost >= MAX_TASK_ATTEMPTS_PER_NODE) {
       nodeToBlacklistedTaskIndexes.getOrElseUpdate(host, new HashSet()) += index
     }
 
     // Check if enough tasks have failed on the executor to blacklist it for the entire stage.
+    // 在该executor上所有失败的tasks个数（不包含attempts， 即如果有task0.0在该executor上执行失败，
+    // task1.0，task1.1在该executor上执行失败，则numFailures = 2， 而不是3）
     val numFailures = execFailures.numUniqueTasksWithFailures
     if (numFailures >= MAX_FAILURES_PER_EXEC_STAGE) {
+      // 将该executor加入该stage的黑名单（即该stage中的tasks不会再去该executor上执行）
       if (blacklistedExecs.add(exec)) {
         logInfo(s"Blacklisting executor ${exec} for stage $stageId")
         // This executor has been pushed into the blacklist for this stage.  Let's check if it
@@ -144,6 +164,7 @@ private[scheduler] class TaskSetBlacklist(
         listenerBus.post(
           SparkListenerExecutorBlacklistedForStage(now, exec, numFailures, stageId, stageAttemptId))
         val numFailExec = blacklistedExecutorsOnNode.size
+        // 如果在该主机上，已经被该stage加入黑名单的executors的个数超过该阈值，则把该host也加入自己的黑名单
         if (numFailExec >= MAX_FAILED_EXEC_PER_NODE_STAGE) {
           if (blacklistedNodes.add(host)) {
             logInfo(s"Blacklisting ${host} for stage $stageId")
