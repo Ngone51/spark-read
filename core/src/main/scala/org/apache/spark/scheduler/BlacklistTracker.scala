@@ -121,6 +121,8 @@ private[scheduler] class BlacklistTracker (
           s"for those executors has timed out")
         execsToUnblacklist.foreach { exec =>
           // 将该executor从黑名单中移除
+          // （注意，此处我们不用将executor从executorIdToFailureList中删除。以防万一，该executor在之后
+          // 马上又有被加入黑名单的可能。）
           val status = executorIdToBlacklistStatus.remove(exec).get
           val failedExecsOnNode = nodeToBlacklistedExecs(status.node)
           listenerBus.post(SparkListenerExecutorUnblacklisted(now, exec))
@@ -327,6 +329,8 @@ private[scheduler] class BlacklistTracker (
   }
 
   def handleRemovedExecutor(executorId: String): Unit = {
+    // 只是删除executorIdToFailureList记录的该executor的failure task信息，而不会从nodeToBlacklistedExecs
+    // 删除已经该executor（如果它已经在黑名单里了）。
     // We intentionally do not clean up executors that are already blacklisted in
     // nodeToBlacklistedExecs, so that if another executor on the same node gets blacklisted, we can
     // blacklist the entire node.  We also can't clean up executorIdToBlacklistStatus, so we can

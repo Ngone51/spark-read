@@ -615,6 +615,8 @@ private[spark] class TaskSetManager(
   private def maybeFinishTaskSet() {
     if (isZombie && runningTasks == 0) {
       sched.taskSetFinished(this)
+      // 如果该TaskSet执行成功了，则（在app级别???因为之前的taskSetBlacklistHelperOpt都只是
+      // TaskSet/Stage级别的嘛，相当于这里做了一个统计）更新我们的黑名单状态
       if (tasksSuccessful == numTasks) {
         blacklistTracker.foreach(_.updateBlacklistForSuccessfulTaskSet(
           taskSet.stageId,
@@ -711,6 +713,7 @@ private[spark] class TaskSetManager(
   }
 
   /**
+   * 检查给定的task set是否由于黑名单的缘故，而致使其在任何地方都不执行
    * Check whether the given task set has been blacklisted to the point that it can't run anywhere.
    *
    * It is possible that this taskset has become impossible to schedule *anywhere* due to the
@@ -734,6 +737,7 @@ private[spark] class TaskSetManager(
       // Only look for unschedulable tasks when at least one executor has registered. Otherwise,
       // task sets will be (unnecessarily) aborted in cases when no executors have registered yet.
       if (hostToExecutors.nonEmpty) {
+        // 找到最近的一个需要被调度执行的task
         // find any task that needs to be scheduled
         val pendingTask: Option[Int] = {
           // usually this will just take the last pending task, but because of the lazy removal
@@ -750,7 +754,11 @@ private[spark] class TaskSetManager(
           }
         }
 
+        // 如果该task由于黑名单的缘故在任何地方都不能执行，则abort该task set；
+        // 注意：我们不继续检查该task set中其它的pending tasks（虽然其中可能会有导致task set abort的task）
+        // 因为这样做会比较耗时。（具体原因方法的注释已经说明了。）
         pendingTask.foreach { indexInTaskSet =>
+          // forall：全部为true，则最终结果为true；反之，为false.
           // try to find some executor this task can run on.  Its possible that some *other*
           // task isn't schedulable anywhere, but we will discover that in some later call,
           // when that unschedulable task is the last task remaining.
@@ -771,6 +779,7 @@ private[spark] class TaskSetManager(
               }
             }
           }
+          // 如果确实所有的地方都不能执行该task，则abort该task set
           if (blacklistedEverywhere) {
             val partition = tasks(indexInTaskSet).partitionId
             abort(s"""
@@ -941,6 +950,7 @@ private[spark] class TaskSetManager(
 
         // TODO read blacklistTracker
         if (fetchFailed.bmAddress != null) {
+          // 将发生FetchFailed的executor及host加入黑名单
           blacklistTracker.foreach(_.updateBlacklistForFetchFailure(
             fetchFailed.bmAddress.host, fetchFailed.bmAddress.executorId))
         }
@@ -1003,7 +1013,7 @@ private[spark] class TaskSetManager(
     // TODO read
     if (!isZombie && reason.countTowardsTaskFailures) {
       assert (null != failureReason)
-      // TODO read taskSetBlacklistHelperOpt
+      // 针对该failed task，做相应的黑名单状态更新
       taskSetBlacklistHelperOpt.foreach(_.updateBlacklistForFailedTask(
         info.host, info.executorId, index, failureReason))
       // 该task由于自身原因造成的失败次数加1

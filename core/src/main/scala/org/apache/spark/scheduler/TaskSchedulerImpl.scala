@@ -117,7 +117,9 @@ private[spark] class TaskSchedulerImpl(
   }
 
   // 记录每个节点上的executor集合。可以用来计算hostsAlive，也可以用来判断是否可以在给定的节点上获取本地数据
-  // (这个数据结构说明一个主机上可以有多个executors???对于这个问题，我越来越混...omg..)
+  // (这个数据结构说明一个主机上可以有多个executors???对于这个问题，我越来越混...omg..
+  // 一个主机上当然可以有多个executors啦...)
+  //
   // The set of executors we have on each host; this is used to compute hostsAlive, which
   // in turn(怎么翻译？？？) is used to decide when we can attain data locality on a given host
   protected val hostToExecutors = new HashMap[String, HashSet[String]]
@@ -385,10 +387,10 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
+    // 在分配资源之前，将那些过期的nodes或executors从黑名单中移出
     // Before making any offers, remove any nodes from the blacklist whose blacklist has expired. Do
     // this here to avoid a separate thread and added synchronization overhead, and also because
     // updating the blacklist is only relevant when task offers are being made.
-    // TODO read
     blacklistTrackerOpt.foreach(_.applyBlacklistTimeout())
 
     // 过滤黑名单中的节点或executor
@@ -442,9 +444,8 @@ private[spark] class TaskSchedulerImpl(
       } // end for：这个for循环加里面的while循环，能保证成功分配完
       // TaskSet中的所有任务到offers上吗???(貌似不能啊)
 
-      // 如果该taskSet中的task在所有的executor上都不能执行，那我们就需要检查
-      // 一下是怎么回事了
-      // TODO read abortIfCompletelyBlacklisted
+      // 如果该taskSet中的tasks在所有的executor上都不能执行，那我们就需要检查
+      // 一下是不是黑名单造成的
       if (!launchedAnyTask) {
         taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
       }
@@ -732,7 +733,7 @@ private[spark] class TaskSchedulerImpl(
       executorIdToHost -= executorId
       rootPool.executorLost(executorId, host, reason)
     }
-    // TODO read
+    // 该executor被删除了，更新黑名单的状态
     blacklistTrackerOpt.foreach(_.handleRemovedExecutor(executorId))
   }
 
@@ -854,8 +855,8 @@ private[spark] object TaskSchedulerImpl {
     retval.toList
   }
 
-  // TODO read
   private def maybeCreateBlacklistTracker(sc: SparkContext): Option[BlacklistTracker] = {
+    // 如果启动了黑名单机制，则创建BlacklistTracker对象
     if (BlacklistTracker.isBlacklistEnabled(sc.conf)) {
       val executorAllocClient: Option[ExecutorAllocationClient] = sc.schedulerBackend match {
         case b: ExecutorAllocationClient => Some(b)
