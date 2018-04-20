@@ -115,6 +115,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     this.mapId = mapId;
     this.shuffleId = dep.shuffleId();
     // 注意: 这里是partitioner，不是partition，默认是HashPartitioner
+    // 同时注意：partitioner是从ShuffleDependency中获取的
     this.partitioner = dep.partitioner();
     // 所以，numPartitions是reducer端partition的个数
     this.numPartitions = partitioner.numPartitions();
@@ -126,7 +127,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   @Override
   public void write(Iterator<Product2<K, V>> records) throws IOException {
     assert (partitionWriters == null);
-    // 如果records为空
+    // 如果records为空（话说， 有没有可能一个rdd的compute结果为空？）
     if (!records.hasNext()) {
       partitionLengths = new long[numPartitions];
       // 则dataTmp也为空
@@ -143,13 +144,14 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     partitionWriters = new DiskBlockObjectWriter[numPartitions];
     // 初始化partitionWriterSegments数组
     partitionWriterSegments = new FileSegment[numPartitions];
-    // 该task会为每个reducer端的partition创建一个临时文件
+    // 该map task会为reduce端的每个partition创建一个临时文件，用于写数据
     for (int i = 0; i < numPartitions; i++) {
       final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
         blockManager.diskBlockManager().createTempShuffleBlock();
       final File file = tempShuffleBlockIdPlusFile._2();
       final BlockId blockId = tempShuffleBlockIdPlusFile._1();
       // 所有的DiskBlockObjectWriter都共用同一个writeMetrics
+      // 为每个partition创建一个file writer(DiskBlockObjectWriter)
       partitionWriters[i] =
         blockManager.getDiskWriter(blockId, file, serInstance, fileBufferSize, writeMetrics);
     }
@@ -161,22 +163,30 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     while (records.hasNext()) {
       final Product2<K, V> record = records.next();
       final K key = record._1();
-      // 调用partitioner的getPartition(key)方法，来确定将该记录存储到哪个reducer的partition中
-      // 比如，最经典的HashPartition，就是将key做hash计算的结果，作为reducer的partiiton的index
+      // 调用partitioner的getPartition(key)方法，来确定将该记录存储到reduce端的哪个partition中
+      // 比如，最经典的HashPartition，就是将key做hash计算的结果，作为reduce端的partition的index
       partitionWriters[partitioner.getPartition(key)].write(key, record._2());
     }
 
     for (int i = 0; i < numPartitions; i++) {
+      // 获取每个partition的writer
       final DiskBlockObjectWriter writer = partitionWriters[i];
-      // 提交每个writer写入的内容
+      // commit每个DiskBlockObjectWriter写入的records到文件中
+      // 注意：在BypassMergeSortShuffleWriter中，每个writer写入到文件的records属于同一个(reduce端的)partition
+      // NOTE：每个writer对应的file，都对应于DiskBlockManager里的一个TempShuffleBlock
       partitionWriterSegments[i] = writer.commitAndGet();
       writer.close();
     }
 
+    // 在map端，mapId对应的task将所有的partition数据写入该DataFile
+    // （之前，每个partition的数据存储在上述每个writer对应的文件中）
+    // 注意：在调用writeIndexFileAndCommit()之前该output file一直是没数据的
     File output = shuffleBlockResolver.getDataFile(shuffleId, mapId);
+    // 在与output的同一目录下，创建一个临时文件抽象tmp
     File tmp = Utils.tempFileWith(output);
     try {
-      // writePartitionedFile会更新tmp文件的内容
+      // writePartitionedFile()用于把各个分区的文件，串联成一个组合文件
+      // 各个分区文件的内容会写入到tmp文件中，tmp文件即是组合成的文件
       partitionLengths = writePartitionedFile(tmp);
       shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapId, partitionLengths, tmp);
     } finally {
@@ -184,6 +194,8 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         logger.error("Error while deleting temp file {}", tmp.getAbsolutePath());
       }
     }
+    // shuffleServerId在很多时候（没有启用外部shuffle服务的时候？）其实就是BlockManagerId
+    // 创建该mapId／task对应的MapStatus
     mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths);
   }
 
@@ -210,20 +222,29 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     final long writeStartTime = System.nanoTime();
     boolean threwException = true;
     try {
-      // 逐一把每个partition 的输出文件合并到一个文件outputFile
+      // 逐一把每个partition的输出文件合并到一个文件outputFile
       for (int i = 0; i < numPartitions; i++) {
         final File file = partitionWriterSegments[i].file();
         if (file.exists()) {
           final FileInputStream in = new FileInputStream(file);
           boolean copyThrewException = true;
           try {
-            // 从文件in中读取内容拷贝到文件out中，并返回从文件in中读取的字节大小
+            // 从文件输入流in中读取内容拷贝到文件输出流out中，并返回从文件输入流in中读取的字节大小
             // TODO read copyStream
             lengths[i] = Utils.copyStream(in, out, false, transferToEnabled);
             copyThrewException = false;
           } finally {
+            // 如果进入了finally，copyThrewException = true，说明在try{}中有异常抛出了。
+            // 则我们在调用Closeables.close()时， 如果还有异常抛出，我们就忽略它。因为，try{}中已经抛
+            // 出了更重要的异常。反之，如果此时copyThrewException = false，说明try{}中的代码
+            // 顺利完成了。则如果在后续调用Closeables.close(), 即in.close()时，有IOException异常抛
+            // 则我们需要关注一下该异常，将其抛出。
             Closeables.close(in, copyThrewException);
           }
+          // QUESTION：删除该文件后，那DiskBlockManager中对应的TmpShuffleBlock怎么办？
+          // 是不是因为Tmp的Block就不用管它了呢？
+          // 答：其实在DiskBlockManager中，并没有存储任何Block相关的东西，只有一些文件目录。
+          // 所以，在这里删除文件后，也不用管对应的Block会怎么样。
           if (!file.delete()) {
             logger.error("Unable to delete file for partition {}", i);
           }
@@ -231,10 +252,12 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       }
       threwException = false;
     } finally {
+      // 和上面一样的用法
       Closeables.close(out, threwException);
       // writeMetrics会统计整个shuffle写过程中的所有耗时
       writeMetrics.incWriteTime(System.nanoTime() - writeStartTime);
     }
+    // 让gc回收该对象
     partitionWriters = null;
     return lengths;
   }
@@ -251,6 +274,7 @@ final class BypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
         return Option.apply(mapStatus);
       } else {
+        // map task fail了，so 删除我们的output data
         // The map task failed, so delete our output data.
         if (partitionWriters != null) {
           try {

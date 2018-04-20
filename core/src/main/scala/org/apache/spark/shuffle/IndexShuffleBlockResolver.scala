@@ -49,14 +49,15 @@ private[spark] class IndexShuffleBlockResolver(
 
   private lazy val blockManager = Option(_blockManager).getOrElse(SparkEnv.get.blockManager)
 
+  // TODO read SparkTransportConf
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle")
 
-  // 获取shuffle的数据文件
+  // 创建或获取shuffle的数据文件的抽象（File对象，还没有真正创建该文件）
   def getDataFile(shuffleId: Int, mapId: Int): File = {
     blockManager.diskBlockManager.getFile(ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
   }
 
-  // 获取shuffle的索引文件
+  // 创建shuffle的索引文件的抽象
   private def getIndexFile(shuffleId: Int, mapId: Int): File = {
     // 通过DiskBlockManager来获取或创建索引文件(File对象)
     // 根据shuffleId、mapId、NOOP_REDUCE_ID创建ShuffleIndexBlockId，来获取对应的索引文件
@@ -107,7 +108,8 @@ private[spark] class IndexShuffleBlockResolver(
       // Convert the offsets into lengths of each block
       var offset = in.readLong()
       // 因为第一个写入的offset就是0啊
-      // 不等于0，很有可能说明，这是该task第一次执行，indexFIle还为未初始化。
+      // 不等于0，很有可能说明，这是该task第一次执行，indexFile还为未初始化。
+      // 错，如果是task的第一次attempt，则在该方法的第一行if()就应该返回null了
       if (offset != 0L) {
         return null
       }
@@ -155,9 +157,9 @@ private[spark] class IndexShuffleBlockResolver(
       mapId: Int,
       lengths: Array[Long],
       dataTmp: File): Unit = {
-    // 获取索引文件
+    // 创建获取索引文件的抽象（File对象）
     val indexFile = getIndexFile(shuffleId, mapId)
-    // 再创建一个临时索引???(看完下面的代码，就知道为什么还要创建一个临时索引文件了)
+    // 再创建一个临时索引文件???(看完下面的代码，就知道为什么还要创建一个临时索引文件了)
     val indexTmp = Utils.tempFileWith(indexFile)
     try {
       // 这个I/O流为什么要这么封装???我是真的不懂，需要多多学习。
@@ -180,10 +182,11 @@ private[spark] class IndexShuffleBlockResolver(
         out.close()
       }
 
-      // 获取shuffle的数据文件
+      // 获取shuffle的数据文件（如果这是该task的attempt第一次调用writeIndexFileAndCommit()，则该
+      // 数据文件没有任何数据；而如果有其它的attempts在之前调用了，则很有可能会有数据）
       val dataFile = getDataFile(shuffleId, mapId)
-      // 每个executor上只有一个IndexShuffleBlockResolver，所以，synchronized能够保证
-      // 接下来的检查和重命名是原子操作。
+      // 每个executor上只有一个IndexShuffleBlockResolver（但是却会有多个tasks同时运行），
+      // 所以，synchronized能够保证接下来的检查和重命名是原子操作。
       // There is only one IndexShuffleBlockResolver per executor, this synchronization make sure
       // the following check and rename are atomic.
       synchronized {
@@ -206,7 +209,7 @@ private[spark] class IndexShuffleBlockResolver(
           // 删除临时的索引文件
           indexTmp.delete()
         } else {
-          // 如果不匹配，说明这是该task第一次成功地尝试执行，写好了map outputs。则，用我们
+          // 如果不匹配，说明这是该task第一次成功地尝试执行来写map outputs。则，用我们
           // 新的写入(indexTmp和dataTmp)覆盖任何已经存在的数据文件和索引文件。
           // This is the first successful attempt in writing the map outputs for this task,
           // so override any existing index and data files with the ones we wrote.
@@ -227,6 +230,7 @@ private[spark] class IndexShuffleBlockResolver(
         }
       }
     } finally {
+      // 以防万一，try{}抛出异常，而indexTmp没有删除
       // 删除临时索引文件
       if (indexTmp.exists() && !indexTmp.delete()) {
         logError(s"Failed to delete temporary index file at ${indexTmp.getAbsolutePath}")
@@ -281,7 +285,10 @@ private[spark] class IndexShuffleBlockResolver(
 }
 
 private[spark] object IndexShuffleBlockResolver {
-  // 这个reduce id始终为0，这个注释什么意思???
+  // 一个No-op reduce ID，仅仅用于和disk store交互
+  // 因为disk store目前存储的方式还是需要一对（map，reduce），而我们现在的sort shuffle outputs已经是组合了
+  // 所有partitions的数据构成了一个单独的文件（这个文件不再是某个reduce的）。所以，使用No-op reduce ID只是为了
+  // 兼容disk store的存储方式。
   // No-op reduce ID used in interactions with disk store.
   // The disk store currently expects puts to relate to a (map, reduce) pair, but in the sort
   // shuffle outputs for several reduces are glommed into a single file.

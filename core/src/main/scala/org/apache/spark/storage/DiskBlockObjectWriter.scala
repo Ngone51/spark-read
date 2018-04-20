@@ -115,6 +115,7 @@ private[spark] class DiskBlockObjectWriter(
   def open(): DiskBlockObjectWriter = {
     // 如果writer已经关闭，则抛出异常
     if (hasBeenClosed) {
+      // 只允许被打开一次
       throw new IllegalStateException("Writer already closed. Cannot be reopened.")
     }
     // 如果writer还未初始化，则初始化之
@@ -125,7 +126,9 @@ private[spark] class DiskBlockObjectWriter(
 
     // 这个流的灵活使用，真是我的薄弱点，要多看、多想、多运用!!!
     // 之后要重点关注SerializerManager和SerializerInstance这两个类
+    // 在流mcs上在封装一层压缩流，得到bs流
     bs = serializerManager.wrapStream(blockId, mcs)
+    // 再在bs流上封装一层序列化流，得到objOut流
     objOut = serializerInstance.serializeStream(bs)
     streamOpen = true
     this
@@ -154,6 +157,9 @@ private[spark] class DiskBlockObjectWriter(
   }
 
   /**
+   * commits任何遗留的partial writes（怎么翻译？），并关闭资源。
+   * 显然，如果我们在调用close()之前，刚刚调用了commitAndGet()，并且在这之前未写入任何内容，
+   * 则此时调用commitAndGet()返回的FileSegment的length为0。
    * Commits any remaining partial writes and closes resources.
    */
   override def close() {
@@ -184,7 +190,14 @@ private[spark] class DiskBlockObjectWriter(
       if (syncWrites) {
         // Force outstanding writes to disk and track how long it takes
         val start = System.nanoTime()
-        // TODO read ???
+        // TODO read fos.getFD.sync()
+        // 强制所有系统缓冲区与基础设备同步。该方法在此 FileDescriptor 的所有修改数据和属性都写入相关设备后返回。
+        // 特别是，如果此 FileDescriptor 引用物理存储介质，比如文件系统中的文件，则一直要等到将与此 FileDesecriptor
+        // 有关的缓冲区的所有内存中修改副本写入物理介质中，sync 方法才会返回。 sync 方法由要求物理存储（比如文件）
+        // 处于某种已知状态下的代码使用。例如，提供简单事务处理设施的类可以使用 sync 来确保某个文件所有由给定事务造
+        // 成的更改都记录在存储介质上。 sync 只影响此 FileDescriptor 的缓冲区下游。如果正通过应用程序（例如，通过
+        // 一个 BufferedOutputStream 对象）实现内存缓冲，那么必须在数据受 sync 影响之前将这些缓冲区刷新，并转到
+        // FileDescriptor 中（例如，通过调用 OutputStream.flush）。
         fos.getFD.sync()
         writeMetrics.incWriteTime(System.nanoTime() - start)
       }
@@ -249,6 +262,7 @@ private[spark] class DiskBlockObjectWriter(
       open()
     }
 
+    // 注意调用的是writeKey()，writeKey()又会调用writerObject()
     objOut.writeKey(key)
     objOut.writeValue(value)
     recordWritten()
