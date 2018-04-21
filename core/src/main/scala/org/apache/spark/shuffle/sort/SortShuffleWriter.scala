@@ -67,14 +67,21 @@ private[spark] class SortShuffleWriter[K, V, C](
     // Don't bother including the time to open the merged output file in the shuffle write time,
     // because it just opens a single file, so is typically too fast to measure accurately
     // (see SPARK-3570).
+    // 创建或获取shuffle的数据文件的抽象（File对象，还没有真正创建该文件）
     val output = shuffleBlockResolver.getDataFile(dep.shuffleId, mapId)
     val tmp = Utils.tempFileWith(output)
     try {
+      // 这个BlockId貌似和我们要写数据的文件tmp关系不大？真正和文件tmp对应的Block应该是上面
+      // shuffleBlockResolver.getDataFile中创建的ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID)
+      // 这个BlockId貌似只用来告诉DiskBlockObjectWriter，我们需要将记录压缩后再写入磁盘？
       val blockId = ShuffleBlockId(dep.shuffleId, mapId, IndexShuffleBlockResolver.NOOP_REDUCE_ID)
       // 将内存中的数据和所有SpilledFile中数据合并成一个File!!!
       val partitionLengths = sorter.writePartitionedFile(blockId, tmp)
-      // 为上述最终合并成的一个文件，创建索引文件，用于getBlockData()获取数据
+      // 为上述最终合并成的一个文件，创建索引文件，用于shuffleBlockResolver#getBlockData()读取数据
       shuffleBlockResolver.writeIndexFileAndCommit(dep.shuffleId, mapId, partitionLengths, tmp)
+      // 创建该map task的MapStatus；注意shuffleServerId就是BlockManagerId
+      // (我们会在该task成功结束后，DAGScheduler再接收到该task成功的消息之后，根据该task的mapId，
+      // 向MapOutputTrackerMaster该task的MapStatus)
       mapStatus = MapStatus(blockManager.shuffleServerId, partitionLengths)
     } finally {
       if (tmp.exists() && !tmp.delete()) {
@@ -99,6 +106,7 @@ private[spark] class SortShuffleWriter[K, V, C](
       // Clean up our sorter, which may have its own intermediate files
       if (sorter != null) {
         val startTime = System.nanoTime()
+        // 清理sorter的资源（比如spilled files, map/buf）
         sorter.stop()
         writeMetrics.incWriteTime(System.nanoTime - startTime)
         sorter = null

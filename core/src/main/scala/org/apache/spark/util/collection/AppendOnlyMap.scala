@@ -139,6 +139,9 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
    */
   def changeValue(key: K, updateFunc: (Boolean, V) => V): V = {
     assert(!destroyed, destructionMessage)
+    // 注意：如果该key从ExternalSorter传过来的话，则key是一个二元组(getPartition(kv._1), kv._1)。
+    // 其中，kv一条Product2[K, V]记录；所以key中是不包含kv的value值。真正传value过来的是updateFunc，
+    // 看一下ExternalSorter#insertAll()里的updateFunc的实现就可以知道了。
     val k = key.asInstanceOf[AnyRef]
     // null key并不会真正插入array中，而是作为一个特殊的key存在
     if (k.eq(null)) {
@@ -313,11 +316,15 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
 
     // 在重新调整好array数组后，再根据keyComparator进行排序
     // 排序的范围是data数组的0-newIndex区间，该区间的后面已经全部为空
+    // （注意，我们的nullKey是不参与排序的，之后我们会单独的处理）
+    // TODO 排序方法 TimSort 了解一下
     new Sorter(new KVArraySortDataFormat[K, AnyRef]).sort(data, 0, newIndex, keyComparator)
 
+    // 现在，data已经有序了。。。
     new Iterator[(K, V)] {
       var i = 0
       var nullValueReady = haveNullValue
+      // 其实这里把nullValueReady的判断放在后面，算是一个很好的编程技巧。
       def hasNext: Boolean = (i < newIndex || nullValueReady)
       def next(): (K, V) = {
         // 优先读取nullValue(当然也只能读取一次)
@@ -325,6 +332,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
           nullValueReady = false
           (null.asInstanceOf[K], nullValue)
         } else {
+          // 注意K的数据结构是一个二元组(partitionID, Key)
           val item = (data(2 * i).asInstanceOf[K], data(2 * i + 1).asInstanceOf[V])
           i += 1
           item

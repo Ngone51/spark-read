@@ -54,6 +54,11 @@ private[spark] class IndexShuffleBlockResolver(
 
   // 创建或获取shuffle的数据文件的抽象（File对象，还没有真正创建该文件）
   def getDataFile(shuffleId: Int, mapId: Int): File = {
+    // 注意：最后所有的partition files会合并成一个file，通过DiskBlockManager来存储。而该file对应的BlockId
+    // 正是该ShuffleDataBlockId。注意ShuffleBlockId的第三个参数reduceId是0，意思是不指定哪个reduce partition
+    // (而不是第0个partition啊)。这是因为，我们把所有分区的数据都当作一个Block来存储了，那就不用区分这是哪个分区的
+    // Block了。但是可能之前spark的版本是分开来存储各个分区的Blocks，所以需要第三个参数reduceId来区分这是哪个partition
+    // 的Block。然后，现在的spark版本保留该参数只是为了和之前的方法兼容。
     blockManager.diskBlockManager.getFile(ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
   }
 

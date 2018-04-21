@@ -195,9 +195,13 @@ private[spark] class ExternalSorter[K, V, C](
       while (records.hasNext) {
         addElementsRead()
         kv = records.next()
-        // changeVlaue()会将拥有相同key的健值对合并到一起，最后map中存储的
-        // 是(key, combiner)的形式
+        // changeValue()会将拥有相同((getPartition(kv._1), kv._1))的健值对合并到一起，
+        // 最后map中存储的是((getPartition(kv._1), kv._1), combiner)的形式.
+        // 需要注意的是，map真正的底层实现是一个数组:data(i) = key, data(2 * i + 1) = value。
+        // 详见AppendOnlyMap的实现。
         map.changeValue((getPartition(kv._1), kv._1), update)
+        // 查看map占用的内存是否达到阈值（在记录插入到map的过程中，如果map已满，会自动扩增size），
+        // 如果是，则spill map中的记录到磁盘
         maybeSpillCollection(usingMap = true)
       }
     } else {
@@ -214,6 +218,7 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
+   * 如果需要，则将当前内存中的集合（记录）spill到磁盘上
    * Spill the current in-memory collection to disk if needed.
    *
    * @param usingMap whether we're using a map or buffer as our current in-memory collection
@@ -235,6 +240,7 @@ private[spark] class ExternalSorter[K, V, C](
       }
     }
 
+    // 更新buffer／map的内存使用峰值
     if (estimatedSize > _peakMemoryUsedBytes) {
       _peakMemoryUsedBytes = estimatedSize
     }
@@ -247,6 +253,7 @@ private[spark] class ExternalSorter[K, V, C](
    * @param collection whichever collection we're using (map or buffer)
    */
   override protected[this] def spill(collection: WritablePartitionedPairCollection[K, C]): Unit = {
+    // 该inMemoryIterator的记录已经根据partitionID（或和Key）排好了序
     val inMemoryIterator = collection.destructiveSortedWritablePartitionedIterator(comparator)
     val spillFile = spillMemoryIteratorToDisk(inMemoryIterator)
     spills += spillFile
@@ -271,15 +278,15 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
-   * Spark Spill策略：内存中的iterator(已经根据partition或keycomparator排好序)会依次将元素
+   * Spark Spill策略：内存中的iterator(已经根据partitionID或和Key排好序)会依次将元素
    * 通过DiskBlockObjectWriter写入本地磁盘的临时文件中。每当写入的元素个数到达
    * serializerBatchSize(可通过spark.shuffle.spill.batchSize配置，默认10000)个时，就会把
    * 这serializerBatchSize个元素组成一个batch(FileSegment)。同一个partition中，最后不足
    * serializerBatchSize个的元素组成一个batch。最终，各个partition的所有batch即相关信息组成
    * 一个SpilledFile。
-   * 需要注意的一点是：一个SpilledFile中的一个partition可能会包含多个batch，详见L317-L321的注释
-   * 另外需要注意的一点是：元素会通过序列化流来写入磁盘。因此，当使用SpillReader来读取溢写至磁盘的元
-   * 素时，又需要反序列之。
+   * 需要注意是：1）一个SpilledFile中的一个partition可能会包含多个batch，详见L317-L321的注释
+   *           2）元素会通过序列化流来写入磁盘。因此，当使用SpillReader来读取溢写至磁盘的元
+   *              素时，又需要反序列之。
    *
    * 将内存中的元素溢写至磁盘中的临时文件
    * Spill contents of in-memory iterator to a temporary file on disk.
@@ -315,6 +322,7 @@ private[spark] class ExternalSorter[K, V, C](
 
     var success = false
     try {
+      // 注意，inMemoryIterator中的记录已经根据partitionID或和Key排好序
       while (inMemoryIterator.hasNext) {
         val partitionId = inMemoryIterator.nextPartition()
         require(partitionId >= 0 && partitionId < numPartitions,
@@ -352,7 +360,9 @@ private[spark] class ExternalSorter[K, V, C](
         }
       }
     }
-    // 返回该spill file
+    // 返回该spill file（注意该BlockId是一个TempShuffleBlockId）
+    // 该file的结构是：一个file中有存储了多个partition的数据，
+    // 而每个partition又由多个batches组成。
     SpilledFile(file, blockId, batchSizes.toArray, elementsPerPartition)
   }
 
@@ -376,24 +386,26 @@ private[spark] class ExternalSorter[K, V, C](
       // iterators由两部分组成：一部分是各个SpilledFile中的p分区中的元素构成的各个iterator，
       // 另一部分是内存中的p分区的元素构成的iterator
       val iterators = readers.map(_.readNextPartition()) ++ Seq(inMemIterator)
-      // 如果定义了aggregator
+      // 如果定义了aggregator，需要将记录按key值combine
       if (aggregator.isDefined) {
         // 大致是读明白了...主要是spark实际运用经验不够丰富，很多场景没遇到
         // 乍一看，哇，这个函数真是复杂，但只要耐心的看，就发现其实也很简单
         // Perform partial aggregation across partitions
         (p, mergeWithAggregation(
           iterators, aggregator.get.mergeCombiners, keyComparator, ordering.isDefined))
-      } else if (ordering.isDefined) { // 如果定义了ordering
+      } else if (ordering.isDefined) { // 如果只是定义了ordering
         // No aggregator given, but we have an ordering (e.g. used by reduce tasks in sortByKey);
         // sort the elements without trying to merge them
         (p, mergeSort(iterators, ordering.get))
       } else {
+        // 如果啥也没定义（太好了，执行效率最高啦）
         (p, iterators.iterator.flatten)
       }
     }
   }
 
   /**
+   * 注意，我们已经保证这个Seq中的iterators都是一个partition的
    * Merge-sort a sequence of (K, C) iterators using a given a comparator for the keys.
    */
   private def mergeSort(iterators: Seq[Iterator[Product2[K, C]]], comparator: Comparator[K])
@@ -402,16 +414,16 @@ private[spark] class ExternalSorter[K, V, C](
     val bufferedIters = iterators.filter(_.hasNext).map(_.buffered)
     type Iter = BufferedIterator[Product2[K, C]]
     val heap = new mutable.PriorityQueue[Iter]()(new Ordering[Iter] {
-      // 该ordering定义了，该优先级队列会根据key的优先级大小来访问元素。所以，之前的partition排序信息
-      // 不会被考虑在内???
       // 之所以使用和comparator.compare相反的比较结果，是因为PriorityQueue优先出队优先级最大的元素
       // Use the reverse of comparator.compare because PriorityQueue dequeues the max
-      // 貌似这里的大小比较，只关注了key，不关注partition
+      // 貌似这里的大小比较，只关注了key，不关注partition（废话，这里的所有iter都已经是一个partition中的，
+      // 还比较partition干啥？）
       override def compare(x: Iter, y: Iter): Int = -comparator.compare(x.head._1, y.head._1)
     })
-    // TODO _* 再次遇到，什么意思???理解不够透彻
-    // 这里，bufferedIters是一个包含多个元素的seq()。但是，
-    // enqueue()会依次遍历seq()中的每个元素，并入队。
+    // _* 再次遇到，什么意思???理解不够透彻
+    // _* 貌似是说可以有一个或多个参数，就像java的 ...
+    // 这里，bufferedIters是一个包含多个元素的seq()。
+    // 所以，enqueue()会依次遍历seq()中的每个元素（Iterator[Product2[K, C]]），并入队。
     heap.enqueue(bufferedIters: _*)  // Will contain only the iterators with hasNext = true
     new Iterator[Product2[K, C]] {
       override def hasNext: Boolean = !heap.isEmpty
@@ -444,8 +456,13 @@ private[spark] class ExternalSorter[K, V, C](
       totalOrder: Boolean)
       : Iterator[Product2[K, C]] =
   {
+    // 所谓的totalOrder是指：如果我们定义的comparator，能让所有值不等的key在使用comparator比较之后同样不等(1)；
+    // 而非totalOrder，例如以hash(key)比较值不等的key，则可能会有hash(key1) == hash(key2)。具有这种性质的
+    // comparator排序就被认为是非totalOrder。
+    // （但是，怎么看该方法的调用，好像如果定义了ordering，就是totalOrder了呢？如果用户定义的ordering不满足性质
+    // (1)怎么办？？？）
     if (!totalOrder) {
-      // 我们只拥有部分有序。例如：通过hash code对keys进行排序，这意味着多个不同的key，从ordering的角度来看，
+      // 我们只拥有局部有序。例如：通过hash code对keys进行排序，这意味着多个不同的key，从ordering的角度来看，
       // 被认为是相等的。为了处理这个问题(因为combiner是合并那些key真正相等的pair，而不是说ordering认为它们
       // 相等，就可以合并。比如，有三个健值对(k1, v1), (k2, v2), (k1, v3),在ordering看来，可能k1,k2是相等
       // 的，但是combiner却不能合并(k1, v1)和(k2, v2), 因为它们的值并不真的相同)，我们需要读取所有ordering
@@ -454,6 +471,10 @@ private[spark] class ExternalSorter[K, V, C](
       // multiple distinct keys might be treated as equal by the ordering. To deal with this, we
       // need to read all keys considered equal by the ordering at once and compare them.
       new Iterator[Iterator[Product2[K, C]]] {
+        // 因为我们只有局部有序，所以在mergeSort()之后，记录的排序可能是这样的(假设我们的comparator是奇数key
+        // 小于偶数key)：
+        // (1, 5), (3, 5), (1, 4), (2, 1), (4, 2), (2, 5)
+        // 所以，comparator就会认为key = 1和key = 3相等。但是，它们的实际值并不相等，于是乎，它们也不能combine。
         val sorted = mergeSort(iterators, comparator).buffered
 
         // Buffers reused across elements to decrease memory allocation
@@ -499,16 +520,21 @@ private[spark] class ExternalSorter[K, V, C](
             }
           }
 
+          // zip()的结果也是返回一个iterator
           // Note that we return an iterator of elements since we could've had many keys marked
           // equal by the partial order; we flatten this below to get a flat iterator of (K, C).
           keys.iterator.zip(combiners.iterator)
         }
+        // 这里的语法哦...晕...看不懂
       }.flatMap(i => i)
     } else {
-      // 我们拥有完全有序???
+      // 我们全局有序！
       // We have a total ordering, so the objects with the same key are sequential.
       new Iterator[Product2[K, C]] {
-        // mergeSort会根据指定的comparator，对key进行排序
+        // mergeSort()会根据指定的comparator，对key进行排序
+        // 因为我们的comparator全局有序，所以mergeSort()之后记录排序会是这样的：
+        // (1,5), (1, 4), (2, 4), (2,6), (2, 10), (3, 5)
+        // 也就是说，值相等的key是连续出现的，而不像上面的局部有序。
         val sorted = mergeSort(iterators, comparator).buffered
 
         override def hasNext: Boolean = sorted.hasNext
@@ -520,7 +546,7 @@ private[spark] class ExternalSorter[K, V, C](
           val elem = sorted.next()
           val k = elem._1
           var c = elem._2
-          // 因为sorted会根据key进行排序，所以才可以这样循环合并
+          // 因为comparator是全局有序的，所以才可以这样循环合并
           // 把具有相同key的(key, value)都通过mergeCombiners()合并起来
           while (sorted.hasNext && sorted.head._1 == k) {
             val pair = sorted.next()
@@ -599,7 +625,7 @@ private[spark] class ExternalSorter[K, V, C](
         // 封装文件流，创建缓存输入流
         val bufferedStream = new BufferedInputStream(ByteStreams.limit(fileStream, end - start))
 
-        // 封装缓存输入流，创建压缩流
+        // 封装缓存输入流，创建解压流
         val wrappedStream = serializerManager.wrapStream(spill.blockId, bufferedStream)
         // 封装压缩流，创建反序列化流
         serInstance.deserializeStream(wrappedStream)
@@ -646,8 +672,8 @@ private[spark] class ExternalSorter[K, V, C](
       // 读取的元素在该batch中的索引位置
       indexInBatch += 1
       // 如果读取的元素个数达到了serializerBatchSize个，说明该batch的所有元素都读完了。
-      // 则开始读取下一个batch。
-      // 这和我们spill是写入元素至磁盘文件时的batch大小是对应的。
+      // 则开始读取该partition中的下一个batch。
+      // 这和我们spill是写入元素至磁盘文件时的batch size大小是对应的。
       if (indexInBatch == serializerBatchSize) {
         indexInBatch = 0
         deserializeStream = nextBatchStream()
@@ -681,7 +707,9 @@ private[spark] class ExternalSorter[K, V, C](
             return false
           }
         }
+        // QUESTION: 为啥是 >= ？
         assert(lastPartitionId >= myPartition)
+        // 相等的话，说明我们还在读取该myPartition中的记录
         // Check that we're still in the right partition; note that readNextItem will have returned
         // null at EOF above so we would've returned false there
         lastPartitionId == myPartition
@@ -719,6 +747,7 @@ private[spark] class ExternalSorter[K, V, C](
    */
   def destructiveIterator(memoryIterator: Iterator[((Int, K), C)]): Iterator[((Int, K), C)] = {
     // TODO read isShuffleSort什么意思???
+    // 如果这是map端的shuffle，则isShuffleSort = true; 反之为false？？？
     if (isShuffleSort) {
       memoryIterator
     } else {
@@ -745,7 +774,6 @@ private[spark] class ExternalSorter[K, V, C](
     if (spills.isEmpty) {
       // Special case: if we have only in-memory data, we don't need to merge streams, and perhaps
       // we don't even need to sort by anything other than partition ID
-      // TODO read destructiveIterator: 这个函数到底干嘛滴???
       if (!ordering.isDefined) {
         // The user hasn't requested sorted keys, so only sort by partition ID, not key
         groupByPartition(destructiveIterator(collection.partitionedDestructiveSortedIterator(None)))
@@ -808,15 +836,17 @@ private[spark] class ExternalSorter[K, V, C](
         lengths(partitionId) = segment.length
       }
     } else {
+      // 注意：merger-sort的步骤很重要，感觉也是spark在shuffle过程中很耗时的一个阶段
       // We must perform merge-sort; get an iterator by partition and write everything directly.
       for ((id, elements) <- this.partitionedIterator) {
-        // elements是同一个id分区内的所有经过merge sort后的元素
+        // elements是同一个id对应的分区内的所有经过merge sort后的元素
         if (elements.hasNext) {
           for (elem <- elements) {
             writer.write(elem._1, elem._2)
           }
           // 同样地，将同一个分区内的写入文件的内容提交，并生成一个FileSegment
           val segment = writer.commitAndGet()
+          // 记录每个partition的记录的size
           lengths(id) = segment.length
         }
       }
@@ -830,7 +860,10 @@ private[spark] class ExternalSorter[K, V, C](
     lengths
   }
 
+  // spills在map端shuffle的时候用到了，但是forceSpillFiles好像没有在map端shuffle的时候用到。
+  // 所以，forceSpillFiles是不是在reduce端shuffle的时候用到的？？？
   def stop(): Unit = {
+    // 既然我们已经将spills对应的files合并成了一个MapOutput，则它们就可被删除了
     spills.foreach(s => s.file.delete())
     spills.clear()
     forceSpillFiles.foreach(s => s.file.delete())
@@ -838,6 +871,7 @@ private[spark] class ExternalSorter[K, V, C](
     if (map != null || buffer != null) {
       map = null // So that the memory can be garbage-collected
       buffer = null // So that the memory can be garbage-collected
+      // 是否execution memory
       releaseMemory()
     }
   }

@@ -66,7 +66,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   // To avoid a large number of small spills, initialize this to a value orders of magnitude > 0
   @volatile private[this] var myMemoryThreshold = initialMemoryThreshold
 
-  // 自上一次spill，从输入读取到的元素个数
+  // 自上一次spill，读取到的元素个数（maybe，就是当前buf或map中记录的个数？）
   // Number of elements read from input since last spill
   private[this] var _elementsRead = 0L
 
@@ -77,6 +77,8 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
   private[this] var _spillCount = 0
 
   /**
+   * 如果需要，则将当前内存中的集合（记录）spill到磁盘上；在spilling之前，会先尝试获取更多的内存（如果
+   * 获取失败，则再执行spill）
    * Spills the current in-memory collection to disk if needed. Attempts to acquire more
    * memory before spilling.
    *
@@ -121,7 +123,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
       spill(collection)
       _elementsRead = 0
       _memoryBytesSpilled += currentMemory
-      // 在spill执行完成后，内存中的collection对象已经写到来磁盘中，所以需要释放向execution pool申请的内存。
+      // 在spill执行完成后，内存中的collection对象已经写到了磁盘中，所以需要释放向execution pool申请的内存。
       // 需要指出的一点是，释放的内存大小并不等于collection所占的内存大小。
       releaseMemory()
     }

@@ -48,14 +48,17 @@ private[spark] trait WritablePartitionedPairCollection[K, V] {
    */
   def destructiveSortedWritablePartitionedIterator(keyComparator: Option[Comparator[K]])
     : WritablePartitionedIterator = {
-    // 如果该数据结构是PartitionedAppendOnlyMap，则在调用该方法后，map的结构会受到破坏，map不再有效
+    // 如果该数据结构是PartitionedAppendOnlyMap，则在调用该方法后，map的结构会受到破坏，map的映射关系不再有效
     // 此时，it已经根据partitionId(或者和key)对所有的数据排好序
     val it = partitionedDestructiveSortedIterator(keyComparator)
     // 该iterator会遍历数据，并通过writer写入磁盘
     new WritablePartitionedIterator {
+      // 注意cur的形式是((partitionID, Key), Value)，其中partitionID = Partitioner.getPartition(Key)
       private[this] var cur = if (it.hasNext) it.next() else null
 
       def writeNext(writer: DiskBlockObjectWriter): Unit = {
+        // 当我们将记录写入磁盘的时候，我们就不需要partitionID了。
+        // （所以我们说，collection spill过程中写入磁盘的字节数和其真正占用的内存的字节数并不相等）
         writer.write(cur._1._2, cur._2)
         cur = if (it.hasNext) it.next() else null
       }
