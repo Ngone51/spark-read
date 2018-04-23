@@ -254,6 +254,7 @@ private[spark] class IndexShuffleBlockResolver(
     // checks added here were a useful debugging aid during SPARK-22982 and may help prevent this
     // class of issue from re-occurring in the future which is why they are left here even though
     // SPARK-22982 is fixed.
+    // 先从file获取该file对应的channel
     val channel = Files.newByteChannel(indexFile.toPath)
     // 为什么是blockId.reduceId * 8???
     // 答：首先，indexFile里面存储的是map端每个partition的偏移量(用于读取dataFile)。
@@ -262,6 +263,7 @@ private[spark] class IndexShuffleBlockResolver(
     // 而如果reduceId = 1，则position = 8，即该reducer就要从该文件的第8个字节开始
     // 读取第二个偏移量。
     channel.position(blockId.reduceId * 8)
+    // 再根据该channel获取inputStream，然后再封装成DataInputStream
     val in = new DataInputStream(Channels.newInputStream(channel))
     try {
       // 获取的offset对应DataFile开始读取对应partition的开始位置
@@ -278,6 +280,7 @@ private[spark] class IndexShuffleBlockResolver(
       // 这是不是意味着一个shuffle block对应的就是一个partition的数据???
       new FileSegmentManagedBuffer(
         transportConf,
+        // 我们的map output
         getDataFile(blockId.shuffleId, blockId.mapId),
         offset,
         nextOffset - offset)

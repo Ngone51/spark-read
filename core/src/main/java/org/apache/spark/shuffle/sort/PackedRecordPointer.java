@@ -18,6 +18,18 @@
 package org.apache.spark.shuffle.sort;
 
 /**
+ * 注意：在PackedRecordPointer和TaskMemoryManager中都有MAXIMUM_PAGE_SIZE_BYTES，但值却是不一样的。
+ * 在PackedRecordPointer中，为了offset_in_page的编码需要，MAXIMUM_PAGE_SIZE_BYTES = 1 << 27；这是
+ * 因为在一个常规的page中，我们可以同时存储多个记录。而使用offset_in_page就可以表示每个记录在page中存储的
+ * 起始地址。显然，如果offset_in_page超过MAXIMUM_PAGE_SIZE_BYTES时，就溢出了，也就无法正确表示一个记录的
+ * 存储位置了。
+ * 而TaskMemoryManager中的MAXIMUM_PAGE_SIZE_BYTES对应的是在jvm中最大可能申请的内存。如果一个记录的大小
+ * 超过MAXIMUM_PAGE_SIZE_BYTES，tungsten会为其单独分配一个page。而该page的限制就是
+ * TaskMemoryManager#MAXIMUM_PAGE_SIZE_BYTES，而不是PackedRecordPointer#MAXIMUM_PAGE_SIZE_BYTES。
+ * 但是，我们并不需要担心该page的offset会超过PackedRecordPointer中27个bit的表示范围。这是因为这种超过常规size
+ * 的page只会存储一个记录，所以它的offset只能是0！
+ * 相关讨论，详见MemoryConsumer#allocatePage中的注释。
+ *
  * 封装了一个8字节的字，其中高位24个bit位用于表示partition ID，低位40个bit位用于表示记录指针(记录的
  * 具体位置: 某个page中的某个offset位置)
  * Wrapper around an 8-byte word that holds a 24-bit partition number and 40-bit record pointer.
@@ -26,7 +38,7 @@ package org.apache.spark.shuffle.sort;
  * <pre>
  *   [24 bit partition number][13 bit memory page number][27 bit offset in page]
  * </pre>
- * TODO 注释修改 2^27 bits = 16 megabytes
+ * TODO 注释修改 bits -> bytes
  * This implies that the maximum addressable page size is 2^27 bits = 128 megabytes, assuming that
  * our offsets in pages are not 8-byte-word-aligned. Since we have 2^13 pages (based off the
  * 13-bit page numbers assigned by {@link org.apache.spark.memory.TaskMemoryManager}), this
@@ -82,7 +94,6 @@ final class PackedRecordPointer {
    * Pack a record address and partition id into a single word.
    *
    * @param recordPointer a record pointer encoded by TaskMemoryManager.
-   * TODO 注释修改 2^24 - 1
    * @param partitionId a shuffle partition id (maximum value of 2^24).
    * @return a packed pointer that can be decoded using the {@link PackedRecordPointer} class.
    */
@@ -90,10 +101,12 @@ final class PackedRecordPointer {
     assert (partitionId <= MAXIMUM_PARTITION_ID);
     // Note that without word alignment we can address 2^27 bytes = 128 megabytes per page.
     // Also note that this relies on some internals of how TaskMemoryManager encodes its addresses.
+
+    // 首先 &MASK_LONG_UPPER_13_BITS 取recordPointer的最高的13位，即pageNumber
+    // >>> 24， 右移24位，高位24位会全部为0。用于之后存放partitionID。
+    // & MASK_LONG_LOWER_27_BITS， 获取recordPointer的低位27位，获取offset_in_page；
+    // <<< 40， 左移40位，使得低位40位全部位0，高位24位为partitionID
     final long pageNumber = (recordPointer & MASK_LONG_UPPER_13_BITS) >>> 24;
-    // TODO 解决疑问
-    // 最大的问题是，这里的address编码和TaskMemoryManager里的编码不一样啊!!!在TaskMemoryManger中的page
-    // 偏移量可以达到37个bit位，而这里只有27个bit位，什么情况啊???哪里遗漏了吗???
     final long compressedAddress = pageNumber | (recordPointer & MASK_LONG_LOWER_27_BITS);
     return (((long) partitionId) << 40) | compressedAddress;
   }
@@ -109,6 +122,7 @@ final class PackedRecordPointer {
   }
 
   public long getRecordPointer() {
+    // << 24, 左移24位，完全覆盖高位24位的partitionID，现在高位13位即为pargeNumber
     final long pageNumber = (packedRecordPointer << 24) & MASK_LONG_UPPER_13_BITS;
     final long offsetInPage = packedRecordPointer & MASK_LONG_LOWER_27_BITS;
     return pageNumber | offsetInPage;

@@ -228,8 +228,10 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     updatePeakMemoryUsed();
     serBuffer = null;
     serOutputStream = null;
-    // 会把当前inMemSorter中的记录spill到磁盘，生成最后一个spill文件
+    // 会把当前还在内存（page）中的记录spill到磁盘，生成最后一个spill文件；
+    // 因为接下来，我们要把所有的spill文件都合并起来，生成该task的map output。
     final SpillInfo[] spills = sorter.closeAndGetSpills();
+    // let sorter = null
     sorter = null;
     final long[] partitionLengths;
     final File output = shuffleBlockResolver.getDataFile(shuffleId, mapId);
@@ -253,6 +255,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         logger.error("Error while deleting temp file {}", tmp.getAbsolutePath());
       }
     }
+    // 创建该task的MapStatus
     mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths);
   }
 
@@ -262,11 +265,17 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     final K key = record._1();
     final int partitionId = partitioner.getPartition(key);
     // 注意这里的reset，这样，我们才能复用该serBuffer
+    // （我们已经serBuffer流上封装了一层serOutputStream， 这样的话serOutputStream就能
+    // 使用serBuffer流中的buffer来写数据。）
     serBuffer.reset();
+    // 在java调用scala的方法(本来第二个参数在scala是implicit传递的, 在java变成显示传递)
     serOutputStream.writeKey(key, OBJECT_CLASS_TAG);
     serOutputStream.writeValue(record._2(), OBJECT_CLASS_TAG);
+    // flush可以让我们在buffer中写入的数据写到serBuffer的底层byte array中去。（因为下一个记录过来，
+    // buffer需要reset，所以我们需要在数据丢失之前flush）
     serOutputStream.flush();
 
+    // 获取刚刚在serBuffer写入的记录的byte size（其实就是serBuffer中的byte数组的len）
     final int serializedRecordSize = serBuffer.size();
     assert (serializedRecordSize > 0);
 
@@ -334,7 +343,6 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             partitionLengths = mergeSpillsWithFileStream(spills, outputFile, null);
           }
         } else {
-          // 有这个compressionCodec就变slow merge了???
           logger.debug("Using slow merge");
           partitionLengths = mergeSpillsWithFileStream(spills, outputFile, compressionCodec);
         }
@@ -382,7 +390,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
     // outputFile就是最终要合并成的一个目标文件
     // 创建缓冲文件输出流，缓冲大小为outputBufferSizeInBytes(默认32k)
-    // 缓冲区的设的越大，越能减少和磁盘的io次数
+    // 缓冲区的设的越大，越能减少和磁盘的io次数。但是缺点也就是比较吃内存了。
     final OutputStream bos = new BufferedOutputStream(
             new FileOutputStream(outputFile),
             outputBufferSizeInBytes);
@@ -404,29 +412,34 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       for (int partition = 0; partition < numPartitions; partition++) {
         // 初始目标文件长度，每次写入一个partition的记录后，就会增长
         final long initialFileLength = mergedFileOutputStream.getByteCount();
-        // 啥意思???
+        // TODO read CloseAndFlushShieldOutputStream 到底啥意思???
         // Shield the underlying output stream from close() and flush() calls, so that we can close
         // the higher level streams to make sure all data is really flushed and internal state is
         // cleaned.
         OutputStream partitionOutput = new CloseAndFlushShieldOutputStream(
           new TimeTrackingOutputStream(writeMetrics, mergedFileOutputStream));
-        // 用加密流封装上面的流(CloseAndFlushShieldOutputStream)
+        // 用加密流封装CloseAndFlushShieldOutputStream流
         partitionOutput = blockManager.serializerManager().wrapForEncryption(partitionOutput);
         // 如果compressionCodec不为null，则再封装一层压缩流
         if (compressionCodec != null) {
           partitionOutput = compressionCodec.compressedOutputStream(partitionOutput);
         }
+        // 从每个spill file中读取对应partition的记录（数据）
         for (int i = 0; i < spills.length; i++) {
           final long partitionLengthInSpill = spills[i].partitionLengths[partition];
           if (partitionLengthInSpill > 0) {
             // 为每个spill file创建有限输入流
+            // 注意：因为spill file中的记录已经经过partitionID排序，所以我们在通过inputStream读取的
+            // 时候，并不需要指定该partition在该spill file中的offset。例如，假如我们在spill file中
+            // 存储的记录是这样的：（1, 2),(1, 3),(3, 1), (3, 5), (3, 2), (4, 3)
+            // 我们依次遍历上面这个spill file中的每个分区， 对于记录个数为0的分区，我们会过滤掉。
             InputStream partitionInputStream = new LimitedInputStream(spillInputStreams[i],
               partitionLengthInSpill, false);
             try {
-              // 封装加密流
+              // 封装解密流
               partitionInputStream = blockManager.serializerManager().wrapForEncryption(
                 partitionInputStream);
-              // 如果可能，封装压缩流
+              // 封装解压流
               if (compressionCodec != null) {
                 partitionInputStream = compressionCodec.compressedInputStream(partitionInputStream);
               }
@@ -439,10 +452,13 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
         partitionOutput.flush();
         partitionOutput.close();
+        // （在合并了多个spill file之后）统计该partition的大小
         partitionLengths[partition] = (mergedFileOutputStream.getByteCount() - initialFileLength);
       }
       threwException = false;
     } finally {
+      // 为了避免掩盖在try{}中抛出的异常而致使我们提前(try{}还没结束)地进入finally{}，
+      // 只有当threwException == false，我们才会在close资源的时候抛出异常。
       // To avoid masking exceptions that caused us to prematurely enter the finally block, only
       // throw exceptions during cleanup if threwException == false.
       for (InputStream stream : spillInputStreams) {
@@ -483,7 +499,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       // 将所有的spill文件，合并到一个输出文件(outputFile)
       for (int partition = 0; partition < numPartitions; partition++) {
         for (int i = 0; i < spills.length; i++) {
-          // 获取在spills[i](SpillInfo)中，partition分区的记录个数
+          // 获取在spills[i](SpillInfo)中，partition分区的size
           final long partitionLengthInSpill = spills[i].partitionLengths[partition];
           final FileChannel spillInputChannel = spillInputChannels[i];
           final long writeStartTime = System.nanoTime();
@@ -498,7 +514,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             mergedFileOutputChannel,
             spillInputChannelPositions[i],
             partitionLengthInSpill);
-          // 更新input file(spill file)的position，用于读取下一个分区的记录
+          // 更新input file(spill file)的position，作为读取下一个分区的记录的起始地址
           spillInputChannelPositions[i] += partitionLengthInSpill;
           writeMetrics.incWriteTime(System.nanoTime() - writeStartTime);
           bytesWrittenToMergedFile += partitionLengthInSpill;

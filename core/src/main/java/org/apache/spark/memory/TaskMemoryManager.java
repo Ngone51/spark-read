@@ -132,7 +132,7 @@ public class TaskMemoryManager {
    * Construct a new TaskMemoryManager.
    */
   public TaskMemoryManager(MemoryManager memoryManager, long taskAttemptId) {
-    // TODO read Tungsten Memory Mode
+    // 默认为ON_HEAP
     this.tungstenMemoryMode = memoryManager.tungstenMemoryMode();
     this.memoryManager = memoryManager;
     this.taskAttemptId = taskAttemptId;
@@ -422,14 +422,11 @@ public class TaskMemoryManager {
    */
   public long encodePageNumberAndOffset(MemoryBlock page, long offsetInPage) {
     if (tungstenMemoryMode == MemoryMode.OFF_HEAP) {
-      // 在off-heap的内存模式中，offset代表的是一个用64个bit位表示的绝对地址。(所以如果直接把这64位塞到
-      // 低位的51个bit位是塞不过的)，但是由于我们page的大小限制((1 << 31 - 1) * 8L(bytes)约为
-      // 1 << 37(bits)),所以
-      // 原本64位的绝对地址，最多低位37位用来表示绝对的内存地址，其它高位27位都为0。这样，我们就可以把这个
-      // 64位绝对地址塞到低位的51个bit位中去(因为这个64个bit位的高位都是0啊)。由此，我们可以把这个
-      // offset(64bit绝对地址) - page的基址(64bit绝对地址)，得到一个新的offset(偏移量，64bit相对地址)，
-      // 用于表示在该page中，相对于基地址的偏移量。而这个偏移量虽然是64bit的，但是也能塞进低位的51个bit位，
-      // 理由已经在上面解释了。
+      // 在off-heap模式下，如果该记录的大小超过了MemoryConsumer#pageSize,则我们会为该记录单独申请一个
+      // page只用于存储这一个记录。在这种情况，这里的offsetInPage = 0；而如果该记录的大小小于
+      // MemoryConsumer#pageSize，则这里的offsetInPage始终在PackedRecordPointer的用于编码offset的
+      // 27个bit位的表示范围之内。
+
       // In off-heap mode, an offset is an absolute address that may require a full 64 bits to
       // encode. Due to our page size limitation, though, we can convert this into an offset that's
       // relative to the page's base offset; this relative offset will fit in 51 bits.
@@ -470,6 +467,7 @@ public class TaskMemoryManager {
       assert (page.getBaseObject() != null);
       return page.getBaseObject();
     } else {
+      // 因为在off-heap模式中，是以64bit的绝对地址来表示，所以，它没有base object
       return null;
     }
   }

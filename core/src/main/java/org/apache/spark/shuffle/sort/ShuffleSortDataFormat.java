@@ -48,6 +48,7 @@ final class ShuffleSortDataFormat extends SortDataFormat<PackedRecordPointer, Lo
 
   @Override
   public void swap(LongArray data, int pos0, int pos1) {
+    // 注意data(LongArray) get(pos)的结果是经过PackedRecordPointer编码的地址，为long型。
     final long temp = data.get(pos0);
     data.set(pos0, data.get(pos1));
     data.set(pos1, temp);

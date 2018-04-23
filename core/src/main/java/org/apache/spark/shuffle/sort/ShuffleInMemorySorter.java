@@ -72,10 +72,11 @@ final class ShuffleInMemorySorter {
    */
   private int usableCapacity = 0;
 
-  // 用于初始化inMemSorter的初始大小
+  // 用于初始化inMemSorter的array的初始大小
   private int initialSize;
 
   ShuffleInMemorySorter(MemoryConsumer consumer, int initialSize, boolean useRadixSort) {
+    // 注意，这个consumer当前只有ShuffleInMemorySorter
     this.consumer = consumer;
     assert (initialSize > 0);
     this.initialSize = initialSize;
@@ -103,6 +104,7 @@ final class ShuffleInMemorySorter {
 
   public void reset() {
     if (consumer != null) {
+      // 注意，这个consumer当前只有ShuffleInMemorySorter
       consumer.freeArray(array);
       array = consumer.allocateArray(initialSize);
       usableCapacity = getUsableCapacity();
@@ -120,7 +122,7 @@ final class ShuffleInMemorySorter {
       newArray.getBaseOffset(),
       pos * 8L
     );
-    // 是否旧的array(内存空间)
+    // 释放旧的array(内存空间)
     consumer.freeArray(array);
     // 更新array为新申请的array
     array = newArray;
@@ -191,7 +193,7 @@ final class ShuffleInMemorySorter {
         PackedRecordPointer.PARTITION_ID_START_BYTE_INDEX,
         PackedRecordPointer.PARTITION_ID_END_BYTE_INDEX, false, false);
     } else { // Tim排序
-      // array.getBaseOffset() + pos * 8L之后是array空出来，用于排序的空间
+      // array.getBaseOffset() + pos * 8L之后是array提前空出来用于排序的空间
       MemoryBlock unused = new MemoryBlock(
         array.getBaseObject(),
         array.getBaseOffset() + pos * 8L,

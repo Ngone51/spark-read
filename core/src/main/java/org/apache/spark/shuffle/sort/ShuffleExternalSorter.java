@@ -89,6 +89,9 @@ final class ShuffleExternalSorter extends MemoryConsumer {
   private final int diskWriteBufferSize;
 
   /**
+   * 注意！一个page中可以存放多个记录！！！
+   * 比如，记录远小于shuffleExternalSorter（即MemoryConsumer）设定的pageSize时。
+   *
    * 用于存储记录进行排序(???)的内存页。当spilling执行时，在该列表中的内存页就可以被释放。虽然，从原则上讲，
    * 我们可以在spill执行过程中循环利用这些内存页(从另一方面说，如果我们让TaskMemoryManager自己维护一个可
    * 复用内存页池，并不是很有必要。)
@@ -118,7 +121,12 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       SparkConf conf,
       ShuffleWriteMetrics writeMetrics) {
     super(memoryManager,
-      // 哈???
+      // 如果用户设置了page大小，我们就用用户设置的。但是用户设置的page大小不能超过MAXIMUM_PAGE_SIZE_BYTES。
+      // 注意：我们在这里限制了page的大小最大不超过MAXIMUM_PAGE_SIZE_BYTES(2^27 byte = 128M)。
+      // 由此，我们才能在使用PackedPoint编码的时候，保证offset_in_page不超过27个bit。
+      // 但是，也有一个特殊的情况，如果单个记录的大小超过了该设置的page大小，则我们会单独为该记录分配一个
+      // 超过该pageSize的page。同时，由于该页面只能存储这一个记录，我们也不用担心offset在编码的时候溢出。
+      // 详见MemoryConsumer#allocatePage()中的注释。
       (int) Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()),
       memoryManager.getTungstenMemoryMode());
     this.taskMemoryManager = memoryManager;
@@ -161,20 +169,23 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       writeMetricsToUse = new ShuffleWriteMetrics();
     }
 
-    // 采用基数排序或Tim排序，将records按partition ID排好序。
+    // 采用基数排序或Tim排序，对存储在inMemSorter中的records的地址（or指针？就是经过PackedRecordPointer
+    // 编码后的值）按partition ID排序，而不是真的对存储在pages中的records排序。
     // This call performs the actual sort.
     final ShuffleInMemorySorter.ShuffleSorterIterator sortedRecords =
       inMemSorter.getSortedIterator();
 
-    // 缓存数据??? 可是下面分段写入记录的时候，不是也通过DiskBlockObjectWriter直接写了吗???
-    // DiskBlockObjectWriter不是自带BufferOutputStream的吗??? 看不懂了....
+    // 我们每次从page中读取一个记录，通过DiskBlockObjectWriter存储到磁盘中。但是，page中的记录并不能直接
+    // 就传递到disk writer中写入到磁盘中。所以，我们需要先把记录从pages中读取出来，然后存储到该buffer中，
+    // 再将该buffer传递给disk writer，最后再通过disk writer写入磁盘。注意，有可能一个记录的size比该
+    // buffer（默认1M）大。这种情况下，我们需要分多次将一个完整的记录从page中写入到磁盘上。
     // Small writes to DiskBlockObjectWriter will be fairly inefficient. Since there doesn't seem to
     // be an API to directly transfer bytes from managed memory to the disk writer, we buffer
     // data through a byte array. This array does not need to be large enough to hold a single
     // record;
     final byte[] writeBuffer = new byte[diskWriteBufferSize];
 
-    // TODO read comment
+    // TODO read SPARK-3426
     // Because this output will be read during shuffle, its compression codec must be controlled by
     // spark.shuffle.compress instead of spark.shuffle.spill.compress, so we need to use
     // createTempShuffleBlock here; see SPARK-3426 for more details.
@@ -195,6 +206,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       blockManager.getDiskWriter(blockId, file, ser, fileBufferSizeBytes, writeMetricsToUse);
 
     int currentPartition = -1;
+    // sortedRecords已经根据partitionID进行排序，所以相同的partition连续出现
     while (sortedRecords.hasNext()) {
       sortedRecords.loadNext();
       final int partition = sortedRecords.packedRecordPointer.getPartitionId();
@@ -203,26 +215,28 @@ final class ShuffleExternalSorter extends MemoryConsumer {
         // Switch to the new partition
         if (currentPartition != -1) {
           // 提交同一个partition中的records，并生成一个FileSegment
+          // （貌似在这里，所有的FileSegment都对应同一个file）
           final FileSegment fileSegment = writer.commitAndGet();
+          // 记录该分区的记录的size（所以这个fileSegment除了获取这个length，其它也没什么用了吧？）
           spillInfo.partitionLengths[currentPartition] = fileSegment.length();
         }
         currentPartition = partition;
       }
 
+      // 获取该记录在pages中的地址（pageNumber +  offset_in_page）
       final long recordPointer = sortedRecords.packedRecordPointer.getRecordPointer();
       final Object recordPage = taskMemoryManager.getPage(recordPointer);
       final long recordOffsetInPage = taskMemoryManager.getOffsetInPage(recordPointer);
       // dataRemaining意为记录的长度。
+      // 先获取该记录的size大小
       int dataRemaining = Platform.getInt(recordPage, recordOffsetInPage);
+      // 设置读取该记录的起始位置（+4 是因为我们先用一个int存了该记录的size）
       long recordReadPosition = recordOffsetInPage + 4; // skip over record length
-      // TODO read
-      // 这个分段写一个记录什么意思，没整明白???
-      // writeBuffer用作缓存???
+      // 这里有个好处：从pages读取记录，通过disk writer写到磁盘上，不需要序列化；
+      // 因为我们pages中存储的记录本身就是byte[]类型的，所以不用再序列化。
       while (dataRemaining > 0) {
-        // 为了分段写记录到disk中去
+        // 如果该记录的size > diskWriteBufferSize，则我们需要分多次写入磁盘；反之，一次搞定
         final int toTransfer = Math.min(diskWriteBufferSize, dataRemaining);
-        // copy 未知类型(maybe long[], byte[]) to byte[]
-        // 把一个记录分段拷贝到一个较小的buffer中去
         Platform.copyMemory(
           recordPage, recordReadPosition, writeBuffer, Platform.BYTE_ARRAY_OFFSET, toTransfer);
         // 将buffer中的内容通过磁盘写入writer(可能并为写入磁盘，而是先通过writeBuffer缓存???)。
@@ -234,7 +248,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       writer.recordWritten();
     }
 
-    // 提交最后一个partition，并生成FileSegment
+    // 在这里提交最后一个partition的记录，并生成最终FileSegment（该FileSegment仅包含该partition的信息）
     final FileSegment committedSegment = writer.commitAndGet();
     writer.close();
     // If `writeSortedFile()` was called from `closeAndGetSpills()` and no records were inserted,
@@ -424,11 +438,10 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       pageCursor + required > currentPage.getBaseOffset() + currentPage.size() ) {
       // TODO: try to find space in previous pages
       // 设置currentPage为新申请的page
-      // required大小为record的大小，而且申请的page的内存只会小于等于required，
-      // 所以一个page最多只能存下一个记录咯。那上面的TODO为什么还要从previous中去寻找空间呢???
-      // 但是从if()里的判断条件看，也是想在一个page中存多个record的意思啊，所以到底是怎么回事呢???
+      // required大小为record的大小，如果required < pageSize的设置，则我们申请大小为PageSize的page，
+      // 且该page可能存储多个记录。反之，我们申请大小为required的page，且该page只能存储这一个记录。
       currentPage = allocatePage(required);
-      // 设置pageCursor为当前page的base offset
+      // 设置pageCursor为当前page的base offset(因为我们只能从base offset之后开始写数据)
       pageCursor = currentPage.getBaseOffset();
       // 添加当前page至allocatedPages
       allocatedPages.add(currentPage);
@@ -451,7 +464,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
       spill();
     }
 
-    // 先看看是否需要扩增array的size
+    // 先看看是否需要扩增inMemSorter#LongArray的size
     growPointerArrayIfNecessary();
     // 需要额外的4个字节用于存储记录的长度(除了记录本身)
     // Need 4 bytes to store the record length.
@@ -461,22 +474,28 @@ final class ShuffleExternalSorter extends MemoryConsumer {
 
     assert(currentPage != null);
     final Object base = currentPage.getBaseObject();
-    // TODO read
+    // recordAddress记录了该记录在page中存储的经过encodePageNumberAndOffset()编码后的地址
     final long recordAddress = taskMemoryManager.encodePageNumberAndOffset(currentPage, pageCursor);
     // 总感觉这样直接用Platform怪怪的，需要封装一下，所以有人提出了SPARK-10399(当然，该issue不止于此)
     // 先在该page中存储该记录的长度
     Platform.putInt(base, pageCursor, length);
-    // pageCursor向右移动4个字节
+    // pageCursor向右移动4个字节（一个int类型的字节数：上面length是int类型的）
     pageCursor += 4;
     // 再在该page中存储该记录(实际数据)
     Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
     // 再更新pageCursor
     pageCursor += length;
     // 再往inMemSorter中插入该记录的recordAddress和partition ID，用于之后的排序
+    // 注意：inMemSorter只用于存储在page中存储的记录的地址（引用）。之后如果我们需要根
+    // 据partitionID对记录进行排序时，只需要排序inMemSorter的地址即可，而不需要真的去对
+    // pages中存储的记录进行排序。我们只需要在读记录的时候，根据排好序的inMemSorter中的地址,
+    // 来有序的读取pages中的记录。这相当于达到了对pages中的记录排序效果。
     inMemSorter.insertRecord(recordAddress, partitionId);
   }
 
   /**
+   * 注意：调用该方法，会把最后还在内存（page）中的数据写到磁盘上去，相当于强制执行了一次spill。
+   * 因为，我们即将把所有的spill文件，合并成该task的map output。
    * Close the sorter, causing any buffered data to be sorted and written out to disk.
    *
    * @return metadata for the spill files written by this sorter. If no records were ever inserted

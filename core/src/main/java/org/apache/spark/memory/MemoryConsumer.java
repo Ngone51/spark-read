@@ -114,6 +114,16 @@ public abstract class MemoryConsumer {
    * @throws OutOfMemoryError
    */
   protected MemoryBlock allocatePage(long required) {
+    // pageSize是我们指定在分配一个page时的默认大小；
+    // 如果一个记录的大小（required）小于pageSize，则我们就创建一个大小为pageSize的page；如果有多个大小
+    // 都远比pageSize要的记录，则我们可以在一个page中存储多个记录；反之，如果一个记录的大小（required）大于
+    // pageSize，则该记录就无法存放（溢出了）在默认申请大小为pageSize的page中了。此时，我们破格单独为该记录
+    // 申请一个required大小的page。注意，该page只能存储该记录，也就是说只能存储一个记录。这样一来，该记录在
+    // 该page的相对offset就只能是0。offser始终为0的好处是：我们的required可能会大于
+    // PackedRecordPointer#MAXIMUM_PAGE_SIZE_BYTES(2^27 bytes = 128M)限制，但是我们不用担心在为该记录的
+    // offset编码的时候溢出（假设我们的required为256M，如果我们在该page存储第二个记录，此时的offset可能会是
+    // 130M（> 128M）,而PackedRecordPointer对offset的编码只支持27个bit， 130M已经超过27个bit所能表示的范围了），
+    // 因为我们只在required page中存储一个记录，因而offset始终为0！
     MemoryBlock page = taskMemoryManager.allocatePage(Math.max(pageSize, required), this);
     if (page == null || page.size() < required) {
       throwOom(page, required);
