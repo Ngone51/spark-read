@@ -43,6 +43,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
  * to their handle() method.
  */
 public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
+  // 这个类只有一个默认的看不见的构造函数
 
   public static final String HANDLER_NAME = "frameDecoder";
   private static final int LENGTH_SIZE = 8;
@@ -62,6 +63,8 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
     buffers.add(in);
     totalSize += in.readableBytes();
 
+    // TODO read 这里可能涉及粘包拆包的问题，看不懂（需要结合MessageEncoder的frame编码结构来看
+    // 可以参考这篇文章：https://www.colabug.com/2602598.html）
     while (!buffers.isEmpty()) {
       // First, feed the interceptor, and if it's still, active, try again.
       if (interceptor != null) {
@@ -199,6 +202,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
    * @return Whether the interceptor is still active after processing the data.
    */
   private boolean feedInterceptor(ByteBuf buf) throws Exception {
+    // TODO read interceptor.handle(buf)
     if (interceptor != null && !interceptor.handle(buf)) {
       interceptor = null;
     }

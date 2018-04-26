@@ -47,6 +47,9 @@ public class NioManagedBuffer extends ManagedBuffer {
 
   @Override
   public InputStream createInputStream() throws IOException {
+    // 注意：是ByteBufInputStream，而不是ByteBufferInputStream
+    // 这里又通过Unpooled.wrappedBuffer将ByteBuffer转化成了Netty的ByteBuf。
+    // QUESTION 不过，为什么要这样做呢？不是可以直接用ByteBuffer来创建输入流吗？
     return new ByteBufInputStream(Unpooled.wrappedBuffer(buf));
   }
 

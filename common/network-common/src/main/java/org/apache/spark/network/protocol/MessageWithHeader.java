@@ -71,6 +71,7 @@ class MessageWithHeader extends AbstractFileRegion {
       ByteBuf header,
       Object body,
       long bodyLength) {
+    // 注意body要么是ByteBuf，要么是FileRegion
     Preconditions.checkArgument(body instanceof ByteBuf || body instanceof FileRegion,
       "Body must be a ByteBuf or a FileRegion.");
     this.managedBuffer = managedBuffer;
@@ -111,13 +112,18 @@ class MessageWithHeader extends AbstractFileRegion {
       writtenHeader = copyByteBuf(header, target);
       totalBytesTransferred += writtenHeader;
       if (header.readableBytes() > 0) {
+        // 感觉writtenHeader是不是就是下一次该函数被调用时的position
         return writtenHeader;
       }
     }
 
+    // 如果到了这里，那就说明header已经全部写入channel咯。接下来就准备写body啦。
     // Bytes written for body in this call.
     long writtenBody = 0;
     if (body instanceof FileRegion) {
+      // 如果body是FileRegion，我们需要调用FileRegion的transferTo，
+      // 来把指定范围内的文件内容拷贝到channel（target）中。
+      // 如果前面header写入正常的话，那么，这里totalBytesTransferred - headerLength = 0
       writtenBody = ((FileRegion) body).transferTo(target, totalBytesTransferred - headerLength);
     } else if (body instanceof ByteBuf) {
       writtenBody = copyByteBuf((ByteBuf) body, target);
@@ -138,6 +144,8 @@ class MessageWithHeader extends AbstractFileRegion {
 
   private int copyByteBuf(ByteBuf buf, WritableByteChannel target) throws IOException {
     ByteBuffer buffer = buf.nioBuffer();
+    // 如果buffer size <= NIO_BUFFER_LIMIT, 则一次性写入channel；
+    // 否则，我们需要分多次写入channel，每次写入大小为NIO_BUFFER_LIMIT
     int written = (buffer.remaining() <= NIO_BUFFER_LIMIT) ?
       target.write(buffer) : writeNioBuffer(target, buffer);
     buf.skipBytes(written);
@@ -152,6 +160,7 @@ class MessageWithHeader extends AbstractFileRegion {
 
     try {
       int ioSize = Math.min(buf.remaining(), NIO_BUFFER_LIMIT);
+      // 调整buf的limit，限定了写入channel的数据大小（不能超过limit）
       buf.limit(buf.position() + ioSize);
       ret = writeCh.write(buf);
     } finally {

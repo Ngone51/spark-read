@@ -28,7 +28,7 @@ import org.apache.spark.network.protocol.Encoders;
 import static org.apache.spark.network.shuffle.protocol.BlockTransferMessage.Type;
 
 /**
- * 用于读取一系列blokcs的请求。会返回StreamHandle
+ * 用于读取一系列blocks的请求。会返回StreamHandle
  * Request to read a set of blocks. Returns {@link StreamHandle}.
  */
 public class OpenBlocks extends BlockTransferMessage {
@@ -79,6 +79,7 @@ public class OpenBlocks extends BlockTransferMessage {
 
   @Override
   public void encode(ByteBuf buf) {
+    // OpenBlocks消息的编码逻辑
     Encoders.Strings.encode(buf, appId);
     Encoders.Strings.encode(buf, execId);
     Encoders.StringArrays.encode(buf, blockIds);

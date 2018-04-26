@@ -41,10 +41,13 @@ public final class MessageDecoder extends MessageToMessageDecoder<ByteBuf> {
 
   @Override
   public void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
+    // 首先解码消息类型
     Message.Type msgType = Message.Type.decode(in);
+    // 然后再根据消息类型，解码特定的消息
     Message decoded = decode(msgType, in);
     assert decoded.type() == msgType;
     logger.trace("Received message {}: {}", msgType, decoded);
+    // 添加到out里，则pipeline的下一个handler：TransportChannelHandler就能接收并处理了
     out.add(decoded);
   }
 

@@ -62,8 +62,11 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
   /** The Netty channel that this handler is associated with. */
   private final Channel channel;
 
-  // ??? 这是哪个client？？？
-  /** Client on the same channel allowing us to talk back to the requester. */
+  /**
+   * 这个Client难道不就是我们在本地创建的自己这个client吗？see TransportContext#createChannelHandler
+   * 不理解这个注释的意思。
+   * Client on the same channel allowing us to talk back to the requester.
+   */
   private final TransportClient reverseClient;
 
   /** Handles all RPC messages. */
@@ -163,6 +166,10 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
     // 更新该streamId当前正在被传输的chunk的个数
     streamManager.chunkBeingSent(req.streamChunkId.streamId);
     // 拉取成功，响应客户端（返回刚刚拉取的chunk data（buf））
+    // 注意，在发送ChunkFetchSuccess，此时的buf还是FileSegmentManagedBuffer，
+    // 而在client端接收到ChunkFetchSuccess时，此时buf已经变成NioManagerBuffer。
+    // 因为，在ChunkFetchSuccess发送之前的编码过程中，我们已经把FileSegmentManagedBuffer中的文件
+    // 内容拷贝到channel中，详见MessageWithHeader#transferTo.
     respond(new ChunkFetchSuccess(req.streamChunkId, buf)).addListener(future -> {
       // 如果chunk发送成功，则要把正在被传输的chunk的个数需要减1
       streamManager.chunkSent(req.streamChunkId.streamId);

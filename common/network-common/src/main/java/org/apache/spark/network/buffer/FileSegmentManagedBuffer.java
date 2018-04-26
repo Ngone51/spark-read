@@ -55,6 +55,7 @@ public final class FileSegmentManagedBuffer extends ManagedBuffer {
     return length;
   }
 
+  // 该方法以ByteBuffer的方式来读取文件中的数据
   @Override
   public ByteBuffer nioByteBuffer() throws IOException {
     FileChannel channel = null;
@@ -74,6 +75,7 @@ public final class FileSegmentManagedBuffer extends ManagedBuffer {
         buf.flip();
         return buf;
       } else {
+        // 针对size比较大的blocks（map()比较快？）
         return channel.map(FileChannel.MapMode.READ_ONLY, offset, length);
       }
     } catch (IOException e) {
@@ -92,6 +94,7 @@ public final class FileSegmentManagedBuffer extends ManagedBuffer {
     }
   }
 
+  // 该方法以InputStream的方式来读取文件中的数据
   @Override
   public InputStream createInputStream() throws IOException {
     FileInputStream is = null;

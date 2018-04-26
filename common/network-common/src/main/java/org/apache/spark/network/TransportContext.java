@@ -60,6 +60,7 @@ public class TransportContext {
 
   private final TransportConf conf;
   private final RpcHandler rpcHandler;
+  // 是否关闭闲置的连接
   private final boolean closeIdleConnections;
 
   /**
@@ -86,6 +87,7 @@ public class TransportContext {
       RpcHandler rpcHandler,
       boolean closeIdleConnections) {
     this.conf = conf;
+    // 注意，这里的rpcHandler是NettyBlockRpcServer
     this.rpcHandler = rpcHandler;
     this.closeIdleConnections = closeIdleConnections;
   }
@@ -114,7 +116,7 @@ public class TransportContext {
     return new TransportServer(this, host, port, rpcHandler, bootstraps);
   }
 
-  /** Creates a new server, binding to any available ephemeral port. */
+  /** Creates a new server, binding to any available ephemeral(短暂的) port. */
   public TransportServer createServer(List<TransportServerBootstrap> bootstraps) {
     return createServer(0, bootstraps);
   }
@@ -123,11 +125,14 @@ public class TransportContext {
     return createServer(0, new ArrayList<>());
   }
 
+  /** 该方法会在TransportClientFactory#createClient时被调用 */
   public TransportChannelHandler initializePipeline(SocketChannel channel) {
     return initializePipeline(channel, rpcHandler);
   }
 
   /**
+   * 初始化client／server Netty Channel Pipeline用于编码／解码消息，并创建TransportChannelHandler
+   * 用于处理request或response消息。
    * Initializes a client or server Netty Channel Pipeline which encodes/decodes messages and
    * has a {@link org.apache.spark.network.server.TransportChannelHandler} to handle request or
    * response messages.
@@ -144,6 +149,7 @@ public class TransportContext {
       RpcHandler channelRpcHandler) {
     try {
       TransportChannelHandler channelHandler = createChannelHandler(channel, channelRpcHandler);
+      // 初始化pipeline -- here is very important
       channel.pipeline()
         .addLast("encoder", ENCODER)
         .addLast(TransportFrameDecoder.HANDLER_NAME, NettyUtils.createFrameDecoder())
@@ -151,6 +157,8 @@ public class TransportContext {
         .addLast("idleStateHandler", new IdleStateHandler(0, 0, conf.connectionTimeoutMs() / 1000))
         // NOTE: Chunks are currently guaranteed to be returned in the order of request, but this
         // would require more logic to guarantee if this were not part of the same event loop.
+        // 添加我们的TransportChannelHandler至pipeline.所以这个环节是最后执行的，这样才能保证在执行该环节时，
+        // 我们接收的消息已经经过上面decoder的处理
         .addLast("handler", channelHandler);
       return channelHandler;
     } catch (RuntimeException e) {
@@ -165,10 +173,18 @@ public class TransportContext {
    * properties (such as the remoteAddress()) may not be available yet.
    */
   private TransportChannelHandler createChannelHandler(Channel channel, RpcHandler rpcHandler) {
+    // 创建TransportResponseHandler
     TransportResponseHandler responseHandler = new TransportResponseHandler(channel);
+    // 在这里才真正创建我们的TransportClient。client包含了SocketChannel以及一个TransportResponseHandler（
+    // 用于处理从server端发送过来的响应消息。）
     TransportClient client = new TransportClient(channel, responseHandler);
+    // 创建TransportRequestHandler（request handler把client当作reverseClient，不是很理解reverseClient
+    // 的含义）
     TransportRequestHandler requestHandler = new TransportRequestHandler(channel, client,
       rpcHandler, conf.maxChunksBeingTransferred());
+    // 事实上，一个TransportClient既需要TransportResponseHandler，也需要TransportRequestHandler，
+    // 详见TransportChannelHandler.java上的说明。
+    // 创建TransportChannelHandler
     return new TransportChannelHandler(client, responseHandler, requestHandler,
       conf.connectionTimeoutMs(), closeIdleConnections);
   }

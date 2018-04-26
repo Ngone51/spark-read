@@ -135,7 +135,7 @@ public class OneForOneBlockFetcher {
               client.stream(OneForOneStreamManager.genStreamChunkId(streamHandle.streamId, i),
                 new DownloadCallback(i));
             } else {
-              // 请求的时候是有序的，但接收响应消息并处理的时候，并不一定有序
+              // 请求的时候是有序的
               client.fetchChunk(streamHandle.streamId, i, chunkCallback);
             }
           }

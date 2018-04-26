@@ -239,10 +239,12 @@ public class TransportClient implements Closeable {
     // 随机生成一个rpc的请求id
     long requestId = Math.abs(UUID.randomUUID().getLeastSignificantBits());
     // 将该rpc请求（rpc id）以及其对应的callback存储到TransportResponseHandler中，
-    // 等到server端响应时，我们再用TransportResponseHandler去把对应的rpc请求取出来，
-    // 然后再用callback去处理
+    // 等到server端响应时，我们再用TransportResponseHandler去把对应的rpc请求的callback
+    // 取处理，用于处理server端发送过来的响应消息。
     handler.addRpcRequest(requestId, callback);
 
+    // 因为我们之前在TransportContext#initializePipeline中为该channel注册里pipeline,
+    // 所以该消息在发送之前还要经过MessageEncoder编码
     channel.writeAndFlush(new RpcRequest(requestId, new NioManagedBuffer(message)))
         .addListener(future -> {
           if (future.isSuccess()) {

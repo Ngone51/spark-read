@@ -95,10 +95,13 @@ public class TransportClientFactory implements Closeable {
     this.conf = context.getConf();
     this.clientBootstraps = Lists.newArrayList(Preconditions.checkNotNull(clientBootstraps));
     this.connectionPool = new ConcurrentHashMap<>();
+    // 两个节点之间的最大连接数，默认为1个
     this.numConnectionsPerPeer = conf.numConnectionsPerPeer();
     this.rand = new Random();
 
+    // IOMode: nio或epoll。默认nio
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    // 如果是ioMode是nio，则获取NioSocketChannel.class
     this.socketChannelClass = NettyUtils.getClientChannelClass(ioMode);
     this.workerGroup = NettyUtils.createEventLoop(
         ioMode,
@@ -130,15 +133,19 @@ public class TransportClientFactory implements Closeable {
    */
   public TransportClient createClient(String remoteHost, int remotePort)
       throws IOException, InterruptedException {
+    // 创建unresolved address，避免每次在创建client的时候，DNS都去解析该地址？
     // Get connection from the connection pool first.
     // If it is not found or not active, create a new one.
     // Use unresolved address here to avoid DNS resolution each time we creates a client.
     final InetSocketAddress unresolvedAddress =
       InetSocketAddress.createUnresolved(remoteHost, remotePort);
 
+    // 如果我们还没有为该address对应的主机创建ClientPool，则为其创建一个
     // Create the ClientPool if we don't have it yet.
     ClientPool clientPool = connectionPool.get(unresolvedAddress);
     if (clientPool == null) {
+      // ClientPool的size由spark.shuffle.io.numConnectionsPerPeer决定，默认为1个。
+      // 也就是说，默认在两个主机之间，只能建立一个连接。
       connectionPool.putIfAbsent(unresolvedAddress, new ClientPool(numConnectionsPerPeer));
       clientPool = connectionPool.get(unresolvedAddress);
     }
@@ -146,6 +153,10 @@ public class TransportClientFactory implements Closeable {
     int clientIndex = rand.nextInt(numConnectionsPerPeer);
     TransportClient cachedClient = clientPool.clients[clientIndex];
 
+    // 如果我们从ClientPool获取了一个client，且其状态为active。
+    // 我们就直接使用该缓存的client，而不再创建新的client。
+    // TODO QUESTION: 一个client能同时被多个线程使用吗？比如两个线程都随机生成了一个相同的clientIndex？
+    // 貌似可以，因为我们在获取clientPool.clients[clientIndex]的时候，也没有加锁
     if (cachedClient != null && cachedClient.isActive()) {
       // Make sure that the channel will not timeout by updating the last use time of the
       // handler. Then check that the client is still alive, in case it timed out before
@@ -153,6 +164,7 @@ public class TransportClientFactory implements Closeable {
       TransportChannelHandler handler = cachedClient.getChannel().pipeline()
         .get(TransportChannelHandler.class);
       synchronized (handler) {
+        // 为了避免channel的超时，更新handler的last request时间
         handler.getResponseHandler().updateTimeOfLastRequest();
       }
 
@@ -163,20 +175,28 @@ public class TransportClientFactory implements Closeable {
       }
     }
 
+    // 如果我们到了这一步，说明我们无法获取一个已经存在的处于连接状态的client。So，我们来新建一个。
+    // 注意：此时可能会有多个线程竞争来创建一个新的连接。确保只有一个线程能赢得竞争。
     // If we reach here, we don't have an existing connection open. Let's create a new one.
     // Multiple threads might race here to create new connections. Keep only one of them active.
     final long preResolveHost = System.nanoTime();
+    // 现在，我们再来创建一个resolved address（DNS会去解析该host地址）
     final InetSocketAddress resolvedAddress = new InetSocketAddress(remoteHost, remotePort);
+    // 记录DNS resolve一个host所耗费的时间
     final long hostResolveTimeMs = (System.nanoTime() - preResolveHost) / 1000000;
     if (hostResolveTimeMs > 2000) {
+      // 注意这里是一个warn
       logger.warn("DNS resolution for {} took {} ms", resolvedAddress, hostResolveTimeMs);
     } else {
+      // 这里只是一个trace
       logger.trace("DNS resolution for {} took {} ms", resolvedAddress, hostResolveTimeMs);
     }
 
+    // 加锁，保证只有一个线程正在创建该client
     synchronized (clientPool.locks[clientIndex]) {
       cachedClient = clientPool.clients[clientIndex];
 
+      // 说明已经有线程优先赢得竞争，并在该线程进入到这里之前，创建了一个新的client
       if (cachedClient != null) {
         if (cachedClient.isActive()) {
           logger.trace("Returning cached connection to {}: {}", resolvedAddress, cachedClient);
@@ -185,6 +205,7 @@ public class TransportClientFactory implements Closeable {
           logger.info("Found inactive connection to {}, creating a new one.", resolvedAddress);
         }
       }
+      // 如果该线程是第一个进来的线程，则创建一个新的client！
       clientPool.clients[clientIndex] = createClient(resolvedAddress);
       return clientPool.clients[clientIndex];
     }
@@ -207,12 +228,14 @@ public class TransportClientFactory implements Closeable {
       throws IOException, InterruptedException {
     logger.debug("Creating new connection to {}", address);
 
+    // 创建BootStrap
     Bootstrap bootstrap = new Bootstrap();
     bootstrap.group(workerGroup)
       .channel(socketChannelClass)
       // Disable Nagle's Algorithm since we don't want packets to wait
       .option(ChannelOption.TCP_NODELAY, true)
       .option(ChannelOption.SO_KEEPALIVE, true)
+      // 设置连接超时，默认120s
       .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, conf.connectionTimeoutMs())
       .option(ChannelOption.ALLOCATOR, pooledAllocator);
 
@@ -228,9 +251,12 @@ public class TransportClientFactory implements Closeable {
     final AtomicReference<Channel> channelRef = new AtomicReference<>();
 
     bootstrap.handler(new ChannelInitializer<SocketChannel>() {
+      // 看了一下该方法的注释说：该方法会在SocketChannel注册之后，立即执行
       @Override
       public void initChannel(SocketChannel ch) {
+        // context的initializePipeline会创建TransportClient，然后再创建TransportChannelHandler
         TransportChannelHandler clientHandler = context.initializePipeline(ch);
+        // 设置clientRef对TransportClient的引用
         clientRef.set(clientHandler.getClient());
         channelRef.set(ch);
       }
@@ -238,6 +264,7 @@ public class TransportClientFactory implements Closeable {
 
     // Connect to the remote server
     long preConnect = System.nanoTime();
+    // 我猜在connect的过程中，会生成channel实例，然后就可以调用上面的initChannel方法了
     ChannelFuture cf = bootstrap.connect(address);
     if (!cf.await(conf.connectionTimeoutMs())) {
       throw new IOException(
@@ -250,6 +277,7 @@ public class TransportClientFactory implements Closeable {
     Channel channel = channelRef.get();
     assert client != null : "Channel future completed successfully with null client";
 
+    // 在标记该Client创建成功之前，以同步的方式执行所有的client bootstraps
     // Execute any client bootstraps synchronously before marking the Client as successful.
     long preBootstrap = System.nanoTime();
     logger.debug("Connection to {} successful, running bootstraps...", address);

@@ -56,9 +56,12 @@ public final class RpcRequest extends AbstractMessage implements RequestMessage 
   }
 
   public static RpcRequest decode(ByteBuf buf) {
+    // 先解码该RpcRequest的id
     long requestId = buf.readLong();
     // See comment in encodedLength().
+    // 再解码RpcRequest携带的body的size（结合encode方法即可知）
     buf.readInt();
+    // 剩下的buf就是我们的body的内容了（因为前面的内容已经被读取了，读取会消耗数据），
     return new RpcRequest(requestId, new NettyManagedBuffer(buf.retain()));
   }
 

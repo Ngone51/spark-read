@@ -55,9 +55,13 @@ public final class MessageEncoder extends MessageToMessageEncoder<Message> {
     if (in.body() != null) {
       try {
         bodyLength = in.body().size();
+        // 注意，前方高能！
+        // convertToNetty会将我们的body(ManagedBuffer)转化成Netty中的ByteBuf或者FileRegion
+        // （都用于之后的数据写入）
         body = in.body().convertToNetty();
         isBodyInFrame = in.isBodyInFrame();
       } catch (Exception e) {
+        // 因为在convertToNetty的时候，会增加对body的引用，所以如果发生了异常，我们作为caller要及时释放
         in.body().release();
         if (in instanceof AbstractResponseMessage) {
           AbstractResponseMessage resp = (AbstractResponseMessage) in;
@@ -73,23 +77,36 @@ public final class MessageEncoder extends MessageToMessageEncoder<Message> {
       }
     }
 
+    // 获取该消息的类型
     Message.Type msgType = in.type();
+    // 所有的消息都有frame（帧？） length，消息类型，以及消息本身。而frame length可能不包含body data的length，
+    // 这取决于发送的消息有没有body。
     // All messages have the frame length, message type, and message itself. The frame length
     // may optionally include the length of the body data, depending on what message is being
     // sent.
+    // "8"表示的是frameLength所用的字节数，因为frameLength是一个long类型的，而long是8个字节。
     int headerLength = 8 + msgType.encodedLength() + in.encodedLength();
+    // 整个frame的length由headerLength和bodyLength（前提是消息in中有body）组成
     long frameLength = headerLength + (isBodyInFrame ? bodyLength : 0);
+    // 申请一个headerLength大小的ByteBuf用于存储编码后的消息
     ByteBuf header = ctx.alloc().heapBuffer(headerLength);
+    // 先编码整个frame的大小
     header.writeLong(frameLength);
+    // 再编码消息类型
     msgType.encode(header);
+    // 最后编码我们的消息（只编码消息本身（貌似只有消息的大小？包含body的大小），不包含body。
+    // 因为我们这里编码的只是header（类似于消息头？））
     in.encode(header);
+    // 写入header的data的size必须等于申请的ByteBuf的大小headerLength
     assert header.writableBytes() == 0;
 
     if (body != null) {
+      // 如果该消息带有body，则我们发送MessageWithHeader
       // We transfer ownership of the reference on in.body() to MessageWithHeader.
       // This reference will be freed when MessageWithHeader.deallocate() is called.
       out.add(new MessageWithHeader(in.body(), header, body, bodyLength));
     } else {
+      // 否则，直接发送header
       out.add(header);
     }
   }

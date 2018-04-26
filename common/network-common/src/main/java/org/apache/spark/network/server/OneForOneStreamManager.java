@@ -93,6 +93,8 @@ public class OneForOneStreamManager extends StreamManager {
         "Requested chunk index beyond end %s", chunkIndex));
     }
     state.curChunk += 1;
+    // 所谓的chunk就是一整个buffer。在spark high level看来，该chunk又对应一个block。
+    // 而我们从shuffle的整个流程可以看到，该block中又包含了连续的1或n个partition数据。
     ManagedBuffer nextChunk = state.buffers.next();
 
     if (!state.buffers.hasNext()) {
@@ -100,6 +102,8 @@ public class OneForOneStreamManager extends StreamManager {
       streams.remove(streamId);
     }
 
+    // 注意这里返回的还是FileSegmentManagedBuffer，不包含实际的数据。
+    // 到时候需要在该buffer上调用createInputStream或nioByteBuffer方法来读取数据。
     return nextChunk;
   }
 
@@ -205,6 +209,7 @@ public class OneForOneStreamManager extends StreamManager {
     // 申请一个新的stream id
     long myStreamId = nextStreamId.getAndIncrement();
     // 添加新的streamId和StreamState之间的映射
+    // （注意：一个buffer中存储了reduce端连续1或n个partition的数据）
     streams.put(myStreamId, new StreamState(appId, buffers));
     return myStreamId;
   }

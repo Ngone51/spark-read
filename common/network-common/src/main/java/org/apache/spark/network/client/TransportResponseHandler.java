@@ -72,6 +72,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
     this.timeOfLastRequestNs = new AtomicLong(0);
   }
 
+  /** 注意，该方法是向handler添加FetchRequest，是向server拉取chunk的请求 */
   public void addFetchRequest(StreamChunkId streamChunkId, ChunkReceivedCallback callback) {
     updateTimeOfLastRequest();
     outstandingFetches.put(streamChunkId, callback);
@@ -81,6 +82,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
     outstandingFetches.remove(streamChunkId);
   }
 
+  /** 注意，该方法是向handler添加Rpc请求 */
   public void addRpcRequest(long requestId, RpcResponseCallback callback) {
     updateTimeOfLastRequest();
     outstandingRpcs.put(requestId, callback);

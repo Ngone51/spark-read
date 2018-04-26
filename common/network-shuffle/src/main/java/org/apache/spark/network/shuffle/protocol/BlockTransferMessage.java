@@ -75,13 +75,17 @@ public abstract class BlockTransferMessage implements Encodable {
 
   /** Serializes the 'type' byte followed by the message itself. */
   public ByteBuffer toByteBuffer() {
-    // 先用ByteBuf编码，然后再将ByteBuf转成ByteBuffer；
-    // 解码的时候，又先将ByteBuffer分装成ByteBuf，然后再根据ByteBuf进行解码
     // Allow room for encoded message, plus the type byte
+    // 首先分配一个大小为encodedLength + 1的ByteBuf(Netty特有的数据类型)
+    // 其中，encodedLength为该message编码后的size(即byte[]数组的length)；
+    // +1是该message的type编码后的size
     ByteBuf buf = Unpooled.buffer(encodedLength() + 1);
+    // 首先将该message的type id写入buf
     buf.writeByte(type().id);
+    // 然后将整个message的内容写入buf
     encode(buf);
     assert buf.writableBytes() == 0 : "Writable bytes remain: " + buf.writableBytes();
+    // nioBuffer()：将ByteBuf转化成ByteBuffer返回
     return buf.nioBuffer();
   }
 }
