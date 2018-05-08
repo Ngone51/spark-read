@@ -93,6 +93,7 @@ private[spark] class ExecutorAllocationManager(
   private val maxNumExecutors = conf.get(DYN_ALLOCATION_MAX_EXECUTORS)
   private val initialNumExecutors = Utils.getDynamicAllocationInitialExecutors(conf)
 
+  // 积压tasks超过schedulerBacklogTimeoutS(默认1)秒，则新增加一个executor
   // How long there must be backlogged tasks for before an addition is triggered (seconds)
   private val schedulerBacklogTimeoutS = conf.getTimeAsSeconds(
     "spark.dynamicAllocation.schedulerBacklogTimeout", "1s")
@@ -101,10 +102,12 @@ private[spark] class ExecutorAllocationManager(
   private val sustainedSchedulerBacklogTimeoutS = conf.getTimeAsSeconds(
     "spark.dynamicAllocation.sustainedSchedulerBacklogTimeout", s"${schedulerBacklogTimeoutS}s")
 
+  // 一个executor的闲置时间超过executorIdleTimeoutS，则被删除
   // How long an executor must be idle for before it is removed (seconds)
   private val executorIdleTimeoutS = conf.getTimeAsSeconds(
     "spark.dynamicAllocation.executorIdleTimeout", "60s")
 
+  // ???
   private val cachedExecutorIdleTimeoutS = conf.getTimeAsSeconds(
     "spark.dynamicAllocation.cachedExecutorIdleTimeout", s"${Integer.MAX_VALUE}s")
 
@@ -117,18 +120,23 @@ private[spark] class ExecutorAllocationManager(
   private val tasksPerExecutor =
     conf.getInt("spark.executor.cores", 1) / conf.getInt("spark.task.cpus", 1)
 
+  // 验证以上配置的有效性
   validateSettings()
 
   // Number of executors to add in the next round
   private var numExecutorsToAdd = 1
 
+  // 这段时间内期望申请到的executors总数。如果我们的executors都快挂掉了，那么，该个数就是
+  // 我们需要立即向cluster manager申请的executors总数。
   // The desired number of executors at this moment in time. If all our executors were to die, this
   // is the number of executors we would immediately want from the cluster manager.
   private var numExecutorsTarget = initialNumExecutors
 
+  // 那些被请求删除但还没被kill掉的executors
   // Executors that have been requested to be removed but have not been killed yet
   private val executorsPendingToRemove = new mutable.HashSet[String]
 
+  // 所有已知的executors
   // All known executors
   private val executorIds = new mutable.HashSet[String]
 
@@ -224,6 +232,10 @@ private[spark] class ExecutorAllocationManager(
    * the scheduling task.
    */
   def start(): Unit = {
+    // 将ExecutorAllocationListener添加到listenerBus中，
+    // 这样的话，如果有stage提交、task开始执行或结束、executor增加或删除等等事件
+    // 发生时，ExecutorAllocationManager就能通过ExecutorAllocationListener知道，
+    // 并根据这些事件所携带的信息来动态地分配executors的需求。
     listenerBus.addToManagementQueue(listener)
 
     val scheduleTask = new Runnable() {
@@ -238,8 +250,10 @@ private[spark] class ExecutorAllocationManager(
         }
       }
     }
+    // 默认没100ms执行一个schedule()
     executor.scheduleWithFixedDelay(scheduleTask, 0, intervalMillis, TimeUnit.MILLISECONDS)
 
+    // 通过client向cluster manager发生初始executors的需求
     client.requestTotalExecutors(numExecutorsTarget, localityAwareTasks, hostToLocalTaskCount)
   }
 
@@ -271,6 +285,7 @@ private[spark] class ExecutorAllocationManager(
    */
   private def maxNumExecutorsNeeded(): Int = {
     val numRunningOrPendingTasks = listener.totalPendingTasks + listener.totalRunningTasks
+    // 这个四舍五入的写法可以的。
     (numRunningOrPendingTasks + tasksPerExecutor - 1) / tasksPerExecutor
   }
 
@@ -294,6 +309,7 @@ private[spark] class ExecutorAllocationManager(
 
     val executorIdsToBeRemoved = ArrayBuffer[String]()
     removeTimes.retain { case (executorId, expireTime) =>
+      // 如果一个executor闲置时间过长，则删除它
       val expired = now >= expireTime
       if (expired) {
         initializing = false
@@ -302,6 +318,7 @@ private[spark] class ExecutorAllocationManager(
       !expired
     }
     if (executorIdsToBeRemoved.nonEmpty) {
+      // 删除这些闲置时间过长的executors
       removeExecutors(executorIdsToBeRemoved)
     }
   }
@@ -319,6 +336,8 @@ private[spark] class ExecutorAllocationManager(
    * @return the delta in the target number of executors.
    */
   private def updateAndSyncNumExecutorsTarget(now: Long): Int = synchronized {
+    // 当前需要的最多的executors（包括正在运行的和还需要向master申请的），
+    // 也就是在cluster manger中app的executorLimit（即该app能申请的executors总数的上限）
     val maxNeeded = maxNumExecutorsNeeded
 
     if (initializing) {
@@ -329,7 +348,9 @@ private[spark] class ExecutorAllocationManager(
       // The target number exceeds the number we actually need, so stop adding new
       // executors and inform the cluster manager to cancel the extra pending requests
       val oldNumExecutorsTarget = numExecutorsTarget
+      // 保证我们的target大于等于minNumExecutors
       numExecutorsTarget = math.max(maxNeeded, minNumExecutors)
+      // 重置numExecutorsToAdd为1
       numExecutorsToAdd = 1
 
       // If the new target has not changed, avoid sending a message to the cluster manager
@@ -338,11 +359,16 @@ private[spark] class ExecutorAllocationManager(
         logDebug(s"Lowering target number of executors to $numExecutorsTarget (previously " +
           s"$oldNumExecutorsTarget) because not all requested executors are actually needed")
       }
+      // 所以这里 <=0???
+      // 对的 没错
       numExecutorsTarget - oldNumExecutorsTarget
     } else if (addTime != NOT_SET && now >= addTime) {
+      // 如果maxNeeded > numExecutorsTarget(说明当前executors的需求量变大了)，且
+      // now >= addTime(说明已经超时了)，则尝试增加executors
       val delta = addExecutors(maxNeeded)
       logDebug(s"Starting timer to add more executors (to " +
         s"expire in $sustainedSchedulerBacklogTimeoutS seconds)")
+      // 更新addTime（设置超时时长为sustainedSchedulerBacklogTimeoutS秒）
       addTime = now + (sustainedSchedulerBacklogTimeoutS * 1000)
       delta
     } else {
@@ -384,16 +410,22 @@ private[spark] class ExecutorAllocationManager(
     // If our target has not changed, do not send a message
     // to the cluster manager and reset our exponential growth
     if (delta == 0) {
+      // QUESTION: pendingTask等于0，而pendingSpeculativeTasks大于0，
+      // 就让maxNumExecutorsNeeded +1。为什么 +1 ??? 没看懂???
       // Check if there is any speculative jobs pending
       if (listener.pendingTasks == 0 && listener.pendingSpeculativeTasks > 0) {
+        // +1 ??? why? 如果我pendingSpeculativeTasks很多呢???(不过反正我们delta已经等于0了
+        // 应该不会很多吧)
         numExecutorsTarget =
           math.max(math.min(maxNumExecutorsNeeded + 1, maxNumExecutors), minNumExecutors)
       } else {
+        // else的情况是什么???
         numExecutorsToAdd = 1
         return 0
       }
     }
 
+    // 通知cluster manager我们当前所需要的executors的数量numExecutorsTarget
     val addRequestAcknowledged = try {
       testing ||
         client.requestTotalExecutors(numExecutorsTarget, localityAwareTasks, hostToLocalTaskCount)
@@ -405,6 +437,7 @@ private[spark] class ExecutorAllocationManager(
         logInfo("Error reaching cluster manager.", e)
         false
     }
+    // 如果cluster manager认可了我们的请求
     if (addRequestAcknowledged) {
       val executorsString = "executor" + { if (delta > 1) "s" else "" }
       logInfo(s"Requesting $delta new $executorsString because tasks are backlogged" +
@@ -412,6 +445,15 @@ private[spark] class ExecutorAllocationManager(
       numExecutorsToAdd = if (delta == numExecutorsToAdd) {
         numExecutorsToAdd * 2
       } else {
+        // 说明我们的target已经达到maxNumExecutorsNeeded了
+        // 举个例子:
+        // target   add   new_add  new_target  max_need  delta  delta == add
+        //  10       1       2        11          20        1        yes
+        //  11       2       4        13          20        2        yes
+        //  13       4       8        17          20        4        yes
+        //  17       8       1(reset) 20          20        3        no
+        //  20       1       1        20          20        0        no
+        // 可见我们的executors是成倍逐渐增加的，而不是一次性就申请到最多的
         1
       }
       delta
@@ -424,6 +466,8 @@ private[spark] class ExecutorAllocationManager(
   }
 
   /**
+   * 请求cluster manager删除这些给定的executors。
+   * 返回那些被删除的executors。
    * Request the cluster manager to remove the given executors.
    * Returns the list of executors which are removed.
    */
@@ -442,6 +486,7 @@ private[spark] class ExecutorAllocationManager(
         logDebug(s"Not removing idle executor $executorIdToBeRemoved because there are only " +
           s"$newExecutorTotal executor(s) left (number of executor target $numExecutorsTarget)")
       } else if (canBeKilled(executorIdToBeRemoved)) {
+        // 注意：它俩差了一个's'
         executorIdsToBeRemoved += executorIdToBeRemoved
         newExecutorTotal -= 1
       }
@@ -455,6 +500,7 @@ private[spark] class ExecutorAllocationManager(
     val executorsRemoved = if (testing) {
       executorIdsToBeRemoved
     } else {
+      // 发送请求给backend，让它去删除这些executors
       client.killExecutors(executorIdsToBeRemoved)
     }
     // [SPARK-21834] killExecutors api reduces the target number of executors.
@@ -467,6 +513,8 @@ private[spark] class ExecutorAllocationManager(
         newExecutorTotal -= 1
         logInfo(s"Removing executor $removedExecutorId because it has been idle for " +
           s"$executorIdleTimeoutS seconds (new desired total will be $newExecutorTotal)")
+        // 暂时把要删除的executors加入到executorsPendingToRemove中，当executor真正被master命令
+        // 删除之后，再从executorsPendingToRemove中删除。
         executorsPendingToRemove.add(removedExecutorId)
       }
       executorsRemoved
@@ -490,12 +538,14 @@ private[spark] class ExecutorAllocationManager(
    * Determine if the given executor can be killed.
    */
   private def canBeKilled(executorId: String): Boolean = synchronized {
+    // 如果该并不知道这个executor，则不要贸然的去kill它
     // Do not kill the executor if we are not aware of it (should never happen)
     if (!executorIds.contains(executorId)) {
       logWarning(s"Attempted to remove unknown executor $executorId!")
       return false
     }
 
+    // 如果该executor已经在kill的pending队列中，则不要重复去删除它
     // Do not kill the executor again if it is already pending to be killed (should never happen)
     if (executorsPendingToRemove.contains(executorId)) {
       logWarning(s"Attempted to remove executor $executorId " +
@@ -531,6 +581,13 @@ private[spark] class ExecutorAllocationManager(
       executorIds.remove(executorId)
       removeTimes.remove(executorId)
       logInfo(s"Existing executor $executorId has been removed (new total is ${executorIds.size})")
+      // 该被删除的executor必须在executorsPendingToRemove里包含。
+      // （我猜是这样的：ExecutorAllocationManager由于某些原因（比如executor长时间闲置）删除了
+      // 一些executors，这些被manager删除的executors是放在executorsPendingToRemove里的。然后
+      // 通知StandaloneSchedulerBackend， backend再通知Cluster Manager去真正删除executors。
+      // 当driver收到executor真的被删除的事件后，将该事件post到listener bus上，然后
+      // ExecutorAllocationListener监听到该事件后，再从executorsPendingToRemove中删除这些已
+      // 经被真正删除的executors。）
       if (executorsPendingToRemove.contains(executorId)) {
         executorsPendingToRemove.remove(executorId)
         logDebug(s"Executor $executorId is no longer pending to " +
@@ -579,6 +636,8 @@ private[spark] class ExecutorAllocationManager(
         val now = clock.getTimeMillis()
         val timeout = {
           if (hasCachedBlocks) {
+            // cachedExecutorIdleTimeoutS默认值是Int.MaxValue；也就是说，如果一个idle的
+            // executor上有缓存的blocks，则默认不删除该executor
             // Use a different timeout if the executor has cached blocks.
             now + cachedExecutorIdleTimeoutS * 1000
           } else {
@@ -601,6 +660,7 @@ private[spark] class ExecutorAllocationManager(
    */
   private def onExecutorBusy(executorId: String): Unit = synchronized {
     logDebug(s"Clearing idle timer for $executorId because it is now running a task")
+    // 如果该executor处于busy（即至少有一个task正在执行）状态，则直接把它从removeTimes中移除
     removeTimes.remove(executorId)
   }
 
@@ -612,10 +672,13 @@ private[spark] class ExecutorAllocationManager(
    */
   private class ExecutorAllocationListener extends SparkListener {
 
+    // 存储一个stage和它所包含的tasks数量之间的映射
     private val stageIdToNumTasks = new mutable.HashMap[Int, Int]
+    // 记录每个stage中正在执行的tasks总数（包括speculative tasks）
     // Number of running tasks per stage including speculative tasks.
     // Should be 0 when no stages are active.
     private val stageIdToNumRunningTask = new mutable.HashMap[Int, Int]
+    // 该stage中已经开始调度执行的tasks（即不在pending队列中）
     private val stageIdToTaskIndices = new mutable.HashMap[Int, mutable.HashSet[Int]]
     private val executorIdToTaskIds = new mutable.HashMap[String, mutable.HashSet[Long]]
     // Number of speculative tasks to be scheduled in each stage
@@ -634,10 +697,14 @@ private[spark] class ExecutorAllocationManager(
       val stageId = stageSubmitted.stageInfo.stageId
       val numTasks = stageSubmitted.stageInfo.numTasks
       allocationManager.synchronized {
+        // numTasks对应该stage的TaskSet的tasks的数量
         stageIdToNumTasks(stageId) = numTasks
+        // 现在stage刚刚提交，肯定没有正在运行的tasks啊
         stageIdToNumRunningTask(stageId) = 0
+        // 初始化addTime
         allocationManager.onSchedulerBacklogged()
 
+        // 计算该stage，属于各个host的tasks的数量
         // Compute the number of tasks requested by the stage on each host
         var numTasksPending = 0
         val hostToLocalTaskCountPerStage = new mutable.HashMap[String, Int]()
@@ -703,12 +770,16 @@ private[spark] class ExecutorAllocationManager(
         } else {
           stageIdToTaskIndices.getOrElseUpdate(stageId, new mutable.HashSet[Int]) += taskIndex
         }
+        // 如果所有的pending tasks都没有了，则我们就不需要增加新的executors了
+        // 设置addTime = NOT_SET，就不会有新的executors添加
         if (totalPendingTasks() == 0) {
           allocationManager.onSchedulerQueueEmpty()
         }
 
+        // 在该executor上添加新开始执行的task
         // Mark the executor on which this task is scheduled as busy
         executorIdToTaskIds.getOrElseUpdate(executorId, new mutable.HashSet[Long]) += taskId
+        // 该executor上有task执行，则标记该executor为busy
         allocationManager.onExecutorBusy(executorId)
       }
     }
@@ -725,6 +796,7 @@ private[spark] class ExecutorAllocationManager(
         // If the executor is no longer running any scheduled tasks, mark it as idle
         if (executorIdToTaskIds.contains(executorId)) {
           executorIdToTaskIds(executorId) -= taskId
+          // 如果该executor上没有任何执行的tasks了，则标记它为idle状态
           if (executorIdToTaskIds(executorId).isEmpty) {
             executorIdToTaskIds -= executorId
             allocationManager.onExecutorIdle(executorId)
@@ -735,6 +807,10 @@ private[spark] class ExecutorAllocationManager(
         // enough resources to run the resubmitted task, we need to mark the scheduler
         // as backlogged again if it's not already marked as such (SPARK-8366)
         if (taskEnd.reason != Success) {
+          // 如果没有pending的task（则有可能executor因为idle了很久，都被删除了），
+          // 则该失败的task在成为新的pending task后，可能没有可以分配的executor了。
+          // 为了保证有计算资源，我们需要调用onSchedulerBacklogged，表示又有积压的task了。
+          // ExecutorAllocationManager会在之后根据积压的资源，（如果有必要），为我们分配新的executors。
           if (totalPendingTasks() == 0) {
             allocationManager.onSchedulerBacklogged()
           }
@@ -781,12 +857,16 @@ private[spark] class ExecutorAllocationManager(
      * Note: This is not thread-safe without the caller owning the `allocationManager` lock.
      */
     def pendingTasks(): Int = {
+      // stageIdToNumTasks记录一个stage中的所有tasks总数（不包含speculative tasks）
+      // stageIdToTaskIndices记录一个stage中已经开始调度执行tasks
       stageIdToNumTasks.map { case (stageId, numTasks) =>
         numTasks - stageIdToTaskIndices.get(stageId).map(_.size).getOrElse(0)
       }.sum
     }
 
     def pendingSpeculativeTasks(): Int = {
+      // stageIdToNumSpeculativeTasks记录一个stage中等待被调度执行的speculative tasks总数
+      // stageIdToSpeculativeTaskIndices包含一个stage中，已经开始调度执行的speculative tasks
       stageIdToNumSpeculativeTasks.map { case (stageId, numTasks) =>
         numTasks - stageIdToSpeculativeTaskIndices.get(stageId).map(_.size).getOrElse(0)
       }.sum

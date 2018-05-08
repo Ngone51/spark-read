@@ -240,6 +240,7 @@ private[spark] class MapOutputTrackerMasterEndpoint(
   logDebug("init") // force eager creation of logger
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+    // 接收到来自executor的获取shuffle id对应的map output status的请求消息
     case GetMapOutputStatuses(shuffleId: Int) =>
       val hostPort = context.senderAddress.hostPort
       logInfo("Asked to send map output locations for shuffle " + shuffleId + " to " + hostPort)
@@ -752,8 +753,10 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
   override def getMapSizesByExecutorId(shuffleId: Int, startPartition: Int, endPartition: Int)
       : Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
     logDebug(s"Fetching outputs for shuffle $shuffleId, partitions $startPartition-$endPartition")
+    // getStatuses会获取一个shuffle中所有partition的map outputs
     val statuses = getStatuses(shuffleId)
     try {
+      // 将MapStatuses转化成Seq[(BlockManagerId, Seq[(BlockId, Long)])这种形式的
       MapOutputTracker.convertMapStatuses(shuffleId, startPartition, endPartition, statuses)
     } catch {
       case e: MetadataFetchFailedException =>
@@ -804,7 +807,7 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
         logInfo("Doing the fetch; tracker endpoint = " + trackerEndpoint)
         // This try-finally prevents hangs due to timeouts:
         try {
-          // 向driver端获取mapout status的信息
+          // 向driver端获取map output status的信息
           // 发送请求到MapOutputTrackerMasterEndpoint
           val fetchedBytes = askTracker[Array[Byte]](GetMapOutputStatuses(shuffleId))
           // 反序列化返回的结果(statues)
@@ -831,7 +834,8 @@ private[spark] class MapOutputTrackerWorker(conf: SparkConf) extends MapOutputTr
       if (fetchedStatuses != null) {
         fetchedStatuses
       } else {
-        // 如果还未null，那就说明获取失败咯
+        // 如果还未null，表明获取MapOutput的Metadata（元数据）信息失败，
+        // 抛出MetadataFetchFailedException（也是FetchFailed的一种）
         logError("Missing all output locations for shuffle " + shuffleId)
         throw new MetadataFetchFailedException(
           shuffleId, -1, "Missing all output locations for shuffle " + shuffleId)
@@ -904,6 +908,7 @@ private[spark] object MapOutputTracker extends Logging {
     }
   }
 
+  // 正好与上面的serializeMapStatuses方法相对应
   // Opposite of serializeMapStatuses.
   def deserializeMapStatuses(bytes: Array[Byte]): Array[MapStatus] = {
     assert (bytes.length > 0)
@@ -956,16 +961,22 @@ private[spark] object MapOutputTracker extends Logging {
       statuses: Array[MapStatus]): Seq[(BlockManagerId, Seq[(BlockId, Long)])] = {
     assert (statuses != null)
     val splitsByAddress = new HashMap[BlockManagerId, ArrayBuffer[(BlockId, Long)]]
+    // 注意，是mapId。一个status表示map端一个task的map output。
     for ((status, mapId) <- statuses.zipWithIndex) {
       // 说明有一个分区的map output信息获取失败了
+      // QUESTION 如果该map output里没有我们想要的对应分区[startPartition, endPartition]的数据呢？
+      // 也认为FetchFailed了吗？
+      // 答：但是无论如何，它总会有其它的分区数据吧。等到其它executor上的reduce task想要获取那些分区的数据时，
+      // 如果status为null，同样会抛出异常。其实不管有没有对应分区的数据，它为null，就说明FetchFailed了。
       if (status == null) {
         val errorMessage = s"Missing an output location for shuffle $shuffleId"
         logError(errorMessage)
         throw new MetadataFetchFailedException(shuffleId, startPartition, errorMessage)
       } else {
         for (part <- startPartition until endPartition) {
-          // 说明一个Block Manager对应多个map output咯？？？
           splitsByAddress.getOrElseUpdate(status.location, ArrayBuffer()) +=
+            // TODO QUESTION 回想一下，我们在shuffle writer是怎么写数据的？和这里的ShuffleBlockId对应吗？
+            // 答：请看IndexShuffleBlockResolver#getBlockData()方法，就知道是怎么回事了！！
             ((ShuffleBlockId(shuffleId, mapId, part), status.getSizeForBlock(part)))
         }
       }

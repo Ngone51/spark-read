@@ -163,6 +163,8 @@ class ExternalAppendOnlyMap[K, V, C](
       if (maybeSpill(currentMap, estimatedSize)) {
         currentMap = new SizeTrackingAppendOnlyMap[K, C]
       }
+      // 注意：我们在AppendOnlyMap中插入记录(k, v),一定会对具有相同key值的记录（通过update方法）
+      // 进行merge。因此，在currentMap被spill到磁盘的时候，磁盘中的记录也已经是经过merge的。
       currentMap.changeValue(curEntry._1, update)
       addElementsRead()
     }
@@ -186,10 +188,12 @@ class ExternalAppendOnlyMap[K, V, C](
    * Sort the existing contents of the in-memory map and spill them to a temporary file on disk.
    */
   override protected[this] def spill(collection: SizeTracker): Unit = {
-    // keyComparator貌似默认就定死为HashComparator了
-    // 现在，inMemoryIterator是已经根据key值排过序的了
+    // keyComparator貌似默认就定死为HashComparator了（是不是因为在BlockStoreShuffleReader之后还要
+    // （如果定义了ordering）按key进行排序？）
+    // 现在，inMemoryIterator是已经根据key的hash值排过序的了（该方法会破坏currentMap的结构）
     val inMemoryIterator = currentMap.destructiveSortedIterator(keyComparator)
-    // 将inMemoryIterator spill到磁盘上
+    // 将inMemoryIterator spill到磁盘上，返回DiskMapIterator。该iterator可以从磁盘有序（按
+    // 上述keyComparator排序的结果）地读取（k，v）记录。
     val diskMapIterator = spillMemoryIteratorToDisk(inMemoryIterator)
     // 更新spilledMaps
     spilledMaps += diskMapIterator
@@ -277,11 +281,14 @@ class ExternalAppendOnlyMap[K, V, C](
   }
 
   /**
+   * 注意，调用该方式时，我们的currentMap的结构没有被破坏
    * Returns a destructive iterator for iterating over the entries of this map.
    * If this iterator is forced spill to disk to release memory when there is not enough memory,
    * it returns pairs from an on-disk map.
    */
   def destructiveIterator(inMemoryIterator: Iterator[(K, C)]): Iterator[(K, C)] = {
+    // SpillableIterator：一个可用于在内存不足时，spill iterator到磁盘，并转而用DiskMapIterator来
+    // 读取元素的iterator。
     readingIterator = new SpillableIterator(inMemoryIterator)
     readingIterator
   }
@@ -298,10 +305,13 @@ class ExternalAppendOnlyMap[K, V, C](
     // 如果没有发生过spill，则直接返回in-memory map的iterator
     // (当然还需要额外的处理，比如让该iterator可以发生spill)
     if (spilledMaps.isEmpty) {
+      // 首先调用currentMap#iterator()方法，该方法会返回currentMap的一个iterator用于遍历map中的元素，
+      // 但是，该方法不会破坏currentMap的结构。而如果调用destructiveSortedIterator，也会返回遍历map元素的
+      // iterator，但是会破坏map的结构。
       CompletionIterator[(K, C), Iterator[(K, C)]](
         destructiveIterator(currentMap.iterator), freeCurrentMap())
     } else {
-      // 说明发生了spill，产生了spilled maps，且当前currentMap里也可能还有数据
+      // 说明发生了spill，产生了spilled maps，且当前（in-memory）currentMap里也可能还有数据
       new ExternalIterator()
     }
   }
@@ -322,6 +332,8 @@ class ExternalAppendOnlyMap[K, V, C](
     // This queue maintains the invariant that it only contains non-empty buffers
     private val mergeHeap = new mutable.PriorityQueue[StreamBuffer]
 
+    // inputStreams由in-memory map和spilled maps on disk两部分共同构成。in-memory map就在现在开始排序，
+    // 而spilled maps在写入磁盘的时候已经排好序。
     // Input streams are derived both from the in-memory map and spilled maps on disk
     // The in-memory map is sorted in place, while the spilled maps are already in sorted order
     private val sortedMap = CompletionIterator[(K, C), Iterator[(K, C)]](destructiveIterator(
@@ -349,6 +361,7 @@ class ExternalAppendOnlyMap[K, V, C](
       if (it.hasNext) {
         var kc = it.next()
         buf += kc
+        // 之所以it的第一个元素就是minHash，是因为我们这里的it里的元素(k,v)都是已经根据key排过序了
         val minHash = hashKey(kc)
         // QUESTION： 如果it.head._1.hashCode() != minHash了，但是it还没遍历完呢？？？
         // 答：我们只是在这里先把每个iterator中hash值最小的元素都找出来，组成各自的buf。然后
@@ -356,7 +369,8 @@ class ExternalAppendOnlyMap[K, V, C](
         // buf里的元素都是最小的。然后，如果这个buf被遍历完了，则我们再去该buf的iterator中取
         // 元素，组成一个新的buf，然后塞入mergeHeap中。
 
-        // 把hash值一样的k塞到buf中
+        // 把hash值一样的k塞到buf中（知道hash(k)不一样为止，退出while循环。
+        // 注意：此时it中还有没塞到buffer中的元素（k，v）。不急，我们之后还会继续来处理）
         // 注意，有可能k1和k2不一样，但是它们的hash值一样（hash冲突）
         while (it.hasNext && it.head._1.hashCode() == minHash) {
           kc = it.next()
@@ -374,8 +388,9 @@ class ExternalAppendOnlyMap[K, V, C](
       while (i < buffer.pairs.length) {
         val pair = buffer.pairs(i)
         if (pair._1 == key) {
-          // 注意，对于给定的key值最多会有一个pair，因为在map端spill之前，我们总会先执行merge。所以，当我们
-          // 发现第一个key相等的pair就直接return是没有问题的。
+          // 注意，对于给定的key值最多会有一个pair被merge。因为currentMap(AppendOnlyMap)在插入记录(k,v)的
+          // 时候，就会对记录进行merge，所以spill到磁盘的记录已经是merge过了的。所以，当我们发现第一个key相等
+          // 的pair就直接return是没有问题的。
           // Note that there's at most one pair in the buffer with a given key, since we always
           // merge stuff in a map before spilling, so it's safe to return after the first we find
           removeFromBuffer(buffer.pairs, i)
@@ -474,6 +489,7 @@ class ExternalAppendOnlyMap[K, V, C](
       }
 
       override def compareTo(other: StreamBuffer): Int = {
+        // 注意，这里我们的优先级是反过来的！
         // descending order because mutable.PriorityQueue dequeues the max, not the min
         if (other.minKeyHash < minKeyHash) -1 else if (other.minKeyHash == minKeyHash) 0 else 1
       }
@@ -521,6 +537,7 @@ class ExternalAppendOnlyMap[K, V, C](
 
         val start = batchOffsets(batchIndex)
         fileStream = new FileInputStream(file)
+        // 通过FileChannel设置，fileStream读取的开始位置
         fileStream.getChannel.position(start)
         batchIndex += 1
 
@@ -532,9 +549,9 @@ class ExternalAppendOnlyMap[K, V, C](
         // 首先将该文件输入流封装成了一个有限输入流(只能读取end-start范围大小的数据)
         // 然后将该有限输入流封装成一个缓冲输入流
         val bufferedStream = new BufferedInputStream(ByteStreams.limit(fileStream, end - start))
-        // 然后再封装成加密输入流以及解压输入流
+        // 然后再封装成解密输入流以及解压输入流
         val wrappedStream = serializerManager.wrapStream(blockId, bufferedStream)
-        // 最终在封装成反序列化流
+        // 最终再封装成反序列化流
         ser.deserializeStream(wrappedStream)
       } else {
         // No more batches left

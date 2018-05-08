@@ -42,7 +42,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
   require(chunks != null, "chunks must not be null")
   require(chunks.forall(_.position() == 0), "chunks' positions must be 0")
 
-  // 在ChunkedByteBufferOutputSream里有个chunkSize(默认是4M)，它们是什么关系???
+  // 在ChunkedByteBufferOutputStream里有个chunkSize(默认是4M)，它们是什么关系???
   // 如果它们不一样会怎么样???
   // 答：chunkSize是每个chunk的大小，而bufferWriteChunkSize是
   // 每次写入channel时最大的字节数(见writeFully)
@@ -68,6 +68,8 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) {
    */
   def writeFully(channel: WritableByteChannel): Unit = {
     for (bytes <- getChunks()) {
+      // 这里有个非常明显的bug：如果bytes的size > bufferWriteChunkSize,那么，我们还是只能忘channel写一次数据。
+      // 因为bytes的limit没有被恢复过来！SPARK-24107 fix了这个问题。
       while (bytes.remaining() > 0) {
         // 也就是说，每一次向channel写入(channel.write)的字节数
         // 最多不超过bufferWriteChunkSize(默认64M)

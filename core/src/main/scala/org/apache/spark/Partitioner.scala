@@ -94,6 +94,8 @@ object Partitioner {
      hasMaxPartitioner: RDD[_],
      rdds: Seq[RDD[_]]): Boolean = {
     val maxPartitions = rdds.map(_.partitions.length).max
+    // 如果等于1，刚好相差10倍（一个数量级）。所以说，如果hasMaxPartitioner的num partitions和
+    // upstream rdds的max partitions处于一个数量级，我们就选用hasMaxPartitioner作为Partitioner
     log10(maxPartitions) - log10(hasMaxPartitioner.getNumPartitions) < 1
   }
 }

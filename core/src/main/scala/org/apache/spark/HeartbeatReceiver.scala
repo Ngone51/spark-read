@@ -70,6 +70,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
   private[spark] var scheduler: TaskScheduler = null
 
+  // 记录每个executor最近一次向driver报告的时候
   // executor ID -> timestamp of when the last heartbeat from this executor was received
   private val executorLastSeen = new mutable.HashMap[String, Long]
 
@@ -99,7 +100,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
   private val killExecutorThread = ThreadUtils.newDaemonSingleThreadExecutor("kill-executor-thread")
 
   override def onStart(): Unit = {
-    // eventLoopThread(事件轮询线程)每隔60000ms检查一次：是否有过期（近期没有发送心跳）的节点
+    // 事件轮询线程eventLoopThread默认每隔60000ms检查一次：是否有过期（近期没有发送心跳）的节点
     timeoutCheckingTask = eventLoopThread.scheduleAtFixedRate(new Runnable {
       override def run(): Unit = Utils.tryLogNonFatalError {
         Option(self).foreach(_.ask[Boolean](ExpireDeadHosts))
@@ -111,14 +112,15 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
 
     // Messages sent and received locally
     case ExecutorRegistered(executorId) =>
-      // 所谓的executor注册，其实就是用一个HashMap
-      // 记录了该executor最近一次和HeatBeatReceiver通信的时间（高！实在是高！）
+      // 注册该executor
       executorLastSeen(executorId) = clock.getTimeMillis()
       context.reply(true)
     case ExecutorRemoved(executorId) =>
-      executorLastSeen.remove(executorId)
+      // 删除该executor
+    executorLastSeen.remove(executorId)
       context.reply(true)
     case TaskSchedulerIsSet =>
+      // 该事件用于SparkContext通知HeartbeatReceiver：taskScheduler已经创建好啦！
       scheduler = sc.taskScheduler
       context.reply(true)
     case ExpireDeadHosts =>
@@ -134,6 +136,7 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
           executorLastSeen(executorId) = clock.getTimeMillis()
           eventLoopThread.submit(new Runnable {
             override def run(): Unit = Utils.tryLogNonFatalError {
+              // 如果unknownExecutor = true，则我们需要请求该executor重新向driver注册它的BlockManager
               val unknownExecutor = !scheduler.executorHeartbeatReceived(
                 executorId, accumUpdates, blockManagerId)
               val response = HeartbeatResponse(reregisterBlockManager = unknownExecutor)
@@ -202,9 +205,11 @@ private[spark] class HeartbeatReceiver(sc: SparkContext, clock: Clock)
     logTrace("Checking for hosts with no recent heartbeats in HeartbeatReceiver.")
     val now = clock.getTimeMillis()
     for ((executorId, lastSeenMs) <- executorLastSeen) {
+      // executorTimeoutMs默认120s
       if (now - lastSeenMs > executorTimeoutMs) {
         logWarning(s"Removing executor $executorId with no recent heartbeats: " +
           s"${now - lastSeenMs} ms exceeds timeout $executorTimeoutMs ms")
+        // 通知TaskScheduler有个executor失联了，失联的理由是：很久没接收到它的心跳了
         scheduler.executorLost(executorId, SlaveLost("Executor heartbeat " +
           s"timed out after ${now - lastSeenMs} ms"))
           // Asynchronously kill the executor to avoid blocking the current thread

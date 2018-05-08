@@ -774,8 +774,8 @@ class SparkContext(config: SparkConf) extends Logging {
   def parallelize[T: ClassTag](
       seq: Seq[T],
       numSlices: Int = defaultParallelism): RDD[T] = withScope {
-                      // 注意：defaultParallelism会先找到taskSchduler.defaultParallelism， 然后
-    // taskSchduler.defaultParallelism又是SchedulerBackend.defaultParallelism,
+                      // 注意：defaultParallelism会先找到taskScheduler.defaultParallelism， 然后
+    // taskScheduler.defaultParallelism又是SchedulerBackend.defaultParallelism,
     // SchedulerBackend.defaultParallelism又是“spark.default.parallelism”这个配置参数的值，
     // 如果没有配置该值，则默认为totalCores（cpu的核数）
     assertNotStopped()
@@ -1375,7 +1375,11 @@ class SparkContext(config: SparkConf) extends Logging {
 
   /** Build the union of a list of RDDs. */
   def union[T: ClassTag](rdds: Seq[RDD[T]]): RDD[T] = withScope {
+    // 首先，获取所有rdds的paritioners，且（为了去重）转化为set类型
     val partitioners = rdds.flatMap(_.partitioner).toSet
+    // forall：如果所有的结果都为true，最终结果为true。
+    // 如果所有的rdd都定义了同一个Partitioner，就创建PartitionerAwareUnionRDD；
+    // 否则就创建UnionRDD。
     if (rdds.forall(_.partitioner.isDefined) && partitioners.size == 1) {
       new PartitionerAwareUnionRDD(this, rdds)
     } else {
@@ -2072,6 +2076,7 @@ class SparkContext(config: SparkConf) extends Logging {
   }
 
   /**
+   * 注意：func是应用在final RDD上的，而resultHandler应用在final RDD的各个partition（应用func后）的计算结果上。
    * Run a function on a given set of partitions in an RDD and pass the results to the given
    * handler function. This is the main entry point for all actions in Spark.
    *
@@ -2095,6 +2100,7 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+    // 将提交job的任务交给DAGScheduler来处理
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     // 会在一个job执行完成之后，调用rdd的doCheckpoint
@@ -2122,6 +2128,8 @@ class SparkContext(config: SparkConf) extends Logging {
       func: (TaskContext, Iterator[T]) => U,
       partitions: Seq[Int]): Array[U] = {
     val results = new Array[U](partitions.size)
+    // (index, res) => results(index) = res：一个resultHandler。简单地把每个分区的计算结果
+    // 存储results数组中。
     runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
     results
   }
@@ -2577,6 +2585,7 @@ object SparkContext extends Logging {
         setActiveContext(new SparkContext(config), allowMultipleContexts = false)
       } else {
         if (config.getAll.nonEmpty) {
+          // QUESTION：哪里using了???
           logWarning("Using an existing SparkContext; some configuration may not take effect.")
         }
       }

@@ -56,7 +56,7 @@ private[spark] class NettyBlockTransferService(
   private val serializer = new JavaSerializer(conf)
   // 是否启用认证
   private val authEnabled = securityManager.isAuthenticationEnabled()
-  // 传输配置
+  // 创建传输配置
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle", numCores)
 
   // 传输上下文
@@ -69,16 +69,21 @@ private[spark] class NettyBlockTransferService(
   private[this] var appId: String = _
 
   override def init(blockDataManager: BlockDataManager): Unit = {
+    // 创建NettyBlockRpcServer作为我们的rpcHandler
     val rpcHandler = new NettyBlockRpcServer(conf.getAppId, serializer, blockDataManager)
     var serverBootstrap: Option[TransportServerBootstrap] = None
     var clientBootstrap: Option[TransportClientBootstrap] = None
     // 如果没有启用认证呢? 则serverBootstrap和clientBootstrap都是None吗???
+    // 那不然呢？
     if (authEnabled) {
       serverBootstrap = Some(new AuthServerBootstrap(transportConf, securityManager))
       clientBootstrap = Some(new AuthClientBootstrap(transportConf, conf.getAppId, securityManager))
     }
+    // 创建TransportContext
     transportContext = new TransportContext(transportConf, rpcHandler)
+    // 通过transportContext创建ClientFactory
     clientFactory = transportContext.createClientFactory(clientBootstrap.toSeq.asJava)
+    // 创建server，并启动
     server = createServer(serverBootstrap.toList)
     appId = conf.getAppId
     logInfo(s"Server created on ${hostName}:${server.getPort}")
@@ -87,6 +92,7 @@ private[spark] class NettyBlockTransferService(
   /** Creates and binds the TransportServer, possibly trying multiple ports. */
   private def createServer(bootstraps: List[TransportServerBootstrap]): TransportServer = {
     def startService(port: Int): (TransportServer, Int) = {
+      // 通过transportContext创建TransportServer
       val server = transportContext.createServer(bindAddress, port, bootstraps.asJava)
       (server, server.getPort)
     }
@@ -118,7 +124,7 @@ private[spark] class NettyBlockTransferService(
     try {
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
-          // 每次都要获取一个新的TransportClient
+          // 获取一个TransportClient（可能是新创建的，也可能是从ClientPool获取的）
           val client = clientFactory.createClient(host, port)
           new OneForOneBlockFetcher(client, appId, execId, blockIds, listener,
             transportConf, tempFileManager).start()

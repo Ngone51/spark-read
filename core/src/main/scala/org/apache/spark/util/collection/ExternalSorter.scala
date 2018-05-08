@@ -136,6 +136,7 @@ private[spark] class ExternalSorter[K, V, C](
   private var _peakMemoryUsedBytes: Long = 0L
   def peakMemoryUsedBytes: Long = _peakMemoryUsedBytes
 
+  // 如果为true，说明这是在map端使用，反之在reduce端使用？
   @volatile private var isShuffleSort: Boolean = true
   private val forceSpillFiles = new ArrayBuffer[SpilledFile]
   @volatile private var readingIterator: SpillableIterator = null
@@ -260,6 +261,7 @@ private[spark] class ExternalSorter[K, V, C](
   }
 
   /**
+   * 只有在reduce task执行的时候才会真的force spill?
    * Force to spilling the current in-memory collection to disk to release memory,
    * It will be called by TaskMemoryManager when there is not enough memory for the task.
    */
@@ -746,11 +748,11 @@ private[spark] class ExternalSorter[K, V, C](
    * it returns pairs from an on-disk map.
    */
   def destructiveIterator(memoryIterator: Iterator[((Int, K), C)]): Iterator[((Int, K), C)] = {
-    // TODO read isShuffleSort什么意思???
-    // 如果这是map端的shuffle，则isShuffleSort = true; 反之为false？？？
+    // 如果这是map端的shuffle，则isShuffleSort = true; 反之为false。
     if (isShuffleSort) {
       memoryIterator
     } else {
+      // 也就是说，我们可能会在reduce端将memoryIterator spill到磁盘，但是不会在map端spill ?
       readingIterator = new SpillableIterator(memoryIterator)
       readingIterator
     }
@@ -794,6 +796,8 @@ private[spark] class ExternalSorter[K, V, C](
    * Return an iterator over all the data written to this object, aggregated by our aggregator.
    */
   def iterator: Iterator[Product2[K, C]] = {
+    // 该方法仅来自BlockStoreShuffleReader（最后几行代码）的调用。所以，我们让isShuffleSort = false，
+    // 来标记这是reduce task的行为
     isShuffleSort = false
     partitionedIterator.flatMap(pair => pair._2)
   }

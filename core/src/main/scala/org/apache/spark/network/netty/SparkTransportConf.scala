@@ -41,6 +41,7 @@ object SparkTransportConf {
   private val MAX_DEFAULT_NETTY_THREADS = 8
 
   /**
+   * 一个由SparkConf创建TransportConf的实用方法
    * Utility for creating a [[TransportConf]] from a [[SparkConf]].
    * @param _conf the [[SparkConf]]
    * @param module the module name
@@ -55,9 +56,12 @@ object SparkTransportConf {
     // assuming we have all the machine's cores).
     // NB: Only set if serverThreads/clientThreads not already set.
     val numThreads = defaultNumThreads(numUsableCores)
+    // 设置客户端和服务端的netty可开启的线程个数
     conf.setIfMissing(s"spark.$module.io.serverThreads", numThreads.toString)
     conf.setIfMissing(s"spark.$module.io.clientThreads", numThreads.toString)
 
+    // 这个module，比如我们在NettyBlockTransferService创建TransportConf的时候，它就是"shuffle"。
+    // 也就是说该TransportConf是为shuffle模块服务的。
     new TransportConf(module, new ConfigProvider {
       override def get(name: String): String = conf.get(name)
       override def get(name: String, defaultValue: String): String = conf.get(name, defaultValue)

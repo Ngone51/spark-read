@@ -50,6 +50,7 @@ case class Aggregator[K, V, C] (
     val combiners = new ExternalAppendOnlyMap[K, C, C](identity, mergeCombiners, mergeCombiners)
     combiners.insertAll(iter)
     updateMetrics(context, combiners)
+    // iterator()方法会将spilled maps和in-memory map合并起来，相当于在map端的merge-sort。
     combiners.iterator
   }
 

@@ -33,10 +33,12 @@ import org.apache.spark.internal.Logging
  */
 private[spark] abstract class EventLoop[E](name: String) extends Logging {
 
+  // 事件队列，注意是一个*阻塞*队列
   private val eventQueue: BlockingQueue[E] = new LinkedBlockingDeque[E]()
 
   private val stopped = new AtomicBoolean(false)
 
+  // 单线程处理
   private val eventThread = new Thread(name) {
     setDaemon(true)
 
@@ -77,6 +79,7 @@ private[spark] abstract class EventLoop[E](name: String) extends Logging {
       eventThread.interrupt()
       var onStopCalled = false
       try {
+        // 调用stop()的线程通过调用eventThread.join()，来阻塞地等待eventThread结束。
         eventThread.join()
         // Call onStop after the event thread exits to make sure onReceive happens before onStop
         onStopCalled = true

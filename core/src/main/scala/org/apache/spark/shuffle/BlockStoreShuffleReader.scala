@@ -69,9 +69,11 @@ private[spark] class BlockStoreShuffleReader[K, C](
       // Note: the asKeyValueIterator below wraps a key/value iterator inside of a
       // NextIterator. The NextIterator makes sure that close() is called on the
       // underlying InputStream when all records have been read.
+      // 封装反序列化流
       serializerInstance.deserializeStream(wrappedStream).asKeyValueIterator
     }
 
+    // TODO read context.taskMetrics.createTempShuffleReadMetrics
     // Update the context task metrics for each record read.
     val readMetrics = context.taskMetrics.createTempShuffleReadMetrics()
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
@@ -91,6 +93,10 @@ private[spark] class BlockStoreShuffleReader[K, C](
     // 是key经过Partitioner(key)计算之后得到的对应的partition。比如，我们有一个Partition(key)
     // = {key % 2}。那么，key为奇数的(k, v)健值对就会被分配到同一个partition中，而key为偶数的则会
     // 被分配到另一个partition中。
+
+    // 从下面的代码来看，如果ShuffleDependency定义了aggregator，则map端如果定义了mapSideCombine，
+    // 才会执行combine values；而只要定义了aggregator，reduce端都会进行combine values。（具体怎么
+    // 合并，应该跟设置的Combiner有关咯）
     val aggregatedIter: Iterator[Product2[K, C]] = if (dep.aggregator.isDefined) {
       // 如果在map端（？）定义了aggregator且mapSideCombine = true,
       // 则我们需要根据key合并values。（我们不是在map端写outputs的时候也合并过吗？然后现在把所有map
@@ -104,7 +110,7 @@ private[spark] class BlockStoreShuffleReader[K, C](
         val combinedKeyValuesIterator = interruptibleIter.asInstanceOf[Iterator[(K, C)]]
         dep.aggregator.get.combineCombinersByKey(combinedKeyValuesIterator, context)
       } else {
-        // 如果未曾在map端指定过合并，则在reduce端读取的时候，执行根据key进行合并
+        // 如果未曾在map端指定过mapSideCombine，则在reduce端读取的时候，执行根据key进行合并
         // We don't know the value type, but also don't care -- the dependency *should*
         // have made sure its compatible w/ this aggregator, which will convert the value
         // type to the combined type C
@@ -112,7 +118,7 @@ private[spark] class BlockStoreShuffleReader[K, C](
         dep.aggregator.get.combineValuesByKey(keyValuesIterator, context)
       }
     } else {
-      // 啥都不合并
+      // 哼，啥都不合并！
       require(!dep.mapSideCombine, "Map-side combine without Aggregator specified!")
       interruptibleIter.asInstanceOf[Iterator[Product2[K, C]]]
     }

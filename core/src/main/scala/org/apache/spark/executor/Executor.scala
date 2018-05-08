@@ -890,8 +890,10 @@ private[spark] class Executor(
 
     val message = Heartbeat(executorId, accumUpdates.toArray, env.blockManager.blockManagerId)
     try {
+      // 心跳发送是阻塞的？
       val response = heartbeatReceiverRef.askSync[HeartbeatResponse](
           message, RpcTimeout(conf, "spark.executor.heartbeatInterval", "10s"))
+      // 说明我们需要重新向BlockManagerMaster注册我们的BlockManager
       if (response.reregisterBlockManager) {
         logInfo("Told to re-register on heartbeat")
         env.blockManager.reregister()
@@ -901,6 +903,9 @@ private[spark] class Executor(
       case NonFatal(e) =>
         logWarning("Issue communicating with driver in heartbeater", e)
         heartbeatFailures += 1
+        // 因为该executor的已经联系不到driver了，所以就不需要再通知driver说什么"啊，我要退出啦"
+        // 因为即使你想通知，你也联系不上driver啊。在driver很久没有收到该executor的消息后，自然会
+        // 处理它。
         if (heartbeatFailures >= HEARTBEAT_MAX_FAILURES) {
           logError(s"Exit as unable to send heartbeats to driver " +
             s"more than $HEARTBEAT_MAX_FAILURES times")

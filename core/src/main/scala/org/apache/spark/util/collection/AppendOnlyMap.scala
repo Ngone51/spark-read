@@ -183,7 +183,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
 
   /** Iterator method from Iterable */
   override def iterator: Iterator[(K, V)] = {
-    // 此时该map还是在内存中的，所以destroyed = false
+    // 此时该map没有被破坏结构，所以destroyed = false
     assert(!destroyed, destructionMessage)
     new Iterator[(K, V)] {
       var pos = -1

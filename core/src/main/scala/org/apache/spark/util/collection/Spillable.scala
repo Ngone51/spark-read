@@ -120,6 +120,7 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
       _spillCount += 1
       // log之
       logSpillage(currentMemory)
+      // 注意！！！不同的MemoryConsumer有各自不同的spill()实现逻辑
       spill(collection)
       _elementsRead = 0
       _memoryBytesSpilled += currentMemory

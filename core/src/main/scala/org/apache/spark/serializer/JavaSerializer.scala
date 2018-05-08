@@ -29,6 +29,7 @@ import org.apache.spark.util.{ByteBufferInputStream, ByteBufferOutputStream, Uti
 private[spark] class JavaSerializationStream(
     out: OutputStream, counterReset: Int, extraDebugInfo: Boolean)
   extends SerializationStream {
+  // ObjectOutputStream用于实现jvm对象的序列化
   private val objOut = new ObjectOutputStream(out)
   private var counter = 0
 

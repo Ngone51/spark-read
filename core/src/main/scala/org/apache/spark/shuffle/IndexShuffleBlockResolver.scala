@@ -246,6 +246,7 @@ private[spark] class IndexShuffleBlockResolver(
   override def getBlockData(blockId: ShuffleBlockId): ManagedBuffer = {
     // The block is actually going to be a range of a single map output file for this map, so
     // find out the consolidated file, then the offset within that from our index
+    // 首先获取该Map Output的索引文件
     val indexFile = getIndexFile(blockId.shuffleId, blockId.mapId)
 
     // SPARK-22982: if this FileInputStream's position is seeked forward by another piece of code
@@ -276,13 +277,15 @@ private[spark] class IndexShuffleBlockResolver(
         throw new Exception(s"SPARK-22982: Incorrect channel position after index file reads: " +
           s"expected $expectedPosition but actual position was $actualPosition.")
       }
-      // FileSegmentManagedBuffer的长度是nextOffset - offset的大小, 而这个区间对应一个单独的partition。
-      // 这是不是意味着一个shuffle block对应的就是一个partition的数据???
+      // FileSegmentManagedBuffer的长度是nextOffset - offset的大小,
+      // 而这个区间对应一段连续的partitions（也有可能只是一个partition）。
       new FileSegmentManagedBuffer(
         transportConf,
-        // 我们的map output
+        // 获取我们的Map Output数据文件
         getDataFile(blockId.shuffleId, blockId.mapId),
+        // 从Map Output中读取数据的起始位置
         offset,
+        // 从Map Output中读取数据的size
         nextOffset - offset)
     } finally {
       in.close()

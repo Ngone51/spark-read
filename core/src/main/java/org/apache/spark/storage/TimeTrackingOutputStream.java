@@ -24,6 +24,7 @@ import org.apache.spark.annotation.Private;
 import org.apache.spark.executor.ShuffleWriteMetrics;
 
 /**
+ * 拦截write方法的调用，并跟踪在writing过程中的耗时（以更新shuffle write metrics）
  * Intercepts write calls and tracks total time spent writing in order to update shuffle write
  * metrics. Not thread safe.
  */

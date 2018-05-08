@@ -30,6 +30,7 @@ private[spark] trait Clock {
  */
 private[spark] class SystemClock extends Clock {
 
+  // 最小的轮询时间（millis）
   val minPollTime = 25L
 
   /**
@@ -39,6 +40,7 @@ private[spark] class SystemClock extends Clock {
   def getTimeMillis(): Long = System.currentTimeMillis()
 
   /**
+   * 该方法会一直阻塞，直到currentTimeMillis >= targetTime
    * @param targetTime block until the current time is at least this value
    * @return current system time when wait has completed
    */
@@ -51,6 +53,7 @@ private[spark] class SystemClock extends Clock {
       return currentTime
     }
 
+    // 获取轮询时间
     val pollTime = math.max(waitTime / 10.0, minPollTime).toLong
 
     while (true) {
@@ -60,6 +63,7 @@ private[spark] class SystemClock extends Clock {
         return currentTime
       }
       val sleepTime = math.min(waitTime, pollTime)
+      // 注意只是sleep，该线程并不会失去任何对monitor的ownership
       Thread.sleep(sleepTime)
     }
     -1

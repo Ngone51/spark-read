@@ -74,7 +74,7 @@ final class ShuffleBlockFetcherIterator(
   import ShuffleBlockFetcherIterator._
 
   /**
-   * 拉取的blocks总数。该总数可能会比blocksByAddress中的blocks总数小，因为我们在initialize()方法
+   * 需要拉取的blocks总数。该总数可能会比blocksByAddress中的blocks总数小，因为我们在initialize()方法
    * 中过滤了大小为0的blocks。
    * blocks总数 = 本地blocks的总数 + 远程的blocks总数
    * Total number of blocks to fetch. This can be smaller than the total number of blocks
@@ -243,6 +243,7 @@ final class ShuffleBlockFetcherIterator(
     // so we can look up the size of each blockID
     val sizeMap = req.blocks.map { case (blockId, size) => (blockId.toString, size) }.toMap
     val remainingBlocks = new HashSet[String]() ++= sizeMap.keys
+    // 注意，这里BlockId已经转化为String了
     val blockIds = req.blocks.map(_._1.toString)
     val address = req.address
 
@@ -405,6 +406,7 @@ final class ShuffleBlockFetcherIterator(
     val numFetches = remoteRequests.size - fetchRequests.size
     logInfo("Started " + numFetches + " remote fetches in" + Utils.getUsedTimeMs(startTime))
 
+    // 在拉取remote blocks的同时，获取local blocks
     // Get Local Blocks
     fetchLocalBlocks()
     logDebug("Got local blocks in " + Utils.getUsedTimeMs(startTime))
@@ -443,9 +445,16 @@ final class ShuffleBlockFetcherIterator(
       result match {
         case r @ SuccessFetchResult(blockId, address, size, buf, isNetworkReqDone) =>
           if (address != blockManager.blockManagerId) {
-            // TODO 现在才减少该值会不会有点太晚？
+            // QUESTION： 现在才减少该值会不会有点太晚？
+            // ANSWER：其实没多大影响，因为我们只有在该值更新后才会调用fetchUpToMaxBytes(),
+            // 而不是周期性的调用。
             numBlocksInFlightPerAddress(address) = numBlocksInFlightPerAddress(address) - 1
+            // 注意：这里使用buf.size，是buf精确的size，而不用另一个size。因为另一个size是estimate的
+            // size，是不精确的，用于统计bytesInFlight
             shuffleMetrics.incRemoteBytesRead(buf.size)
+            // 如果一个请求的size过大，我们会把从远程主机拉取过来的数据直接存储到本地的temp file（临时文件）
+            // 中。所以，此时（前提address != blockManager.blockManagerId）如果buf的类型是
+            // FileSegmentManagedBuffer，说明就是这样一直情况。详见DownloadCallback#onData/#onComplete
             if (buf.isInstanceOf[FileSegmentManagedBuffer]) {
               shuffleMetrics.incRemoteBytesReadToDisk(buf.size)
             }
@@ -461,19 +470,27 @@ final class ShuffleBlockFetcherIterator(
           }
 
           val in = try {
-            // TODO read
-            // buf创建input stream
+            // buf创建input stream（每个实现ManagedBuffer的子类，都会有自己的createInputStream()方法，
+            // 用于读取buf的数据）
             buf.createInputStream()
           } catch {
             // The exception could only be throwed by local shuffle block
+            // QUESTION：为什么IOException异常只会在local shuffle block中产生？
+            // ANSWER：因为如果是远程拉取的存储在内存中blocks的是以NioManagedBuffer的形式存在，该buffer创建
+            // inputStream不需要IO操作。而本地的Blocks是以FileSegmentManagedBuffer的形式存在，它创建inputStream
+            // 需要IO操作（打开文件，读取文件内容），所以会抛出IO异常。至于从远程读取过来的很大的blocks也以
+            // FileSegmentManagedBuffer的形式存在，为什么就不会抛出异常了？我觉得可能是因为该buffer对应的文件是我们自己
+            // 清楚明白地创建，应该就不会有问题。（不过这也说不定啊？）
             case e: IOException =>
               assert(buf.isInstanceOf[FileSegmentManagedBuffer])
               logError("Failed to create input stream from local block", e)
+              // 记得释放该buf
               buf.release()
+              // 抛出FetchFailed异常
               throwFetchFailedException(blockId, address, e)
           }
 
-          // 在in上封装一个压缩流
+          // 在in（InputStream）上封装一个解压流
           input = streamWrapper(blockId, in)
           // Only copy the stream if it's wrapped by compression or encryption, also the size of
           // block is small (the decompressed block is smaller than maxBytesInFlight)
@@ -509,6 +526,7 @@ final class ShuffleBlockFetcherIterator(
             }
           }
 
+        // 只要在results队列中包含一个FailureFetchResult，就直接抛出FetchFailedException
         case FailureFetchResult(blockId, address, e) =>
           throwFetchFailedException(blockId, address, e)
       }
@@ -558,6 +576,7 @@ final class ShuffleBlockFetcherIterator(
         // 如果达到上限了，就暂且将该请求放入延迟请求队列中
         val defReqQueue = deferredFetchRequests.getOrElse(remoteAddress, new Queue[FetchRequest]())
         defReqQueue.enqueue(request)
+        // 这个赋值多余的吧??? defReqQueue是一个引用啊~
         deferredFetchRequests(remoteAddress) = defReqQueue
       } else {
         // 如果既满足发起远程请求的条件，又满足同一主机拉取条件，
@@ -641,6 +660,7 @@ private[storage]
 object ShuffleBlockFetcherIterator {
 
   /**
+   * 注意：一个FetchRequest只会向一个BlockManager拉取数据（不可能是不同主机的）
    * A request to fetch blocks from a remote BlockManager.
    * @param address remote BlockManager to fetch from.
    * @param blocks Sequence of tuple, where the first element is the block id,
