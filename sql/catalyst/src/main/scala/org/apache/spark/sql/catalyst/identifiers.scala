@@ -49,6 +49,7 @@ sealed trait IdentifierWithDatabase {
 
 
 /**
+ * 标识一个在数据库中的table
  * Identifies a table in a database.
  * If `database` is not defined, the current database is used.
  * When we register a permanent function in the FunctionRegistry, we use
@@ -73,6 +74,7 @@ object TableIdentifier {
 
 
 /**
+ * 标识一个在数据库中的function
  * Identifies a function in a database.
  * If `database` is not defined, the current database is used.
  */

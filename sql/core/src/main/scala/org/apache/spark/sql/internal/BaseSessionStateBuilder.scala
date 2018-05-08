@@ -69,6 +69,7 @@ abstract class BaseSessionStateBuilder(
   protected def extensions: SparkSessionExtensions = session.extensions
 
   /**
+   * 将SparkConf中的配置项全部添加到SQLConf中
    * Extract entries from `SparkConf` and put them in the `SQLConf`
    */
   protected def mergeSparkConf(sqlConf: SQLConf, sparkConf: SparkConf): Unit = {

@@ -87,8 +87,11 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
             val result = rule(plan)
             val runTime = System.nanoTime() - startTime
 
+            // 如果result != plan, 说明rule起作用了
             if (!result.fastEquals(plan)) {
+              // 更新起作用的rule
               queryExecutionMetrics.incNumEffectiveExecution(rule.ruleName)
+              // 更新应用该rule所消耗的时间
               queryExecutionMetrics.incTimeEffectiveExecutionBy(rule.ruleName, runTime)
               logTrace(
                 s"""

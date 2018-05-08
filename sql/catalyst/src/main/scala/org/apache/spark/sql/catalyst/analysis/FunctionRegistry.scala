@@ -510,6 +510,7 @@ object FunctionRegistry {
     } else {
       tag.runtimeClass.getConstructors
     }
+    // 看看有没有可以接收Seq[Expression]作为参数的constructor（如果有，则采用该constructor）
     // See if we can find a constructor that accepts Seq[Expression]
     val varargCtor = constructors.find(_.getParameterTypes.toSeq == Seq(classOf[Seq[_]]))
     val builder = (expressions: Seq[Expression]) => {
@@ -523,6 +524,8 @@ object FunctionRegistry {
             throw new AnalysisException(e.getCause.getMessage)
         }
       } else {
+        // 如果没有（varargCtor = None），则找找有没有参数个数和expressions.size相等的constructor。
+        // 如果有，则使用该constructor。
         // Otherwise, find a constructor method that matches the number of arguments, and use that.
         val params = Seq.fill(expressions.size)(classOf[Expression])
         val f = constructors.find(_.getParameterTypes.toSeq == params).getOrElse {
@@ -533,9 +536,11 @@ object FunctionRegistry {
             validParametersCount.init.mkString("one of ", ", ", " and ") +
               validParametersCount.last
           }
+          // 只要进入Else，都会抛出异常（找不到匹配的constructor）
           throw new AnalysisException(s"Invalid number of arguments for function $name. " +
             s"Expected: $expectedNumberOfParameters; Found: ${params.length}")
         }
+        // 使用该constructor (f)实例化该Expression
         Try(f.newInstance(expressions : _*).asInstanceOf[Expression]) match {
           case Success(e) => e
           case Failure(e) =>

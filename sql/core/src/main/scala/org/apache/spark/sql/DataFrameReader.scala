@@ -184,8 +184,10 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
     }
 
     val cls = DataSource.lookupDataSource(source, sparkSession.sessionState.conf)
+    // isAssignableFrom：判断DataSourceV2是否与类cls相同或是类cls的父类或父接口
     if (classOf[DataSourceV2].isAssignableFrom(cls)) {
       val ds = cls.newInstance()
+      // TODO read DataSourceV2Options
       val options = new DataSourceV2Options((extraOptions ++
         DataSourceV2Utils.extractSessionConfigs(
           ds = ds.asInstanceOf[DataSourceV2],

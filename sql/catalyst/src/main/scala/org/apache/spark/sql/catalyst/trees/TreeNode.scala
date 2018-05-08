@@ -269,8 +269,11 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
     // Check if unchanged and then possibly return old copy to avoid gc churn.
     if (this fastEquals afterRule) {
+      // 相当于this.mapChildren()
       mapChildren(_.transformDown(rule))
     } else {
+      // 如果应用rule后，该node发生了变化，则需要调用应用rule规则后的afterRule(node)的mapChildren()
+      // (因为有可能该node的children已经发生了变化)
       afterRule.mapChildren(_.transformDown(rule))
     }
   }

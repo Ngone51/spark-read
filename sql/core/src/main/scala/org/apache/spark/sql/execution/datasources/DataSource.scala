@@ -565,6 +565,7 @@ object DataSource extends Logging {
 
   /** Given a provider name, look up the data source class definition. */
   def lookupDataSource(provider: String, conf: SQLConf): Class[_] = {
+    // 对于json，provider1 = "json"
     val provider1 = backwardCompatibilityMap.getOrElse(provider, provider) match {
       case name if name.equalsIgnoreCase("orc") &&
           conf.getConf(SQLConf.ORC_IMPLEMENTATION) == "native" =>
@@ -574,6 +575,7 @@ object DataSource extends Logging {
         "org.apache.spark.sql.hive.orc.OrcFileFormat"
       case name => name
     }
+    // 对于json，provider2 = "json.DefaultSource"
     val provider2 = s"$provider1.DefaultSource"
     val loader = Utils.getContextOrSparkClassLoader
     val serviceLoader = ServiceLoader.load(classOf[DataSourceRegister], loader)
@@ -618,6 +620,7 @@ object DataSource extends Logging {
               }
           }
         case head :: Nil =>
+          // 对于json，class：org.apache.spark.sql.execution.datasources.json.JsonFileFormat
           // there is exactly one registered alias
           head.getClass
         case sources =>

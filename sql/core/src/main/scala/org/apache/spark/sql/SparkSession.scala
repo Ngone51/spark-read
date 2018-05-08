@@ -138,6 +138,7 @@ class SparkSession private(
     parentSessionState
       .map(_.clone(this))
       .getOrElse {
+        // 通过SparkSession实例化一个SessionState
         val state = SparkSession.instantiateSessionState(
           SparkSession.sessionStateClassName(sparkContext.conf),
           self)
@@ -898,6 +899,8 @@ object SparkSession {
       // Get the session from current thread's active session.
       var session = activeThreadSession.get()
       if ((session ne null) && !session.sparkContext.isStopped) {
+        // 如果一个SparkSession已经存在，则将新的配置options添加到该session 上。
+        // 这可能会覆盖之前的配置，导致之前的配置不生效。
         options.foreach { case (k, v) => session.sessionState.conf.setConfString(k, v) }
         if (options.nonEmpty) {
           logWarning("Using an existing SparkSession; some configuration may not take effect.")
@@ -907,6 +910,8 @@ object SparkSession {
 
       // Global synchronization so we will only set the default session once.
       SparkSession.synchronized {
+        // 如果当前线程没有一个active session，则尝试从global session获取。
+        // QUESTION：global session是啥???
         // If the current thread does not have an active session, get it from the global session.
         session = defaultSession.get()
         if ((session ne null) && !session.sparkContext.isStopped) {
@@ -917,13 +922,17 @@ object SparkSession {
           return session
         }
 
+        // 既没有active的，也没有default的session，则创建一个新的session！
         // No active nor global default session. Create a new one.
+        // 首先创建／获取一个新／已经存在的SparkContext
+        // 如果user提供了一个context，则优先使用user提供的
         val sparkContext = userSuppliedContext.getOrElse {
           /* else创建一个新的SparkContext */
           // 将user的设置（options）传给sparkConf
           val sparkConf = new SparkConf()
           options.foreach { case (k, v) => sparkConf.set(k, v) }
 
+          // 如果没有给定app的名字，则通过uuid，随机生成一个
           // set a random app name if not given.
           if (!sparkConf.contains("spark.app.name")) {
             sparkConf.setAppName(java.util.UUID.randomUUID().toString)
@@ -933,6 +942,7 @@ object SparkSession {
           // Do not update `SparkConf` for existing `SparkContext`, as it's shared by all sessions.
         }
 
+        // TODO read extensionConfOption
         // Initialize extensions if the user has defined a configurator class.
         val extensionConfOption = sparkContext.conf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
         if (extensionConfOption.isDefined) {
@@ -951,10 +961,13 @@ object SparkSession {
           }
         }
 
+        // 创建新的SparkSession
         session = new SparkSession(sparkContext, None, None, extensions)
         options.foreach { case (k, v) => session.initialSessionOptions.put(k, v) }
+        // 设置defaultSession（也就是global session）为刚刚创建的session
         defaultSession.set(session)
 
+        // TODO QUESTION 这段注释什么意思？
         // Register a successfully instantiated context to the singleton. This should be at the
         // end of the class definition so that the singleton is updated only if there is no
         // exception in the construction of the instance.
@@ -1042,6 +1055,7 @@ object SparkSession {
   private val HIVE_SESSION_STATE_BUILDER_CLASS_NAME =
     "org.apache.spark.sql.hive.HiveSessionStateBuilder"
 
+  // 要么是hive，要么是in-memory（默认）。Then，what's this？
   private def sessionStateClassName(conf: SparkConf): String = {
     conf.get(CATALOG_IMPLEMENTATION) match {
       case "hive" => HIVE_SESSION_STATE_BUILDER_CLASS_NAME
