@@ -109,6 +109,7 @@ class InMemoryCatalog(
       try {
         val location = new Path(dbDefinition.locationUri)
         val fs = location.getFileSystem(hadoopConfig)
+        // 如果目录创建成功了，database就创建成功了？
         fs.mkdirs(location)
       } catch {
         case e: IOException =>
@@ -124,6 +125,9 @@ class InMemoryCatalog(
       ignoreIfNotExists: Boolean,
       cascade: Boolean): Unit = synchronized {
     if (catalog.contains(db)) {
+      // 也就是说，如果cascade = false，则我们需要在该database的table和function都为空的情况下，
+      // 才能删除；反之，我们可以直接删除该database（如果该database上存在table或function，那么、
+      // 也就一并（相当于）删除了）。
       if (!cascade) {
         // If cascade is false, make sure the database is empty.
         if (catalog(db).tables.nonEmpty) {
@@ -206,6 +210,7 @@ class InMemoryCatalog(
         val defaultTableLocation = new Path(new Path(catalog(db).db.locationUri), table)
         try {
           val fs = defaultTableLocation.getFileSystem(hadoopConfig)
+          // 为该table创建一个目录
           fs.mkdirs(defaultTableLocation)
         } catch {
           case e: IOException =>
@@ -229,6 +234,7 @@ class InMemoryCatalog(
     requireDbExists(db)
     if (tableExists(db, table)) {
       val tableMeta = getTable(db, table)
+      // 如果该table是MANAGED类型的，则需要清除该table相关的所有locations
       if (tableMeta.tableType == CatalogTableType.MANAGED) {
         // Delete the data/directory for each partition
         val locationAllParts = catalog(db).tables(table).partitions.values.toSeq.map(_.location)
@@ -281,6 +287,7 @@ class InMemoryCatalog(
       val newDir = new Path(new Path(catalog(db).db.locationUri), newName)
       try {
         val fs = oldDir.getFileSystem(hadoopConfig)
+        // 对于MANAGED table，还需要rename目录名称
         fs.rename(oldDir, newDir)
       } catch {
         case e: IOException =>
