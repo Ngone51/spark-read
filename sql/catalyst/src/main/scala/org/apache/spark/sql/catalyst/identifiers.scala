@@ -62,7 +62,10 @@ case class TableIdentifier(table: String, database: Option[String])
   def this(table: String) = this(table, None)
 }
 
-/** A fully qualified identifier for a table (i.e., database.tableName) */
+/**
+ * table的全限定名。（如果没有指定database，就不是qualified name）
+ * A fully qualified identifier for a table (i.e., database.tableName)
+ */
 case class QualifiedTableName(database: String, name: String) {
   override def toString: String = s"$database.$name"
 }
