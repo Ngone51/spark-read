@@ -51,6 +51,7 @@ object StreamInputInfo {
 }
 
 /**
+ * 该类用于管理所有的输入流以及它们的输入数据的统计信息。这些信息会通过StreamingListener向外曝光，并用于监控。
  * This class manages all the input streams as well as their input data statistics. The information
  * will be exposed through StreamingListener for monitoring.
  */

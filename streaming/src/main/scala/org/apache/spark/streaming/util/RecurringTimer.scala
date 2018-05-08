@@ -34,6 +34,9 @@ class RecurringTimer(clock: Clock, period: Long, callback: (Long) => Unit, name:
   @volatile private var stopped = false
 
   /**
+   * 通过该方法获取的StartTime是period的倍数，且比CurrentTime要大一个period。
+   * 由下面函数得：st = ((ct / p) + 1) * p => st = ct + p
+   * 其中，st = StartTime，ct = CurrentTime， p = period
    * Get the time when this timer will fire if it is started right now.
    * The time will be a multiple of this timer's period and more than
    * current system time.
@@ -57,7 +60,9 @@ class RecurringTimer(clock: Clock, period: Long, callback: (Long) => Unit, name:
    * Start at the given start time.
    */
   def start(startTime: Long): Long = synchronized {
+    // 初始化timer的nextTime
     nextTime = startTime
+    // 启动thread线程
     thread.start()
     logInfo("Started timer for " + name + " at time " + nextTime)
     nextTime
@@ -90,9 +95,12 @@ class RecurringTimer(clock: Clock, period: Long, callback: (Long) => Unit, name:
   }
 
   private def triggerActionForNextInterval(): Unit = {
+    // 阻塞等待，直到currentTime >= nextTime时，调用callback。
+    // (对于JobGenerator，callback会向JobGenerator的eventLoop提交GenerateJobs事件)
     clock.waitTillTime(nextTime)
     callback(nextTime)
     prevTime = nextTime
+    // 调整nextTime = nextTime + period （period就是我们在创建StreamingContext时传递的Duration）
     nextTime += period
     logDebug("Callback for " + name + " called at time " + prevTime)
   }

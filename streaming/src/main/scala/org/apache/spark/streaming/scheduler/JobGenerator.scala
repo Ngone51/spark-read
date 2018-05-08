@@ -57,6 +57,7 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
     }
   }
 
+  // 创建RecurringTimer，根据batchDuration，周期性地发起GenerateJobs事件
   private val timer = new RecurringTimer(clock, ssc.graph.batchDuration.milliseconds,
     longTime => eventLoop.post(GenerateJobs(new Time(longTime))), "JobGenerator")
 
@@ -85,6 +86,7 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
     // See SPARK-10125
     checkpointWriter
 
+    // 创建JobGenerator的eventLoop
     eventLoop = new EventLoop[JobGeneratorEvent]("JobGenerator") {
       override protected def onReceive(event: JobGeneratorEvent): Unit = processEvent(event)
 
@@ -92,11 +94,14 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
         jobScheduler.reportError("Error in job generator", e)
       }
     }
+    // 启动eventLoop
     eventLoop.start()
 
+    // TODO read isCheckpointPresent restart
     if (ssc.isCheckpointPresent) {
       restart()
     } else {
+      // 第一次启动
       startFirstTime()
     }
   }
@@ -191,7 +196,10 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
   /** Starts the generator for the first time */
   private def startFirstTime() {
     val startTime = new Time(timer.getStartTime())
+    // 启动DStreamGraph
+    // TODO read DStreamGraph'start
     graph.start(startTime - graph.batchDuration)
+    // 启动RecurringTimer
     timer.start(startTime.milliseconds)
     logInfo("Started JobGenerator at " + startTime)
   }
