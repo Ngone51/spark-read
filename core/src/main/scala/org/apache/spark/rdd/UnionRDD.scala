@@ -68,7 +68,7 @@ class UnionRDD[T: ClassTag](
     sc: SparkContext,
     var rdds: Seq[RDD[T]])
   extends RDD[T](sc, Nil) {  // Nil since we implement getDependencies
-
+                            // 之所以为Nil，因为我们已经在下面实现了getDependencies方法
   // visible for testing
   private[spark] val isPartitionListingParallel: Boolean =
     rdds.length > conf.getInt("spark.rdd.parallelListingThreshold", 10)

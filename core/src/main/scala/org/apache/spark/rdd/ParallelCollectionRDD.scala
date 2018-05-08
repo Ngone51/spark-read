@@ -56,6 +56,7 @@ private[spark] class ParallelCollectionPartition[T: ClassTag](
     // separate serialization header.
 
     sfactory match {
+        // defaultWriteObject会默认把该类的非静态和非transient字段写入out流
       case js: JavaSerializer => out.defaultWriteObject()
       case _ =>
         out.writeLong(rddId)
@@ -100,6 +101,7 @@ private[spark] class ParallelCollectionRDD[T: ClassTag](
     slices.indices.map(i => new ParallelCollectionPartition(id, i, slices(i))).toArray
   }
 
+  // 注意，这里的Iterator的元素还不是（K，V）形式的。
   override def compute(s: Partition, context: TaskContext): Iterator[T] = {
     new InterruptibleIterator(context, s.asInstanceOf[ParallelCollectionPartition[T]].iterator)
   }
@@ -125,6 +127,11 @@ private object ParallelCollectionRDD {
     // Sequences need to be sliced at the same set of index positions for operations
     // like RDD.zip() to behave as expected
     // 计算每一组分片的起始index和结束index
+    // 假如length = 10， numSlice =3：
+    // ----------- start ---------------------- end -----
+    // I    (0 * 10) / 3 = 0             (1 * 10) / 3 = 3
+    // II   (1 * 10) / 3 = 3             (2 * 10) / 3 = 6
+    // III  (2 * 10) / 3 = 6             (3 * 10) / 3 = 10
     def positions(length: Long, numSlices: Int): Iterator[(Int, Int)] = {
       (0 until numSlices).iterator.map { i =>
         val start = ((i * length) / numSlices).toInt

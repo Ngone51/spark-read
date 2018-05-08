@@ -88,6 +88,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
       self.context.clean(createCombiner),
       self.context.clean(mergeValue),
       self.context.clean(mergeCombiners))
+    // 如果partition一样，就不会发生shuffle
     if (self.partitioner == Some(partitioner)) {
       self.mapPartitions(iter => {
         val context = TaskContext.get()
@@ -496,6 +497,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * key in memory. If a key has too many values, it can result in an `OutOfMemoryError`.
    */
   def groupByKey(partitioner: Partitioner): RDD[(K, Iterable[V])] = self.withScope {
+    // QUESTION：虽然看得懂注释在说什么，但是不理解在说什么······
     // groupByKey shouldn't use map side combine because map side combine does not
     // reduce the amount of data shuffled and requires all map side data be inserted
     // into a hash table, leading to more objects in the old gen.

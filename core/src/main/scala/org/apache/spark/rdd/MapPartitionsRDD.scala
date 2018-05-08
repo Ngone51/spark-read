@@ -31,14 +31,21 @@ private[spark] class MapPartitionsRDD[U: ClassTag, T: ClassTag](
   extends RDD[U](prev) {
   // 我们点进去看RDD[U](prev)，该方法的形参名字是：oneParent。说明，MapPartitionsRDD确实是只有一个
   // parent rdd。下面的QUESTION也就解决啦。
+  // 同时，在父类RDD[U](prev)的构建过程中，会创建MapPartitionsRDD对prev RDD的OneToOneDependency依赖
 
   override val partitioner = if (preservesPartitioning) firstParent[T].partitioner else None
 
+  // 我们以examples/SparkPi为例，MapPartitionsRDD的firstParent就是ParallelCollectionRDD.因此，我们现在
+  // 就通过获取ParallelCollectionRDD的Partitions来作为MapPartitionsRDD自己的Partitions。（所以，我们也
+  // 可以发现，MapPartitionsRDD没有自己实现的Partition类）
   override def getPartitions: Array[Partition] = firstParent[T].partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[U] =
-    // QUESTION 其中，使用firstParent是不是意味着，MapPartitionsRDD只可能会有一个parent rdd???
-    // f()会在parent rdd的split分区的计算结果返回后，应该在该结果上
+    // QUESTION： 其中，使用firstParent是不是意味着，MapPartitionsRDD只可能会有一个parent rdd???
+    // ANSWER：是的
+
+    // 这是一个类似递归的计算过程。以SparkPi为例，我们需要等到ParallelCollectionRDD的iterator计算完，
+    // 才能在MapPartitionsRDD获取其计算结果，并在此处进行MapPartitionsRDD的计算。
     f(context, split.index, firstParent[T].iterator(split, context))
 
   override def clearDependencies() {

@@ -33,6 +33,7 @@ class PartitionerAwareUnionRDDPartition(
     @transient val rdds: Seq[RDD[_]],
     override val index: Int
   ) extends Partition {
+  // 获取每个parent rdd的partitions[index]，共同构成PartitionerAwareUnionRDDPartition
   var parents = rdds.map(_.partitions(index)).toArray
 
   override def hashCode(): Int = index
@@ -48,6 +49,7 @@ class PartitionerAwareUnionRDDPartition(
 }
 
 /**
+ * 注意：每个parent rdd都定义了一个相同的partitioner，且每个partitioner的numPartitions一样。
  * Class representing an RDD that can take multiple RDDs partitioned by the same partitioner and
  * unify them into a single RDD while preserving the partitioner. So m RDDs with p partitions each
  * will be unified to a single RDD with p partitions and the same partitioner. The preferred
@@ -60,14 +62,18 @@ class PartitionerAwareUnionRDD[T: ClassTag](
     sc: SparkContext,
     var rdds: Seq[RDD[T]]
   ) extends RDD[T](sc, rdds.map(x => new OneToOneDependency(x))) {
+  //                    ^^^ 对应每个parent rdds创建一个OneToOneDependency
   require(rdds.nonEmpty)
+  // 以下2个require要求所有的rdd都定义了一个相同的partitioner
   require(rdds.forall(_.partitioner.isDefined))
   require(rdds.flatMap(_.partitioner).toSet.size == 1,
     "Parent RDDs have different partitioners: " + rdds.flatMap(_.partitioner))
 
+  // 因为所有的rdd都是一样的partitioner，所以就直接取第一个rdd的parititoner吧
   override val partitioner = rdds.head.partitioner
 
   override def getPartitions: Array[Partition] = {
+    // 根据partitioner获取分区个数
     val numPartitions = partitioner.get.numPartitions
     (0 until numPartitions).map { index =>
       new PartitionerAwareUnionRDDPartition(rdds, index)
@@ -87,6 +93,11 @@ class PartitionerAwareUnionRDD[T: ClassTag](
     val location = if (locations.isEmpty) {
       None
     } else {
+      // 找到被最多的parent partitions prefer的那个location。
+      // 假设locations = [hostA, hostB, hostC, hostA], 经过groupBy：
+      // {hostA -> (hostA, hostA), hostB -> hostB, hostC -> hostC}
+      // maxBy(_._2.length)选出：hostA -> (hostA, hostA)
+      // 最后._1, 得到hostA
       // Find the location that maximum number of parent partitions prefer
       Some(locations.groupBy(x => x).maxBy(_._2.length)._1)
     }
@@ -96,6 +107,7 @@ class PartitionerAwareUnionRDD[T: ClassTag](
 
   override def compute(s: Partition, context: TaskContext): Iterator[T] = {
     val parentPartitions = s.asInstanceOf[PartitionerAwareUnionRDDPartition].parents
+    // 计算每个parent rdd对应partition的计算结果
     rdds.zip(parentPartitions).iterator.flatMap {
       case (rdd, p) => rdd.iterator(p, context)
     }

@@ -127,6 +127,8 @@ abstract class RDD[T: ClassTag](
   protected def getPartitions: Array[Partition]
 
   /**
+   * 类似豫MapPartitionsRDD，会直接返回deps，而没有自己的实现方法。
+   * 注意：该方法只会被调用一次！所以，在如果子类需要实现自己的getDependencies方法，如果代码逻辑比较耗时也是可以接受的。
    * Implemented by subclasses to return how this RDD depends on parent RDDs. This method will only
    * be called once, so it is safe to implement a time-consuming computation in it.
    */
@@ -389,8 +391,11 @@ abstract class RDD[T: ClassTag](
    * Return a new RDD by applying a function to all elements of this RDD.
    */
   def map[U: ClassTag](f: T => U): RDD[U] = withScope {
-    // TODO read（这是一个什么鬼啊？？？）
+    // TODO read ClosureCleaner
     val cleanF = sc.clean(f)
+    // iter.map(cleanF): 将iterator中的元素都应用与cleanF方法
+    // 比如，iter = [1, 2, 3], cleanF = {i => i * i}, 则在调用iter.map(cleanF)后，
+    // iter' = [1, 4, 9].
     new MapPartitionsRDD[U, T](this, (context, pid, iter) => iter.map(cleanF))
   }
 
@@ -699,6 +704,7 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 注意：groupBy之后，每个分组内的元素的顺序没有保证，甚至可能每次调用后元素的顺序都不一样。
    * Return an RDD of grouped items. Each group consists of a key and a sequence of elements
    * mapping to that key. The ordering of elements within each group is not guaranteed, and
    * may even differ each time the resulting RDD is evaluated.
@@ -738,10 +744,12 @@ abstract class RDD[T: ClassTag](
   def groupBy[K](f: T => K, p: Partitioner)(implicit kt: ClassTag[K], ord: Ordering[K] = null)
       : RDD[(K, Iterable[T])] = withScope {
     val cleanF = sc.clean(f)
-    // groupBy的真实实现：map+groupByKey
+    // groupBy的底层实现：map + groupByKey：
     // map()返回MapPartitionsRDD，在调用groupByKey()时，
     // 发生隐式类型转换（见RDD的伴生类的implicit方法），
     // 返回PairRDDFunctions
+
+    // cleanF(t): 生成该元素t的所属key。因此原来的RDD[V]就变成了RDD[(K, V)]的形式。
     this.map(t => (cleanF(t), t)).groupByKey(p)
   }
 
@@ -954,13 +962,18 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * 返回包含该RDD全部元素的数组。
+   * 注意：该方法应该只在返回的数组很小的时候被使用，因为调用该方法意味着所有的数据都加载到driver端的内存中。
    * Return an array that contains all of the elements in this RDD.
    *
    * @note This method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.
    */
   def collect(): Array[T] = withScope {
+    // (iter: Iterator[T]) => iter.toArray: 应该在该rdd的上，把upstream RDD每个partition的
+    // 计算结果（iter）转化成一个array
     val results = sc.runJob(this, (iter: Iterator[T]) => iter.toArray)
+    // results的结果是一个包含了多个Array的Array。我们最后把这些Array合并成一个Array返回。
     Array.concat(results: _*)
   }
 
@@ -1029,19 +1042,35 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * binary operator: 二元运算符，e.g. +, -, *, /
    * Reduces the elements of this RDD using the specified commutative and
    * associative binary operator.
    */
   def reduce(f: (T, T) => T): T = withScope {
+    // 以下假设f = {(x, y) => x + y}
     val cleanF = sc.clean(f)
+    // 应用于partition的处理函数
     val reducePartition: Iterator[T] => Option[T] = iter => {
       if (iter.hasNext) {
+        // reduceLeft: 如果cleanF = {(x, y) => x + y}, 那么如果有
+        // iter = [1, 2, 3], 整个计算过程：
+        // acc = 1,
+        // acc = cleanF(acc, 2) = 3,
+        // acc = cleanF(acc, 3) = 6;
+        // 最终，iter.reduceLeft(cleanF) = 6.
         Some(iter.reduceLeft(cleanF))
       } else {
         None
       }
     }
     var jobResult: Option[T] = None
+    // 合并所有partitions的计算结果
+    // 假设我们有3个partitions的应用上述reducePartition函数的计算结果（即taskResult）分别是6，7，8，
+    // 则应用mergeResult函数之后，jobResult的迭代过程：
+    // No partition ready yet jobResult = None
+    // partition-1            jobResult = 6
+    // partition-2            jobResult = f(jobResult, 7) = jobResult + 7 = 13
+    // partition-3            jobResult = f(jobResult, 8) = jobResult + 8 = 21
     val mergeResult = (index: Int, taskResult: Option[T]) => {
       if (taskResult.isDefined) {
         jobResult = jobResult match {
@@ -1050,6 +1079,8 @@ abstract class RDD[T: ClassTag](
         }
       }
     }
+    // reduce是一个action算子，由此触发一个job；
+    // 注意runJob会阻塞运行，直到该job成功完成或失败
     sc.runJob(this, reducePartition, mergeResult)
     // Get the final result out of our Option, or throw an exception if the RDD was empty
     jobResult.getOrElse(throw new UnsupportedOperationException("empty collection"))
@@ -1342,6 +1373,10 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * task()的大概思想：假设有一个RDD，有10个分区。现在要获取该RDD的10个记录。那么，task()就会从第0个分区开始
+   * 获取记录。如果从第0个分区获取了2个记录，那么接下来再从第1、2个分区获取记录，假设获取了5个。然后我们再从
+   * 第3、4、5个分区获取记录，假设第3、4、5分区一共有8个记录，但我们最后也只会取3个，因为我们总共只需要10个记录。
+   * 注意，每次从分区获取记录，都会发起一个job。
    * Take the first num elements of the RDD. It works by first scanning one partition, and use the
    * results from that partition to estimate the number of additional partitions needed to satisfy
    * the limit.
@@ -1359,13 +1394,18 @@ abstract class RDD[T: ClassTag](
     } else {
       val buf = new ArrayBuffer[T]
       val totalParts = this.partitions.length
+      // 表示每次迭代过程中，开始计算的那个partition的id
       var partsScanned = 0
       while (buf.size < num && partsScanned < totalParts) {
+        // 在此次迭代中，将要尝试的partitions的个数
         // The number of partitions to try in this iteration. It is ok for this number to be
         // greater than totalParts because we actually cap it at totalParts in runJob.
         var numPartsToTry = 1L
+        // 剩下要获取的元素的个数
         val left = num - buf.size
         if (partsScanned > 0) {
+          // 如果在前几次的迭代中，都没有发现任何元素，则以四倍扩大需要计算的partitions，并重试。
+          // 否则，以1.5扩大需要计算的partitions（即numPartsToTry）。
           // If we didn't find any rows after the previous iteration, quadruple and retry.
           // Otherwise, interpolate the number of partitions we need to try, but overestimate
           // it by 50%. We also cap the estimation in the end.
@@ -1378,9 +1418,15 @@ abstract class RDD[T: ClassTag](
           }
         }
 
+        // 获取要计算的partition的集合
+        // 比如此次迭代partsScanned = 3，numPartsToTry = 3， 则p = [3, 4, 5]，表示我们需要计算
+        // 这三个partition的元素
         val p = partsScanned.until(math.min(partsScanned + numPartsToTry, totalParts).toInt)
+        // 注意：res的返回结果的形式是一个包含了p.size个ArrayBuffer的ArrayBuffer
+        // （在这里发起一个job）
         val res = sc.runJob(this, (it: Iterator[T]) => it.take(left).toArray, p)
 
+        // 如果num - buf.size大于res[i].size，则take()会最多取res[i].size个元素
         res.foreach(buf ++= _.take(num - buf.size))
         partsScanned += p.size
       }

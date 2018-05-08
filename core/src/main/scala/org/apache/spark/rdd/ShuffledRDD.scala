@@ -99,12 +99,12 @@ class ShuffledRDD[K: ClassTag, V: ClassTag, C: ClassTag](
   }
 
   /**
-   * 该函数的作用是说，我们的shuffle要执行了，现在我们需要从map端所有的map outputs中读取属于reduce端
+   * 该函数的作用是: 我们的reduce task要执行了，现在我们需要从map端所有的map outputs中读取属于reduce端
    * partition分区的数据。我们知道，map端每个task都会输出一个map output文件到本地的机器上。然后，
    * 该map output文件中还存储了reduce端各个分区的数据。比如，对于partition分区，可能task0的map output
    * 里的partition分区的数据有5个size；而task1的map output里的partition分区的数据有100个size。那么，
-   * 你说，我们进行shuffle时，去哪个host上读取该partition分区的数据并执行计算任务呢？显然是task1所在的
-   * host嘛。这样，我们就可以尽可能地从本地读取数据，而不需要远程去拉取large size的数据。
+   * 你说，我们执行对应partition分区的reduce task时，去哪个host上读取该partition分区的数据并执行计算
+   * 任务呢？显然是task1所在的host嘛。这样，我们就可以尽可能地从本地读取数据，而不需要远程去拉取large size的数据。
    */
   override protected def getPreferredLocations(partition: Partition): Seq[String] = {
     val tracker = SparkEnv.get.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster]
