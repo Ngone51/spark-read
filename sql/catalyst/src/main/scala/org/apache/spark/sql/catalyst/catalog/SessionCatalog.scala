@@ -127,7 +127,9 @@ class SessionCatalog(
     if (conf.caseSensitiveAnalysis) name else name.toLowerCase(Locale.ROOT)
   }
 
+  // 注意：该Cache由com.google.common.cache提供支持
   private val tableRelationCache: Cache[QualifiedTableName, LogicalPlan] = {
+    // 默认1000（意思是说，默认最多可以缓存1000个table？）
     val cacheSize = conf.tableRelationCacheSize
     CacheBuilder.newBuilder().maximumSize(cacheSize).build[QualifiedTableName, LogicalPlan]()
   }
@@ -231,6 +233,9 @@ class SessionCatalog(
 
   def databaseExists(db: String): Boolean = {
     val dbName = formatDatabaseName(db)
+    // QUESTION： 都是通过ExternalCatalog来判断database是否存在的吗？那么，SessionCatalog又是用来干嘛的？
+    // ANSWER：1.SessionCatalog是对底层catalog的代理，比如InMemoryCatalog or HiveExternalCatalog；
+    //         2. SessionCatalog会管理SparkSession的temp views和functions。
     externalCatalog.databaseExists(dbName)
   }
 
@@ -284,8 +289,10 @@ class SessionCatalog(
    * If no such database is specified, create it in the current database.
    */
   def createTable(tableDefinition: CatalogTable, ignoreIfExists: Boolean): Unit = {
+    // 如果没有指定database，则默认在当前database创建该table
     val db = formatDatabaseName(tableDefinition.identifier.database.getOrElse(getCurrentDatabase))
     val table = formatTableName(tableDefinition.identifier.table)
+    // 检查该table的名称的格式是否规范（e.g. 有无使用特殊字符）
     validateName(table)
 
     val newTableDefinition = if (tableDefinition.storage.locationUri.isDefined
@@ -301,6 +308,7 @@ class SessionCatalog(
     }
 
     requireDbExists(db)
+    // 真正的table创建，需要通过externalCatalog来执行
     externalCatalog.createTable(newTableDefinition, ignoreIfExists)
   }
 
@@ -342,6 +350,7 @@ class SessionCatalog(
 
     val catalogTable = externalCatalog.getTable(db, table)
     val oldDataSchema = catalogTable.dataSchema
+    // 也就是说，oldDataSchema必须是newDataSchema的子集
     // not supporting dropping columns yet
     val nonExistentColumnNames =
       oldDataSchema.map(_.name).filterNot(columnNameResolved(newDataSchema, _))
@@ -357,6 +366,7 @@ class SessionCatalog(
   }
 
   private def columnNameResolved(schema: StructType, colName: String): Boolean = {
+    // 判断colName是否在所有的fields的names中出现
     schema.fields.map(_.name).exists(conf.resolver(_, colName))
   }
 
@@ -469,6 +479,7 @@ class SessionCatalog(
       name: String,
       viewDefinition: LogicalPlan,
       overrideIfExists: Boolean): Unit = {
+    // 注意和tmp view区分
     globalTempViewManager.create(formatTableName(name), viewDefinition, overrideIfExists)
   }
 
@@ -542,6 +553,8 @@ class SessionCatalog(
   def getTempViewOrPermanentTableMetadata(name: TableIdentifier): CatalogTable = synchronized {
     val table = formatTableName(name.table)
     if (name.database.isEmpty) {
+      // 如果没有指定该database，则首先在local temp view中查找该table；如果找不到，
+      // 则继续在当前的database中查找该table。
       getTempView(table).map { plan =>
         CatalogTable(
           identifier = TableIdentifier(table),
@@ -668,6 +681,7 @@ class SessionCatalog(
       } else if (name.database.isDefined || !tempViews.contains(table)) {
         val metadata = externalCatalog.getTable(db, table)
         if (metadata.tableType == CatalogTableType.VIEW) {
+          // viewText是一个sql语句咯？
           val viewText = metadata.viewText.getOrElse(sys.error("Invalid view without text."))
           // The relation is a view, so we wrap the relation by:
           // 1. Add a [[View]] operator over the relation to keep track of the view desc;
@@ -675,9 +689,11 @@ class SessionCatalog(
           val child = View(
             desc = metadata,
             output = metadata.schema.toAttributes,
+            // 到这里才生成该view的LogicalPlan！
             child = parser.parsePlan(viewText))
           SubqueryAlias(table, child)
         } else {
+          // 暂时未能解析该table(MANAGED或EXTERNAL类型)
           SubqueryAlias(table, UnresolvedCatalogRelation(metadata))
         }
       } else {
