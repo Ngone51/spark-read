@@ -945,7 +945,7 @@ private[spark] class TaskSetManager(
           successful(index) = true
           tasksSuccessful += 1
         }
-        // 然后直接让TaskSetManager变成僵尸状态
+        // FetchFailed异常导致TaskSetManager直接变成僵尸状态
         isZombie = true
 
         // TODO read blacklistTracker
@@ -1007,7 +1007,8 @@ private[spark] class TaskSetManager(
         logWarning(failureReason)
         None
     }
-    // 通知dagScheduler task end 事件，这样listener就会知道有个task结束了
+    // 通知dagScheduler task end 事件，这样listener就会知道有个task结束了。
+    // （对于fail reason是FetchFailed的task，我们还会在之后resubmit该task所在的stage）
     sched.dagScheduler.taskEnded(tasks(index), reason, null, accumUpdates, info)
 
     // TODO read
@@ -1112,6 +1113,7 @@ private[spark] class TaskSetManager(
       for ((tid, info) <- taskInfos if info.executorId == execId) {
         val index = taskInfos(tid).index
         // 我们只处理已经成功的task。因为如果该task还没成功，到时候肯定会有其它地方来继续处理它。
+        // （至于我们为什么只处理已经成功的task，理由请看上面的英文注释）
         if (successful(index) && !killedByOtherAttempt(index)) {
           successful(index) = false
           copiesRunning(index) -= 1

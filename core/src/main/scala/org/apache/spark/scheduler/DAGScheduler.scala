@@ -413,7 +413,7 @@ class DAGScheduler(
       partitions: Array[Int],
       jobId: Int,
       callSite: CallSite): ResultStage = {
-    // 对于SparkPi，parents为Nil？？？因为只有OnetoOneDependency，
+    // 对于SparkPi，parents为Nil？？？因为只有OneToOneDependency，
     // 没有ShuffleDependency啊（为什么debug断点进不来: 重新编译一下源码，恢复正常）
     // debug后发现，对于SparkPi，parents确实为Nil
     /**
@@ -422,6 +422,7 @@ class DAGScheduler(
      */
     val parents = getOrCreateParentStages(rdd, jobId)
     val id = nextStageId.getAndIncrement()
+    // 在这里创建ResultStage，是不是意味着，在这之前所有其它的ShuffleMapStage都创建好了???
     val stage = new ResultStage(id, rdd, func, partitions, parents, jobId, callSite)
     stageIdToStage(id) = stage
     // 这里update的是不是只有该Stage自己？？？
@@ -447,6 +448,8 @@ class DAGScheduler(
    */
   private def getMissingAncestorShuffleDependencies(
       rdd: RDD[_]): ArrayStack[ShuffleDependency[_, _, _]] = {
+    // 注意ancestors是一个stack，先进后出，所以我们之后在遍历ancestors的时候，
+    // 就会优先创建处于上流的stage（即肯定是先创建parent stage，再创建child stage）。
     val ancestors = new ArrayStack[ShuffleDependency[_, _, _]]
     val visited = new HashSet[RDD[_]]
     // 哪里manually了？这样就算是manually？
@@ -496,6 +499,11 @@ class DAGScheduler(
    */
   private[scheduler] def getShuffleDependencies(
       rdd: RDD[_]): HashSet[ShuffleDependency[_, _, _]] = {
+    // FIXME 感觉可以把一个rdd的直接ShuffleDependency存储下来，这样之后再调用就不要用重复找了
+    // 但是，rdd如果被checkpoint，则它的dependency会变！！！所以我们需要在checkpoint的时候，
+    // 清空该rdd的直接ShuffleDependency缓存 或者 在该放进入时，判断该rdd是否被checkpoint，如果是
+    // 则清空它的缓存。
+
     // 虽然定义了HashSet，但是最多只会存储一个parent的吧，可能是为了之后使用算子操作（map）？？？不对！
     // （错误的注解，看方法上的注释说明）
     val parents = new HashSet[ShuffleDependency[_, _, _]]
@@ -519,6 +527,7 @@ class DAGScheduler(
         }
       }
     }
+    // 注意：只返回该rdd直接（所谓的直接看方法上面的注释）的ShuffleDependencies
     parents
   }
 
@@ -701,7 +710,9 @@ class DAGScheduler(
 
     assert(partitions.size > 0)
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
+    // 创建JobWaiter
     val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
+    // 通过eventProcessLoop提交JobSubmitted事件
     eventProcessLoop.post(JobSubmitted(
       jobId, rdd, func2, partitions.toArray, callSite, waiter,
       SerializationUtils.clone(properties)))
@@ -731,6 +742,12 @@ class DAGScheduler(
       properties: Properties): Unit = {
     val start = System.nanoTime
     val waiter = submitJob(rdd, func, partitions, callSite, resultHandler, properties)
+    // 阻塞等待job完成（成功或失败）
+    // TODO QUESTION 真的是阻塞吗???难道DAGScheduler同时只能处理一个job吗？但是DAG有一个activeJobs，
+    // 看该变量的用法似乎DAG可以同时处理多个job啊。但是，我们如果用rdd到做计算的话，肯定得等到一个job结束，
+    // 在得到它的计算结果之后，把该结果作为输入，再开始执行下一个job啊。
+    // 可能的解释是，那是MapStage类型的jobs或者spark内部提交的job，比如checkpoint rdd的时候就在内部提交了job。
+    // 那是不是说，在user code提交的job是不可能同时有多个在执行的？？？
     ThreadUtils.awaitReady(waiter.completionFuture, Duration.Inf)
     waiter.completionFuture.value.get match {
       case scala.util.Success(_) =>
@@ -739,6 +756,7 @@ class DAGScheduler(
       case scala.util.Failure(exception) =>
         logInfo("Job %d failed: %s, took %f s".format
           (waiter.jobId, callSite.shortForm, (System.nanoTime - start) / 1e9))
+        // TODO QUESTION 看不懂这个callerStackTrace
         // SPARK-8644: Include user stack trace in exceptions coming from DAGScheduler.
         val callerStackTrace = Thread.currentThread().getStackTrace.tail
         exception.setStackTrace(exception.getStackTrace ++ callerStackTrace)
@@ -979,7 +997,7 @@ class DAGScheduler(
     listenerBus.post(SparkListenerTaskGettingResult(taskInfo))
   }
 
-  // 处理作业提交
+  // 处理作业提交--This is very important start...
   private[scheduler] def handleJobSubmitted(jobId: Int,
       finalRDD: RDD[_],
       func: (TaskContext, Iterator[_]) => _,
@@ -997,26 +1015,33 @@ class DAGScheduler(
     } catch {
       case e: Exception =>
         logWarning("Creating new stage failed due to exception - job: " + jobId, e)
+        // 通知JobListener（比如JobWaiter），job执行失败啦
         listener.jobFailed(e)
         return
     }
 
-    // 根据finalStage构建Job
+    // 在finalStage创建完成之后，创建ActiveJob
     val job = new ActiveJob(jobId, finalStage, callSite, listener, properties)
-    // TODO：read清理缓存的location？？
+    // 清理rdds缓存的locations
     clearCacheLocs()
     logInfo("Got job %s (%s) with %d output partitions".format(
       job.jobId, callSite.shortForm, partitions.length))
     logInfo("Final stage: " + finalStage + " (" + finalStage.name + ")")
     logInfo("Parents of final stage: " + finalStage.parents)
+    // QUESTION：在这里调用getMissingParentStages()的时候，所有的stages都已经创建好了吗？
     logInfo("Missing parents: " + getMissingParentStages(finalStage))
 
     val jobSubmissionTime = clock.getTimeMillis()
+    // 添加jobId到job对象之间的映射
     jobIdToActiveJob(jobId) = job
+    // 将该job添加到activeJobs的集合中
+    // TODO QUESTION：在runJob()中会阻塞等待一个job结束。
+    // 所以，DAGScheduler中怎么会同时有多个activeJobs??? 可能有MapStage类型的Job提交???
     activeJobs += job
     finalStage.setActiveJob(job)
     val stageIds = jobIdToStageIds(jobId).toArray
     val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
+    // 提交JobStart事件到监听总线
     listenerBus.post(
       SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
     // 从最后一个stage开始提交（并不意味着先执行），而是该函数会递归向上寻找parent stage，直到第一个stage
@@ -1176,10 +1201,13 @@ class DAGScheduler(
       // For ResultTask, serialize and broadcast (rdd, func).
       val taskBinaryBytes: Array[Byte] = stage match {
         case stage: ShuffleMapStage =>
+          // 对于ShuffleMapStage，我们序列化它的shuffleDep，这样该stage就能知道如何去
+          // 获取上一个stage的outputs
           JavaUtils.bufferToArray(
             closureSerializer.serialize((stage.rdd, stage.shuffleDep): AnyRef))
         case stage: ResultStage =>
-          // TODO read 我们对于ResultStage/Task的了解太少啦
+          // 对于ResultStage，我们序列化它的func，该func用于对倒数第二个stage的output做计算，
+          // 并生成最终的结果
           JavaUtils.bufferToArray(closureSerializer.serialize((stage.rdd, stage.func): AnyRef))
       }
       // 时隔近半个月，终于又回到了这里！！！(讲道理，上面看过的都有点忘了...还好打了注释)
@@ -1223,14 +1251,13 @@ class DAGScheduler(
               taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
               Option(sc.applicationId), sc.applicationAttemptId)
           }
-        // TODO read ResultStage
         case stage: ResultStage =>
           partitionsToCompute.map { id =>
             // 注意：stage.partitions???stage.rdd.partitions???
             val p: Int = stage.partitions(id)
             val part = stage.rdd.partitions(p)
             val locs = taskIdToLocations(id)
-            //构建ResultTask
+            // 构建ResultTask(和ShuffleMapTask比多了一个id，这个id就是该ResultTask所要读取的output的分区id)
             new ResultTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, id, properties, serializedTaskMetrics,
               Option(jobId), Option(sc.applicationId), sc.applicationAttemptId)
@@ -1340,6 +1367,7 @@ class DAGScheduler(
     val task = event.task
     val taskId = event.taskInfo.id
     val stageId = task.stageId
+    // not used
     val taskType = Utils.getFormattedClassName(task)
 
     // TODO read
@@ -1372,13 +1400,14 @@ class DAGScheduler(
         // task成功地执行结束
       case Success =>
         task match {
-            // TODO read task的类型为ResultTask
           case rt: ResultTask[_, _] =>
             val resultStage = stage.asInstanceOf[ResultStage]
             resultStage.activeJob match {
               case Some(job) =>
+                // 为每个result task只更新一次accumulator
                 // Only update the accumulator once for each result task.
                 if (!job.finished(rt.outputId)) {
+                  // TODO read updateAccumulators
                   updateAccumulators(event)
                 }
               case None => // Ignore update if task's job has finished.
@@ -1403,13 +1432,20 @@ class DAGScheduler(
             val resultStage = stage.asInstanceOf[ResultStage]
             resultStage.activeJob match {
               case Some(job) =>
+                // 如果outputId对应的分区的计算还没完成，那么我们现在标记它已完成
                 if (!job.finished(rt.outputId)) {
                   job.finished(rt.outputId) = true
+                  // 已经完成的result task个数+1
                   job.numFinished += 1
+                  // 如果整个job都已经完成了
                   // If the whole job has finished, remove it
                   if (job.numFinished == job.numPartitions) {
+                    // 先标记该ResultStage为结束状态
                     markStageAsFinished(resultStage)
+                    // 清理和该job相关的数据结构（例如，当该job中某个stage只被该job使用时，
+                    // 则将其从DAGScheduler中清除）
                     cleanupStateForJobAndIndependentStages(job)
+                    // 提交JobEnd事件到监听总线
                     listenerBus.post(
                       SparkListenerJobEnd(job.jobId, clock.getTimeMillis(), JobSucceeded))
                   }
@@ -1417,6 +1453,7 @@ class DAGScheduler(
                   // taskSucceeded runs some user code that might throw an exception. Make sure
                   // we are resilient against that.
                   try {
+                    // 通知job listener（比如，JobWaiter），outputId对应分区的计算结果拿到啦！
                     job.listener.taskSucceeded(rt.outputId, event.result)
                   } catch {
                     case e: Exception =>
@@ -1656,9 +1693,9 @@ class DAGScheduler(
               )
             }
           }
-          // 我们无法获取该map stage的output，则我们把它在mapOutputTracker的注册
-          // 信息清理掉（反正这些信息也不能帮我们正确的获取到数据，而我们之后resubmit的stage
-          // 会重新向mapOutputTracker注册我们新的mapStage的信息。
+          // 我们无法获取该map stage的output，则我们把mapId对应的task在mapOutputTracker的注册
+          // MapOutput清理掉(反正这些信息也不能帮我们正确的获取到数据，而我们之后resubmit的stage
+          // 会重新向mapOutputTracker注册我们新的mapStage的信息。)
           // Mark the map whose fetch failed as broken in the map stage
           if (mapId != -1) {
             mapOutputTracker.unregisterMapOutput(shuffleId, mapId, bmAddress)

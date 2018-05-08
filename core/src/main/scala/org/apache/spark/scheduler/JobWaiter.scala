@@ -30,7 +30,7 @@ import org.apache.spark.internal.Logging
 private[spark] class JobWaiter[T](
     dagScheduler: DAGScheduler,
     val jobId: Int,
-    totalTasks: Int, // 分区个数对应了task的个数？？？
+    totalTasks: Int,
     resultHandler: (Int, T) => Unit)
   extends JobListener with Logging {
 
@@ -56,8 +56,11 @@ private[spark] class JobWaiter[T](
   override def taskSucceeded(index: Int, result: Any): Unit = {
     // resultHandler call must be synchronized in case resultHandler itself is not thread safe.
     synchronized {
+      // 使用resultHandler处理最终的计算结果，并将结果组合一个result返回
+      // （可以看一下collect/reduce等action方法，了解resultHandler的使用方式）
       resultHandler(index, result.asInstanceOf[T])
     }
+    // 如果已经结束的result tasks总数和目标值totalTasks相等，则可以标记该job成功完成了
     if (finishedTasks.incrementAndGet() == totalTasks) {
       jobPromise.success(())
     }

@@ -96,6 +96,7 @@ private[spark] object TaskDescription {
     // Write the task. The task is already serialized, so write it directly to the byte buffer.
     Utils.writeByteBuffer(taskDescription.serializedTask, bytesOut)
 
+    // dataOut封装了bytesOut，所以这个close顺序有关系吗???
     dataOut.close()
     bytesOut.close()
     bytesOut.toByteBuffer

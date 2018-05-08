@@ -215,6 +215,8 @@ private[spark] class TaskSchedulerImpl(
       }
       // 一个stage（虽然可以有多个attempts，但是）只能有一个处于active状态的taskSet(Manager)
       // 所以这就说明了，虽然stage可以有多个attempts，但是同一时间内在运行的attempt只能有一个！
+      // 或者说同一时间内处于active状态的该stage的TaskSet只能有一个，也就说明该stage处于active
+      // 状态的TaskSetManager只能有一个？
       if (conflictingTaskSet) {
         throw new IllegalStateException(s"more than one active taskSet for stage $stage:" +
           s" ${stageTaskSets.toSeq.map{_._2.taskSet.id}.mkString(",")}")
@@ -250,7 +252,10 @@ private[spark] class TaskSchedulerImpl(
 
   override def cancelTasks(stageId: Int, interruptThread: Boolean): Unit = synchronized {
     logInfo("Cancelling stage " + stageId)
-    // 从这里可知，一个stage可能有多个attempts同时在运行???
+    // QUESTION: 从这里可知，一个stage可能有多个attempts同时在运行???
+    // ANSWER：每次stage submit missing tasks， stage的attempt id就会加1，但是，同一时间在运行的
+    // attempt只能有一个。这也就导致，同一时间处于active状态的TaskSetManager也只有一个。（但是，存在
+    // TaskSetManger已经处于zombie状态，但仍有tasks正在运行的情况。）
     taskSetsByStageIdAndAttempt.get(stageId).foreach { attempts =>
       attempts.foreach { case (_, tsm) =>
         // There are two possible cases here:
@@ -570,7 +575,7 @@ private[spark] class TaskSchedulerImpl(
       reason: TaskFailedReason): Unit = synchronized {
                                         // 注意这里是加同步锁的
     taskSetManager.handleFailedTask(tid, taskState, reason)
-    // 如果taskSetManager还没死(isZobmbie可能已经为true，比如处理该failed task过程发现
+    // 如果taskSetManager还没死(isZombie可能已经为true，比如处理该failed task过程发现
     // 该task已经失败了很多次，则我们会abort该task所在的taskSetManager)，
     // 且该task在任何attempts中还没有成功过
     if (!taskSetManager.isZombie && !taskSetManager.someAttemptSucceeded(tid)) {
@@ -634,12 +639,13 @@ private[spark] class TaskSchedulerImpl(
     var failedExecutor: Option[String] = None
 
     synchronized {
+      // 如果该executor上有正在执行的tasks
       if (executorIdToRunningTaskIds.contains(executorId)) {
         val hostPort = executorIdToHost(executorId)
         logExecutorLoss(executorId, hostPort, reason)
         removeExecutor(executorId, reason)
         failedExecutor = Some(executorId)
-      } else {
+      } else { // 如果没有
         executorIdToHost.get(executorId) match {
           case Some(hostPort) =>
             // If the host mapping still exists, it means we don't know the loss reason for the
@@ -728,7 +734,7 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
-    // 如果executor失联的具体原因还不知道
+    // 如果executor失联的具体原因已经明确，则处理与其关联的host、tasks。
     if (reason != LossReasonPending) {
       executorIdToHost -= executorId
       rootPool.executorLost(executorId, host, reason)

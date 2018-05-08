@@ -45,6 +45,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   extends ExecutorAllocationClient with SchedulerBackend with Logging {
 
   // 当前集群的总核数
+  // （感觉这个应该不能算是整个集群的，而是该app目前所能使用的总核数）
   // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
   protected val totalCoreCount = new AtomicInteger(0)
   // 目前为止注册的所有executors的总数
@@ -126,9 +127,14 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     protected val addressToExecutorId = new HashMap[RpcAddress, String]
 
     override def onStart() {
+      // 周期性地发送ReviveOffers能够让延迟调度工作起来
+      // ReviveOffers消息会让CoarseGrainedSchedulerBackend调用makeOffer()
+      // makerOff()会根据可用的计算资源(executors)发起tasks。
       // Periodically revive offers to allow delay scheduling to work
       val reviveIntervalMs = conf.getTimeAsMs("spark.scheduler.revive.interval", "1s")
 
+      // 默认每秒发送一个ReviveOffers消息
+      // （其实是发给自己该消息）
       reviveThread.scheduleAtFixedRate(new Runnable {
         override def run(): Unit = Utils.tryLogNonFatalError {
           Option(self).foreach(_.send(ReviveOffers))
@@ -184,12 +190,16 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
 
+      // 接收到来自executor请求注册的消息
       case RegisterExecutor(executorId, executorRef, hostname, cores, logUrls) =>
+        // 如果driver已经注册过该executor了，则回复该executor注册失败（这会造成executor进程退出...）
+        // (比如因为网络延迟造成的消息重复发送)
         if (executorDataMap.contains(executorId)) {
           executorRef.send(RegisterExecutorFailed("Duplicate executor ID: " + executorId))
           context.reply(true)
         } else if (scheduler.nodeBlacklist != null &&
           scheduler.nodeBlacklist.contains(hostname)) {
+          // 如果该executor所在的host已经被加入黑名单，则直接拒绝该executor的注册
           // If the cluster manager gives us an executor on a blacklisted node (because it
           // already started allocating those resources before we informed it of our blacklist,
           // or if it ignored our blacklist), then we reject that executor immediately.
@@ -197,6 +207,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           executorRef.send(RegisterExecutorFailed(s"Executor is blacklisted: $executorId"))
           context.reply(true)
         } else {
+          // 嗯。。。啊。。。哈？？？
           // If the executor's rpc env is not listening for incoming connections, `hostPort`
           // will be null, and the client connection should be used to contact the executor.
           val executorAddress = if (executorRef.address != null) {
@@ -213,20 +224,26 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           // This must be synchronized because variables mutated
           // in this block are read when requesting executors
           CoarseGrainedSchedulerBackend.this.synchronized {
+            // 更新executorDataMap
             executorDataMap.put(executorId, data)
             if (currentExecutorIdCounter < executorId.toInt) {
               currentExecutorIdCounter = executorId.toInt
             }
+            // 成功从cluster manager申请到一个executor，则numPendingExecutors减1
             if (numPendingExecutors > 0) {
               numPendingExecutors -= 1
               logDebug(s"Decremented number of pending executors ($numPendingExecutors left)")
             }
           }
+          // 通知executor进程，executor注册成功。executor进程接收到该消息会
+          // 创建一个Executor对象。
           executorRef.send(RegisteredExecutor)
           // Note: some tests expect the reply to come after we put the executor in the map
           context.reply(true)
+          // 将executor添加事件放到监听总线上
           listenerBus.post(
             SparkListenerExecutorAdded(System.currentTimeMillis(), executorId, data))
+          // 我们接收到了新的计算资源，所以立马查看有没有task可以被执行
           makeOffers()
         }
 
@@ -257,6 +274,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     private def makeOffers() {
       // Make sure no executor is killed while some task is launching on it
       val taskDescs = CoarseGrainedSchedulerBackend.this.synchronized {
+        // 过滤掉那些正在被kill的executors，只留下active executors
         // Filter out executors under killing
         val activeExecutors = executorDataMap.filterKeys(executorIsAlive)
         val workOffers = activeExecutors.map {
@@ -266,6 +284,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         scheduler.resourceOffers(workOffers)
       }
       if (!taskDescs.isEmpty) {
+        // 发起tasks
         launchTasks(taskDescs)
       }
     }
@@ -305,6 +324,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     // Launch tasks returned by a set of resource offers
     private def launchTasks(tasks: Seq[Seq[TaskDescription]]) {
       for (task <- tasks.flatten) {
+        // 对taskDescription编码，以进行网络传输
         val serializedTask = TaskDescription.encode(task)
         if (serializedTask.limit() >= maxRpcMessageSize) {
           scheduler.taskIdToTaskSetManager.get(task.taskId).foreach { taskSetMgr =>
@@ -313,6 +333,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
                 "spark.rpc.message.maxSize (%d bytes). Consider increasing " +
                 "spark.rpc.message.maxSize or using broadcast variables for large values."
               msg = msg.format(task.taskId, task.index, serializedTask.limit(), maxRpcMessageSize)
+              // task序列化后的size超过了maxRpcMessageSize的限制，则abort该taskSetManager
               taskSetMgr.abort(msg)
             } catch {
               case e: Exception => logError("Exception in error callback", e)
@@ -320,12 +341,15 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           }
         }
         else {
+          // 获取该task对应的executorId(该id在TaskSchedulerImpl#resourceOffers()里确定)
           val executorData = executorDataMap(task.executorId)
+          // 该executor可用cpu核数减少CPUS_PER_TASK个
           executorData.freeCores -= scheduler.CPUS_PER_TASK
 
           logDebug(s"Launching task ${task.taskId} on executor id: ${task.executorId} hostname: " +
             s"${executorData.executorHost}.")
 
+          // 向executor发送LaunchTask消息
           executorData.executorEndpoint.send(LaunchTask(new SerializableBuffer(serializedTask)))
         }
       }
@@ -578,12 +602,21 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       this.localityAwareTasks = localityAwareTasks
       this.hostToLocalTaskCount = hostToLocalTaskCount
 
+      // 注意numExistingExecutors其实包含了executorsPendingToRemove中的executors，所以这部分
+      // 即将被kill掉的executors现在已经不能真正算是申请到了的executors（因为它们即将被kill掉）。
+      // 所以pendingExecutors实际等于需要申请的executors总数 - 已经申请到（且不在
+      // executorsPendingToRemove中的）的executors总数。
       numPendingExecutors =
         math.max(numExecutors - numExistingExecutors + executorsPendingToRemove.size, 0)
-
+      // QUESTION：我们为什么不申请numPendingExecutors个executors呢？这个数量正是我们还需要的
+      // executors的数量啊???
+      // 答：numExecutors其实不是我们要一次性向master申请的executor数量，而是告诉master，我们这个app
+      // 需要numberExecutors个executors，最多不能超过这个值。而numExecutor包含了我们现在已经能使用的
+      // executors和等待master分配的executors(即pendingExecutors)
       doRequestTotalExecutors(numExecutors)
     }
 
+    // TODO read awaitResult
     defaultAskTimeout.awaitResult(response)
   }
 
@@ -603,6 +636,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     Future.successful(false)
 
   /**
+   * 注意：SPARK-23365已经改动了该方法的很多地方。
    * Request that the cluster manager kill the specified executors.
    *
    * When asking the executor to be replaced, the executor loss is considered a failure, and
@@ -621,6 +655,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     logInfo(s"Requesting to kill executor(s) ${executorIds.mkString(", ")}")
 
     val response = synchronized {
+      // executorDataMap存储了已经在该driver注册过的executors
       val (knownExecutors, unknownExecutors) = executorIds.partition(executorDataMap.contains)
       unknownExecutors.foreach { id =>
         logWarning(s"Executor to kill $id does not exist!")
@@ -631,17 +666,26 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       val executorsToKill = knownExecutors
         .filter { id => !executorsPendingToRemove.contains(id) }
         .filter { id => force || !scheduler.isExecutorBusy(id) }
-      // !replace的含义怎么解释？？？
+      // 如果replace = false，则kill掉该executor之后，不需要有新的executor来替代它。说明该executor
+      // 是driver主动kill掉的；反之，replace = true，则需要有新的executor来替代。说明该executor不是
+      // driver主动kill掉的。
       executorsToKill.foreach { id => executorsPendingToRemove(id) = !replace }
 
       logInfo(s"Actual list of executor(s) to be killed is ${executorsToKill.mkString(", ")}")
 
+      // 如果我们没有要求用新的executors来替代被kill掉的executors，则需要和cluster manager同步
+      // 新的executors的target number，以避免cluster manager分配新的executors。
       // If we do not wish to replace the executors we kill, sync the target number of executors
       // with the cluster manager to avoid allocating new ones. When computing the new target,
       // take into account executors that are pending to be added or removed.
       val adjustTotalExecutors =
         if (!replace) {
           requestedTotalExecutors = math.max(requestedTotalExecutors - executorsToKill.size, 0)
+          // requestedTotalExecutors（向cluster manager申请的executors总数） = numExistingExecutors
+          //（已经向driver注册的executors，其中某些可能正要被kill，所以numExistingExecutors包含了
+          // executorsPendingToRemove里的executors） + numPendingExecutors（已经向cluster manager申请
+          // 但是还未向driver成功注册的executors，也许它们正在来的路上...） - executorsPendingToRemove(将
+          // 要被删除的executors)
           if (requestedTotalExecutors !=
               (numExistingExecutors + numPendingExecutors - executorsPendingToRemove.size)) {
             logDebug(
@@ -651,19 +695,25 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
                  |numPendingExecutors      = $numPendingExecutors
                  |executorsPendingToRemove = ${executorsPendingToRemove.size}""".stripMargin)
           }
+          // 通知cluster manager我们的target number更新了
           doRequestTotalExecutors(requestedTotalExecutors)
         } else {
+          // 如果需要替代那些被kill掉的executors，则numPendingExecutors的数量需要加上那些正准备
+          // 被kill掉的executors的数量，即knownExecutors.size???
+          // FIXME 那些正准备被kill掉的executors的数量，不应该是executorsToKill吗???
           numPendingExecutors += knownExecutors.size
           Future.successful(true)
         }
 
       val killExecutors: Boolean => Future[Boolean] =
         if (!executorsToKill.isEmpty) {
+              // 通知master，kill掉这些executors
           _ => doKillExecutors(executorsToKill)
         } else {
           _ => Future.successful(false)
         }
 
+      // TODO read 这个语法???
       val killResponse = adjustTotalExecutors.flatMap(killExecutors)(ThreadUtils.sameThread)
 
       killResponse.flatMap(killSuccessful =>
@@ -671,6 +721,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       )(ThreadUtils.sameThread)
     }
 
+    // TODO read defaultAskTimeout.awaitResult()
     defaultAskTimeout.awaitResult(response)
   }
 

@@ -104,11 +104,15 @@ private[spark] class StandaloneSchedulerBackend(
     val sparkJavaOpts = Utils.sparkJavaOpts(conf, SparkConf.isExecutorStartupConf)
     val javaOpts = sparkJavaOpts ++ extraJavaOpts
     // 创建command
+    // QUESTION：这个command是干嘛用的???
+    // 答：这个command的第一个参数类就是我们运行executor进程的main类啊！！！
     val command = Command("org.apache.spark.executor.CoarseGrainedExecutorBackend",
       args, sc.executorEnvs, classPathEntries ++ testingClassPath, libraryPathEntries, javaOpts)
     val webUrl = sc.ui.map(_.webUrl).getOrElse("")
     // 每个executor的核数
     val coresPerExecutor = conf.getOption("spark.executor.cores").map(_.toInt)
+    // 如果我们使用动态分配，则当前就把initialExecutorLimit设置为0。ExecutorAllocationManager
+    // 会在之后发送真实的initial limit给Master。
     // If we're using dynamic allocation, set our initial executor limit to 0 for now.
     // ExecutorAllocationManager will send the real initial limit to the Master later.
     val initialExecutorLimit =
@@ -117,12 +121,17 @@ private[spark] class StandaloneSchedulerBackend(
       } else {
         None
       }
-    // 创建应用描述
+    // 创建app描述
     val appDesc = ApplicationDescription(sc.appName, maxCores, sc.executorMemory, command,
       webUrl, sc.eventLogDir, sc.eventLogCodec, coresPerExecutor, initialExecutorLimit)
+    // 创建StandaloneAppClient，该client用于和Standalone cluster manager通信（不过，事实上真正
+    // 与manager（master）通信的是在StandaloneAppClient中创建的ClientEndpoint）
     client = new StandaloneAppClient(sc.env.rpcEnv, masters, appDesc, this, conf)
+    // start()会创建ClientEndpoint,并执行onStart(), 开始向master注册我们的app
     client.start()
+    // TODO read launcherBackend
     launcherBackend.setState(SparkAppHandle.State.SUBMITTED)
+    // 阻塞等待app注册完成
     waitForRegistration()
     launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
@@ -134,6 +143,9 @@ private[spark] class StandaloneSchedulerBackend(
   override def connected(appId: String) {
     logInfo("Connected to Spark cluster with app ID " + appId)
     this.appId = appId
+    // 唤醒我们的SparkContext
+    // (driver在向master注册app时，会一直阻塞。所以，在注册完成之后，
+    // 我们要在这里唤醒它)
     notifyContext()
     launcherBackend.setAppId(appId)
   }
@@ -151,6 +163,7 @@ private[spark] class StandaloneSchedulerBackend(
       launcherBackend.setState(SparkAppHandle.State.KILLED)
       logError("Application has been killed. Reason: " + reason)
       try {
+        // TODO read TaskSchedulerImpl.error()
         scheduler.error(reason)
       } finally {
         // Ensure the application terminates, as we can no longer run jobs.
@@ -159,6 +172,9 @@ private[spark] class StandaloneSchedulerBackend(
     }
   }
 
+  // 为该app新增一个executor后，具体地啥也没干啊...
+  // QUESTION：该executor是只能由该app使用吗???如果该app使用完该executor之后，是要kill掉
+  // 该executor吗???还是让其它的app复用???
   override def executorAdded(fullId: String, workerId: String, hostPort: String, cores: Int,
     memory: Int) {
     logInfo("Granted executor ID %s on hostPort %s with %d core(s), %s RAM".format(
@@ -191,6 +207,7 @@ private[spark] class StandaloneSchedulerBackend(
     }
 
   /**
+   * 向master申请指定数量（包括pending和running的executors??? 什么意思???）的executors。
    * Request executors from the Master by specifying the total number desired,
    * including existing pending and running executors.
    *
