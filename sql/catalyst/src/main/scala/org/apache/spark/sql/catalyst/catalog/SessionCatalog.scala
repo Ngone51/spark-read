@@ -124,6 +124,7 @@ class SessionCatalog(
    * Format database name, taking into account case sensitivity.
    */
   protected[this] def formatDatabaseName(name: String): String = {
+    // 默认不区分大小写，而且强烈建议用户使用不区分大小写的模式
     if (conf.caseSensitiveAnalysis) name else name.toLowerCase(Locale.ROOT)
   }
 
@@ -697,6 +698,7 @@ class SessionCatalog(
           SubqueryAlias(table, UnresolvedCatalogRelation(metadata))
         }
       } else {
+        // FIXME 不检查一下tempViews中是否存在该table吗
         SubqueryAlias(table, tempViews(table))
       }
     }
@@ -750,6 +752,7 @@ class SessionCatalog(
         TableIdentifier(name)
       }
     }
+    // 包括database中的tables和local temp views
     dbTables ++ localTempViews
   }
 
@@ -764,6 +767,7 @@ class SessionCatalog(
     // If the database is defined, this may be a global temporary view.
     // If the database is not defined, there is a good chance this is a temp view.
     if (name.database.isEmpty) {
+      // 注意：这里调用的是LogicalPlan的refresh()
       tempViews.get(tableName).foreach(_.refresh())
     } else if (dbName == globalTempViewManager.database) {
       globalTempViewManager.get(tableName).foreach(_.refresh())
@@ -1082,6 +1086,9 @@ class SessionCatalog(
   def functionExists(name: FunctionIdentifier): Boolean = {
     val db = formatDatabaseName(name.database.getOrElse(getCurrentDatabase))
     requireDbExists(db)
+    // QUESTION：在functionRegistry或externalCatalog中的function有什么区别？是否会同时在这两个地方？
+    // 还是两者只能出现在其中一个？
+    // 检测是否在functionRegistry或externalCatalog中存在
     functionRegistry.functionExists(name) ||
       externalCatalog.functionExists(db, name.funcName)
   }
@@ -1109,6 +1116,7 @@ class SessionCatalog(
       input: Seq[Expression]): Expression = {
     val clsForUDAF =
       Utils.classForName("org.apache.spark.sql.expressions.UserDefinedAggregateFunction")
+    // 如果clsForUDAF是clazz的父类（clazz是用户继承UserDefinedAggregateFunction二实现的自定义UDAF）
     if (clsForUDAF.isAssignableFrom(clazz)) {
       val cls = Utils.classForName("org.apache.spark.sql.execution.aggregate.ScalaUDAF")
       cls.getConstructor(classOf[Seq[Expression]], clsForUDAF, classOf[Int], classOf[Int])
@@ -1156,6 +1164,7 @@ class SessionCatalog(
    * Drop a temporary function.
    */
   def dropTempFunction(name: String, ignoreIfNotExists: Boolean): Unit = {
+    // 是不是就是说functionRegistry里存的是temp function？（因为这里没有去externalCatalog里drop啊）
     if (!functionRegistry.dropFunction(FunctionIdentifier(name)) && !ignoreIfNotExists) {
       throw new NoSuchTempFunctionException(name)
     }
@@ -1168,6 +1177,10 @@ class SessionCatalog(
     // copied from HiveSessionCatalog
     val hiveFunctions = Seq("histogram_numeric")
 
+    // 一个function是temporary function必须同时满足以下3个条件：
+    // 1、已经注册在functionRegistry中且没有指定database；
+    // 2、不是一个built-in function
+    // 3、不是一个hive function（only “histogram_numeric” ？）
     // A temporary function is a function that has been registered in functionRegistry
     // without a database name, and is neither a built-in function nor a Hive function
     name.database.isEmpty &&
@@ -1191,6 +1204,7 @@ class SessionCatalog(
     functionRegistry.lookupFunction(name)
       .orElse(functionRegistry.lookupFunction(qualifiedName))
       .getOrElse {
+        // 如果在functionRegistry中找不到该function，再尝试从externalCatalog中寻找该function
         val db = qualifiedName.database.get
         requireDbExists(db)
         if (externalCatalog.functionExists(db, name.funcName)) {
@@ -1233,12 +1247,16 @@ class SessionCatalog(
     val database = formatDatabaseName(name.database.getOrElse(getCurrentDatabase))
     val qualifiedName = name.copy(database = Some(database))
 
+    // 再用function的qualified name，再functionRegistry中找找看（在上面的查找中，
+    // 我们用的是unqualified name）
     if (functionRegistry.functionExists(qualifiedName)) {
       // This function has been already loaded into the function registry.
       // Unlike the above block, we find this function by using the qualified name.
       return functionRegistry.lookupFunction(qualifiedName, children)
     }
 
+    // 到此为止，说明该function还没加载到function registry中。这意味着，该function是一个permanent function。
+    // 为此，我们需要先将该function注册到FunctionRegistry中。
     // The function has not been loaded to the function registry, which means
     // that the function is a permanent function (if it actually has been registered
     // in the metastore). We need to first put the function in the FunctionRegistry.
@@ -1249,6 +1267,7 @@ class SessionCatalog(
       case _: AnalysisException => failFunctionLookup(name)
       case _: NoSuchPermanentFunctionException => failFunctionLookup(name)
     }
+    // 加载该function所需的资源
     loadFunctionResources(catalogFunction.resources)
     // Please note that qualifiedName is provided by the user. However,
     // catalogFunction.identifier.unquotedString is returned by the underlying
