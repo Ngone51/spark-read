@@ -108,10 +108,12 @@ class SimpleFunctionRegistry extends FunctionRegistry {
 
   override def lookupFunction(name: FunctionIdentifier, children: Seq[Expression]): Expression = {
     val func = synchronized {
+      // _._2: FunctionBuilder
       functionBuilders.get(normalizeFuncName(name)).map(_._2).getOrElse {
         throw new AnalysisException(s"undefined function $name")
       }
     }
+    // 直接调用该FunctionBuilder，返回新生成的Expression
     func(children)
   }
 
