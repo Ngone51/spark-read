@@ -325,6 +325,7 @@ class IntParam(parent: String, name: String, doc: String, isValid: Int => Boolea
     this(parent, name, doc, ParamValidators.alwaysTrue)
 
   def this(parent: Identifiable, name: String, doc: String, isValid: Int => Boolean) =
+  // 注意，在这里只保留了parent.uid作为parent的代表
     this(parent.uid, name, doc, isValid)
 
   def this(parent: Identifiable, name: String, doc: String) = this(parent.uid, name, doc)
@@ -582,6 +583,7 @@ class IntArrayParam(parent: Params, name: String, doc: String, isValid: Array[In
 case class ParamPair[T] @Since("1.2.0") (
     @Since("1.2.0") param: Param[T],
     @Since("1.2.0") value: T) {
+  // 无论在什么时候指定一个parameter，我们都需要构建一个ParamPair对象，这样一来validate()方法才能被调用。
   // This is *the* place Param.validate is called.  Whenever a parameter is specified, we should
   // always construct a ParamPair so that validate is called.
   param.validate(value)
@@ -603,12 +605,27 @@ trait Params extends Identifiable with Serializable {
    * this variable gets initialized before other params.
    */
   lazy val params: Array[Param[_]] = {
+    /** 实验证明，如果有一个scala类：
+     * class Param(paramX: Int = -1) {
+     *   var param0 = 0
+     *   val param1 = 1
+     *   def param2 = 2
+     *   def param3() = 3
+     *   def param4(i: Int) = 4
+     *
+     * 则调用Param.getClass.getMethods，会返回paramX/0/1/2/3/4。也就是说，
+     * scala会把一个类的所有对象当做method来处理，包括var和val修饰的变量，甚至是构造参数（paramX）。
+     * 而对于java，实验证明，调用getMethods，只会返回对象的成员方法，而不会返回成员变量。
+     */
     val methods = this.getClass.getMethods
+    // （结合上述注释说明）对于KMeansParams对象，过滤之后的methods有：
+    // k、initMode、distanceMeasure、initSteps、seed等等。
     methods.filter { m =>
         Modifier.isPublic(m.getModifiers) &&
           classOf[Param[_]].isAssignableFrom(m.getReturnType) &&
           m.getParameterTypes.isEmpty
       }.sortBy(_.getName)
+      // invoke之后，就是一个个具体的参数了。
       .map(m => m.invoke(this).asInstanceOf[Param[_]])
   }
 
@@ -679,7 +696,9 @@ trait Params extends Identifiable with Serializable {
    * Sets a parameter in the embedded param map.
    */
   protected final def set(paramPair: ParamPair[_]): this.type = {
+    // 首先需要确认该param确实是属于该实例对象的
     shouldOwn(paramPair.param)
+    // 如果是，则使用显示设置的值更新该参数值。
     paramMap.put(paramPair)
     this
   }
@@ -739,6 +758,7 @@ trait Params extends Identifiable with Serializable {
    *                    gets called.
    */
   protected final def setDefault(paramPairs: ParamPair[_]*): this.type = {
+    // 到此时，说明paramPairs的所有param的有效性已经验证通过。
     paramPairs.foreach { p =>
       setDefault(p.param.asInstanceOf[Param[Any]], p.value)
     }
@@ -795,10 +815,16 @@ trait Params extends Identifiable with Serializable {
     extractParamMap(ParamMap.empty)
   }
 
-  /** Internal param map for user-supplied values. */
+  /**
+   * 一个内部的param map用于存储用户提供的参数值
+   * Internal param map for user-supplied values.
+   */
   private val paramMap: ParamMap = ParamMap.empty
 
-  /** Internal param map for default values. */
+  /**
+   * 一个内部的param map用于存储默认的参数值
+   * Internal param map for default values.
+   */
   private val defaultParamMap: ParamMap = ParamMap.empty
 
   /** Validates that the input param belongs to this instance. */
