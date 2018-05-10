@@ -52,7 +52,10 @@ private[clustering] trait KMeansParams extends Params with HasMaxIter with HasFe
   final val k = new IntParam(this, "k", "The number of clusters to create. " +
     "Must be > 1.", ParamValidators.gt(1))
 
-  /** @group getParam */
+  /**
+   * 注意 $() 是getOrDefault()函数的别名
+   * @group getParam
+   */
   @Since("1.5.0")
   def getK: Int = $(k)
 
