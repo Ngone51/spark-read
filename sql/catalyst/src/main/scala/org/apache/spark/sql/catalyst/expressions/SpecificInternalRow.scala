@@ -186,6 +186,7 @@ final class MutableAny extends MutableValue {
 }
 
 /**
+ * QUESTION：这种方式是如何减少gc的？
  * A row type that holds an array specialized container objects, of type [[MutableValue]], chosen
  * based on the dataTypes of each column.  The intent is to decrease garbage when modifying the
  * values of primitive columns.

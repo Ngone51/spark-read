@@ -225,6 +225,7 @@ case class ExpressionEncoder[T](
     clsTag: ClassTag[T])
   extends Encoder[T] {
 
+  // QUESTION: flat？
   if (flat) require(serializer.size == 1)
 
   // serializer expressions are used to encode an object to a row, while the object is usually an
