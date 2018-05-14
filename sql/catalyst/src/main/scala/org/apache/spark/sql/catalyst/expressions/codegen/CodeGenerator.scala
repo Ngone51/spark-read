@@ -116,6 +116,9 @@ class CodegenContext {
     val idx = references.length
     references += obj
     val clsName = Option(className).getOrElse(obj.getClass.getName)
+    // 返回一个代码片段
+    // ($clsName) 相当于是对reference[$idx]的类型强制转化。比如，obj为int类型，
+    // 则生成的代码片段为：(int) references[idx] /* int */
     s"(($clsName) references[$idx] /* $objName */)"
   }
 
@@ -195,6 +198,7 @@ class CodegenContext {
      */
     def getNextSlot(): String = {
       if (currentIndex < CodeGenerator.MUTABLESTATEARRAY_SIZE_LIMIT) {
+        // 返回一个（在java中）获取数组对应下标的值的代码片段，即arrayName[index]
         val res = s"${arrayNames.last}[$currentIndex]"
         currentIndex += 1
         res
@@ -256,6 +260,7 @@ class CodegenContext {
     // want to put a primitive type variable at outerClass for performance
     val canInlinePrimitive = isPrimitiveType(javaType) &&
       (inlinedMutableStates.length < CodeGenerator.OUTER_CLASS_VARIABLES_THRESHOLD)
+    // 如果是forceInline（true）或者是可以inline的基础类型或者是多维（大于1）的数组类型
     if (forceInline || canInlinePrimitive || javaType.contains("[][]")) {
       val varName = if (useFreshName) freshName(variableName) else variableName
       val initCode = initFunc(varName)
@@ -264,6 +269,7 @@ class CodegenContext {
       mutableStateNames += varName
       varName
     } else {
+      // 不能incline，则使用compact mutable states
       val arrays = arrayCompactedMutableStates.getOrElseUpdate(javaType, new MutableStateArrays)
       val element = arrays.getNextSlot()
 
@@ -294,9 +300,11 @@ class CodegenContext {
       initFunc: String => String = _ => ""): Unit = {
     val existingImmutableState = immutableStates.get(variableName)
     if (existingImmutableState.isEmpty) {
+      // 注意：useFreshName = false，forceInline = true
       addMutableState(javaType, variableName, initFunc, useFreshName = false, forceInline = true)
       immutableStates(variableName) = (javaType, initFunc(variableName))
     } else {
+      // 该变量已经存在
       val (prevJavaType, prevInitCode) = existingImmutableState.get
       assert(prevJavaType == javaType, s"$variableName has already been defined with type " +
         s"$prevJavaType and now it is tried to define again with type $javaType.")
@@ -311,6 +319,7 @@ class CodegenContext {
    * data types like: UTF8String, ArrayData, MapData & InternalRow.
    */
   def addBufferedState(dataType: DataType, variableName: String, initCode: String): ExprCode = {
+    // value是返回的变量名称
     val value = addMutableState(javaType(dataType), variableName)
     val code = dataType match {
       case StringType => s"$value = $initCode.clone();"
@@ -424,6 +433,7 @@ class CodegenContext {
 
   // Adds a new class. Requires the class' name, and its instance name.
   private def addClass(className: String, classInstance: String): Unit = {
+    // 插入到队首
     classes.prepend(className -> classInstance)
     classSize += className -> 0
     classFunctions += className -> mutable.Map.empty[String, String]
@@ -461,8 +471,10 @@ class CodegenContext {
       funcCode: String,
       inlineToOuterClass: Boolean): NewFunctionSpec = {
     val (className, classInstance) = if (inlineToOuterClass) {
+      // 如果inlineToOuterClass = true，则将该func添加到outerClass中
       outerClassName -> ""
     } else if (currClassSize > CodeGenerator.GENERATED_CLASS_SIZE_THRESHOLD) {
+      // 如果当前class的size超过了threshold，则创建内部类
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
 
@@ -470,14 +482,18 @@ class CodegenContext {
 
       className -> classInstance
     } else {
+      // 反之，返回当前的class，表明还能继续向该class中添加func
       currClass()
     }
 
+    // 向className对应的class，添加该func
     addNewFunctionToClass(funcName, funcCode, className)
 
     if (className == outerClassName) {
+      // 说明该func添加到了outerClass中
       NewFunctionSpec(funcName, None, None)
     } else {
+      // 说明该func添加到了outerClass的inner class中
       NewFunctionSpec(funcName, Some(className), Some(classInstance))
     }
   }
@@ -580,7 +596,11 @@ class CodegenContext {
   def getValue(input: String, dataType: DataType, ordinal: String): String = {
     val jt = javaType(dataType)
     dataType match {
+      // 在InternalRow中有很多的getInt()、getBoolean()、getByte()等方法，在这里input就是
+      // 一个InternalRow. 假设jt是Int类型，ordinal是0，则得到的代码片段是：
+      // input.getInt(0)
       case _ if isPrimitiveType(jt) => s"$input.get${primitiveTypeName(jt)}($ordinal)"
+      // 其余的（非基础类型），作针对性处理
       case t: DecimalType => s"$input.getDecimal($ordinal, ${t.precision}, ${t.scale})"
       case StringType => s"$input.getUTF8String($ordinal)"
       case BinaryType => s"$input.getBinary($ordinal)"
@@ -590,6 +610,7 @@ class CodegenContext {
       case _: MapType => s"$input.getMap($ordinal)"
       case NullType => "null"
       case udt: UserDefinedType[_] => getValue(input, udt.sqlType, ordinal)
+      // 对get到的结果用(jt)作强制的类型转化
       case _ => s"($jt)$input.get($ordinal, null)"
     }
   }
@@ -988,6 +1009,7 @@ class CodegenContext {
         }
       }
 
+      // funcName默认为'apply'
       val func = freshName(funcName)
       val argString = arguments.map { case (t, name) => s"$t $name" }.mkString(", ")
       val functions = blocks.zipWithIndex.map { case (body, i) =>
@@ -1000,11 +1022,14 @@ class CodegenContext {
         addNewFunctionInternal(name, code, inlineToOuterClass = false)
       }
 
+      // function的类型为NewFunctionSpec(nfs)，如果nfs.innerClassName为Empty，说明该function被添加到了
+      // outerClass中，反之，被添加到了innerClass中
       val (outerClassFunctions, innerClassFunctions) = functions.partition(_.innerClassName.isEmpty)
 
       val argsString = arguments.map(_._2).mkString(", ")
       val outerClassFunctionCalls = outerClassFunctions.map(f => s"${f.functionName}($argsString)")
 
+      // TODO read generateInnerClassesFunctionCalls
       val innerClassFunctionCalls = generateInnerClassesFunctionCalls(
         innerClassFunctions,
         func,
@@ -1038,6 +1063,7 @@ class CodegenContext {
         length = 0
       }
       blockBuilder.append(code)
+      // 计算在code去除注释和多余空行后的length
       length += CodeFormatter.stripExtraNewLinesAndComments(code).length
     }
     blocks += blockBuilder.toString()
@@ -1234,12 +1260,15 @@ class CodegenContext {
     // flat, see SPARK-15680.
     if (SparkEnv.get != null && SparkEnv.get.conf.getBoolean("spark.sql.codegen.comments", false)) {
       val name = freshName("c")
+      // 生成注释：如果text有多行，则用'/** */'多行注释；反之，使用'//'单行注释；
       val comment = if (text.contains("\n") || text.contains("\r")) {
         text.split("(\r\n)|\r|\n").mkString("/**\n * ", "\n * ", "\n */")
       } else {
         s"// $text"
       }
+      // 添加注释变量名name(c$id)到注释comment之间的映射
       placeHolderToComments += (name -> comment)
+      // 返回注释变量名
       s"/*$name*/"
     } else {
       ""

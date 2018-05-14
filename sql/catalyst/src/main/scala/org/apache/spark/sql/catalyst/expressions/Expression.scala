@@ -105,6 +105,9 @@ abstract class Expression extends TreeNode[Expression] {
       val isNull = ctx.freshName("isNull")
       val value = ctx.freshName("value")
       val eval = doGenCode(ctx, ExprCode("", isNull, value))
+      // 如果eval.code部分size太大（说白了就是字符串太长），我们就reduce该code size，即把这部分
+      // code封装成一个function，然后在eval直接调用该function就可以了。这样就减少了eval原先的code
+      // size。
       reduceCodeSize(ctx, eval)
       if (eval.code.nonEmpty) {
         // Add `this` in the comment.
@@ -116,8 +119,13 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   private def reduceCodeSize(ctx: CodegenContext, eval: ExprCode): Unit = {
+    // QUESTION：所谓的reduce code size就是把code封装成一个func吗？从哪个角度上来说，
+    // code的size变小了？
+    // ANSWER：现在，eval的code不再是原先冗长的code，而是直接调用一个func(i)。这样看，显然
+    // code size减小了啊；
     // TODO: support whole stage codegen too
     if (eval.code.trim.length > 1024 && ctx.INPUT_ROW != null && ctx.currentVars == null) {
+      // TODO read reduceCodeSize#setIsNull 啥意思？
       val setIsNull = if (eval.isNull != "false" && eval.isNull != "true") {
         val globalIsNull = ctx.addMutableState(ctx.JAVA_BOOLEAN, "globalIsNull")
         val localIsNull = eval.isNull

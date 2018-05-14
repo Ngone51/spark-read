@@ -74,6 +74,7 @@ trait InvokeLike extends Expression with NonSQLExpression {
 
     val argCodes = if (needNullCheck) {
       val reset = s"$resultIsNull = false;"
+      // argCodes就是由多个'if()'代码段构成的Seq
       val argCodes = arguments.zipWithIndex.map { case (e, i) =>
         val expr = e.genCode(ctx)
         val updateResultIsNull = if (e.nullable) {
@@ -89,8 +90,10 @@ trait InvokeLike extends Expression with NonSQLExpression {
           }
         """
       }
+      // 将reset代码段和argCodes代码段拼接起来
       reset +: argCodes
     } else {
+      // 反之不需要检查null arg（保证所有args不为null）
       arguments.zipWithIndex.map { case (e, i) =>
         val expr = e.genCode(ctx)
         s"""
