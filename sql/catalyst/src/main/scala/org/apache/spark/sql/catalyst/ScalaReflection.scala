@@ -209,6 +209,7 @@ object ScalaReflection extends ScalaReflection {
         val newTypePath = s"""- option value class: "$className"""" +: walkedTypePath
         WrapOption(deserializerFor(optType, path, newTypePath), dataTypeFor(optType))
 
+      // 如果t是Integer类型
       case t if t <:< localTypeOf[java.lang.Integer] =>
         val boxedType = classOf[java.lang.Integer]
         val objectType = ObjectType(boxedType)
@@ -373,6 +374,7 @@ object ScalaReflection extends ScalaReflection {
         Invoke(obj, "deserialize", ObjectType(udt.userClass), getPath :: Nil)
 
       case t if definedByConstructorParams(t) =>
+        // 获取类型t的constructor的参数列表；params格式：(fieldName, fieldType)
         val params = getConstructorParameters(t)
 
         val cls = getClassFromType(tpe)
@@ -380,6 +382,7 @@ object ScalaReflection extends ScalaReflection {
         val arguments = params.zipWithIndex.map { case ((fieldName, fieldType), i) =>
           val Schema(dataType, nullable) = schemaFor(fieldType)
           val clsName = getClassNameFromType(fieldType)
+          // Note: +：是向list的队首插入
           val newTypePath = s"""- field (class: "$clsName", name: "$fieldName")""" +: walkedTypePath
           // For tuples, we based grab the inner fields by ordinal instead of name.
           if (cls.getName startsWith "scala.Tuple") {
@@ -615,19 +618,24 @@ object ScalaReflection extends ScalaReflection {
           dataType = ObjectType(udt.getClass))
         Invoke(obj, "serialize", udt, inputObject :: Nil)
 
+      // t是Product类型或DefinedByConstructorParams类型
       case t if definedByConstructorParams(t) =>
         if (seenTypeSet.contains(t)) {
           throw new UnsupportedOperationException(
             s"cannot have circular references in class, but got the circular reference of class $t")
         }
 
+        // 获取constructor的参数列表, params的格式：(fieldName，fieldType)
         val params = getConstructorParameters(t)
         val nonNullOutput = CreateNamedStruct(params.flatMap { case (fieldName, fieldType) =>
+          // fieldName是java的保留字
           if (javaKeywords.contains(fieldName)) {
             throw new UnsupportedOperationException(s"`$fieldName` is a reserved keyword and " +
               "cannot be used as field name\n" + walkedTypePath.mkString("\n"))
           }
 
+          // 对于Product或DefinedByConstructorParams，我们需要验证它的每个参数值都不为null
+          // 注意：此处fieldValue(Invoke)的dataType是fieldType的dataType类型
           val fieldValue = Invoke(
             AssertNotNull(inputObject, walkedTypePath), fieldName, dataTypeFor(fieldType),
             returnNullable = !fieldType.typeSymbol.asClass.isPrimitive)
@@ -637,6 +645,8 @@ object ScalaReflection extends ScalaReflection {
           serializerFor(fieldValue, fieldType, newPath, seenTypeSet + t) :: Nil
         })
         val nullOutput = expressions.Literal.create(null, nonNullOutput.dataType)
+        // 构建If expression，如果inputObject的eval结果为null，则调用nullOutput的eval()；
+        // 反之，调用nonNullOutput的eval().
         expressions.If(IsNull(inputObject), nullOutput, nonNullOutput)
 
       case other =>
@@ -782,6 +792,9 @@ object ScalaReflection extends ScalaReflection {
   }
 
   /**
+   * 给定类型的fields是否全部由该类型的constructor的参数定义。只有两种类型满足该要求：
+   * 1、该类型是Product的子类（多为case class类型？）
+   * 2、改类型是 DefinedByConstructorParams的子类
    * Whether the fields of the given type is defined entirely by its constructor parameters.
    */
   def definedByConstructorParams(tpe: Type): Boolean = cleanUpReflectionObjects {

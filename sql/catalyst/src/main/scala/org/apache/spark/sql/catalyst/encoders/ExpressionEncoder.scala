@@ -58,6 +58,8 @@ object ExpressionEncoder {
     }
 
     val cls = mirror.runtimeClass(tpe)
+    // 如果tpe是Product（case class）类型或DefinedByConstructorParams类型， 则flat = false，这意味我们需要
+    // 在下面AssertNotNull。
     val flat = !ScalaReflection.definedByConstructorParams(tpe)
 
     val inputObject = BoundReference(0, ScalaReflection.dataTypeFor[T], nullable = !cls.isPrimitive)

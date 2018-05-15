@@ -282,10 +282,18 @@ object CreateStruct extends FunctionBuilder {
  * Common base class for both [[CreateNamedStruct]] and [[CreateNamedStructUnsafe]].
  */
 trait CreateNamedStructLike extends Expression {
+  // 假设children = Seq('a' :: 1 :: 'b' :: 2 :: 'c' :: 3),则group(2)会以每两个元素对children分组。
+  // 分组的结果为：('a', 1), ('b', 2), ('c', 3).然后，unzip又会把分组的结果转换为两个
+  // 组：('a', 'b', 'c'), (1, 2, 3)
   lazy val (nameExprs, valExprs) = children.grouped(2).map {
     case Seq(name, value) => (name, value)
   }.toList.unzip
 
+  // Comment by wuyi
+  // if children = Seq(Literal('value' :: Invoke(expr, ...))), so , here,
+  // `names` should be 'value'. Because Literal.eval()'s return result is 'value', which do not depends on
+  //  any input rows.
+  // 所以，在`CreateNamedStructLike`中，所有的nameExprs的eval()方法应该都具备上面提及的性质。
   lazy val names = nameExprs.map(_.eval(EmptyRow))
 
   override def nullable: Boolean = false
@@ -338,7 +346,7 @@ trait CreateNamedStructLike extends Expression {
 }
 
 /**
- * Creates a struct with the given field names and values
+ * Creates a c with the given field names and values
  *
  * @param children Seq(name1, val1, name2, val2, ...)
  */

@@ -207,7 +207,13 @@ abstract class SQLImplicits extends LowPrioritySQLImplicits {
   /** @since 1.6.1 */
   implicit def newStringArrayEncoder: Encoder[Array[String]] = ExpressionEncoder()
 
-  /** @since 1.6.1 */
+  /**
+   * @since 1.6.1
+   * 注意：case class会在编译完成后，自动继承Product
+   * TODO QUESTION： 用户自定义的class必须是case class类型吗？因为看其它的implicit方法没有合适的了
+   * ANSWER：在spark shell中做个实验就知道了啊！
+   * see https://blog.csdn.net/legotime/article/details/52328288 for details
+   */
   implicit def newProductArrayEncoder[A <: Product : TypeTag]: Encoder[Array[A]] =
     ExpressionEncoder()
 

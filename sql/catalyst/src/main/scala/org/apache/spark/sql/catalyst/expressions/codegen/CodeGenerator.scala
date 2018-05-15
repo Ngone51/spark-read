@@ -269,7 +269,7 @@ class CodegenContext {
       mutableStateNames += varName
       varName
     } else {
-      // 不能incline，则使用compact mutable states
+      // 不能inline，则使用compact mutable states
       val arrays = arrayCompactedMutableStates.getOrElseUpdate(javaType, new MutableStateArrays)
       val element = arrays.getNextSlot()
 
@@ -1380,6 +1380,8 @@ object CodeGenerator extends Logging {
   // class.
   final val GENERATED_CLASS_SIZE_THRESHOLD = 1000000
 
+  // 在outer class中，全局变量（java基础数据类型或复杂类型（例如多为的数组））的总数不能超过该值。
+  // 如果超过该值，则需要在该outer class中构建一个inner class，来放置其它变量。
   // This is the threshold for the number of global variables, whose types are primitive type or
   // complex type (e.g. more than one-dimensional array), that will be placed at the outer class
   final val OUTER_CLASS_VARIABLES_THRESHOLD = 10000

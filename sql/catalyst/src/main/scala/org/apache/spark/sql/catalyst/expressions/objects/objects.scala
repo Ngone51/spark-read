@@ -137,11 +137,13 @@ case class StaticInvoke(
   override def children: Seq[Expression] = arguments
 
   override def eval(input: InternalRow): Any =
+    // 对于StaticInvoke，只支持code-generated eval
     throw new UnsupportedOperationException("Only code-generated evaluation is supported.")
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = ctx.javaType(dataType)
 
+    // resultIsNull: 只要有一个参数为null，则整个结果就为null了。
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val callFunc = s"$objectName.$functionName($argString)"
@@ -154,6 +156,8 @@ case class StaticInvoke(
     }
 
     val evaluate = if (returnNullable) {
+      // 如果defaultValue(dataType) == "null"，说明我们没有通过dataType得到一个java的基础类型
+      // （dataType本身可以身ObjectType，然后有可能包含一个primitive java type）
       if (ctx.defaultValue(dataType) == "null") {
         s"""
           ${ev.value} = $callFunc;
