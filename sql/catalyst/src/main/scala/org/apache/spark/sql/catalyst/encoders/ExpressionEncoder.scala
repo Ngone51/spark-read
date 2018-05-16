@@ -70,6 +70,8 @@ object ExpressionEncoder {
       // doesn't allow top-level row to be null, only its columns can be null.
       AssertNotNull(inputObject, Seq("top level Product input object"))
     }
+    // 注意serializer的类型是CreateNamedStruct（如果T是类型case class Person(name: String, age: Int),
+    // 则CreateNamedStruct会包含Person的name、age字段的信息）
     val serializer = ScalaReflection.serializerFor[T](nullSafeInput)
     val deserializer = ScalaReflection.deserializerFor[T]
 
@@ -228,6 +230,9 @@ case class ExpressionEncoder[T](
   extends Encoder[T] {
 
   // QUESTION: flat？
+  // ANSWER: 如果是java的基础类型，e.g. int,long, 则flat = true，此时， serializer.size = 1；
+  // 而如果是Product或DefinedByConstructorParams，e.g. case class Person(name: String, age Int)，
+  // 则serializer.size > 1。因为name，age这两个字段都会有各自的serializer。
   if (flat) require(serializer.size == 1)
 
   // serializer expressions are used to encode an object to a row, while the object is usually an

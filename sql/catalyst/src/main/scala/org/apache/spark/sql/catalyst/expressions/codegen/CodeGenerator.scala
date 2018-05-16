@@ -271,8 +271,10 @@ class CodegenContext {
     } else {
       // 不能inline，则使用compact mutable states
       val arrays = arrayCompactedMutableStates.getOrElseUpdate(javaType, new MutableStateArrays)
+      // element：array[i]，数组的访问方式
       val element = arrays.getNextSlot()
 
+      // 把initFunc的结果（代码片段）存储在element中
       val initCode = initFunc(element)
       mutableStateInitCode += initCode
       element
@@ -1241,6 +1243,7 @@ class CodegenContext {
   def generateExpressions(
       expressions: Seq[Expression],
       doSubexpressionElimination: Boolean = false): Seq[ExprCode] = {
+    // TODO read when doSubexpressionElimination = true
     if (doSubexpressionElimination) subexpressionElimination(expressions)
     expressions.map(e => e.genCode(this))
   }

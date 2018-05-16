@@ -307,33 +307,43 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
       ctx: CodegenContext,
       expressions: Seq[Expression],
       useSubexprElimination: Boolean = false): ExprCode = {
+    // 生成所有Expressions的ExprCode
     val exprEvals = ctx.generateExpressions(expressions, useSubexprElimination)
     val exprTypes = expressions.map(_.dataType)
 
+    // 统计可变长的filed类型的个数
     val numVarLenFields = exprTypes.count {
       case dt if UnsafeRow.isFixedLength(dt) => false
       // TODO: consider large decimal and interval type
       case _ => true
     }
 
+    // 注意：这里返回的不是变量名“result”，而是（类似）“array[i]”（数组访问的代码片段）
     val result = ctx.addMutableState("UnsafeRow", "result",
       v => s"$v = new UnsafeRow(${expressions.length});")
 
+    // 一个fully-qualified class name
     val holderClass = classOf[BufferHolder].getName
+    // $result的值就是array[i]引用的在上面addMutableState第三个参数initFunc创建的UnsafeRow对象；
+    // 不过此时，这里还都只是代码片段。
     val holder = ctx.addMutableState(holderClass, "holder",
       v => s"$v = new $holderClass($result, ${numVarLenFields * 32});")
 
+    // 如果有变长的fields的，则需要生成BufferHolder.reset的代码段
+    // （现在我们当然还不知道为什么啦。。。先放在这里。。。有缘再见）
     val resetBufferHolder = if (numVarLenFields == 0) {
       ""
     } else {
       s"$holder.reset();"
     }
+    // 如果有变长的fields，则需要生成result(UnsafeRow).totalSize的代码段
     val updateRowSize = if (numVarLenFields == 0) {
       ""
     } else {
       s"$result.setTotalSize($holder.totalSize());"
     }
 
+    // TODO read
     // Evaluate all the subexpression.
     val evalSubexpr = ctx.subexprFunctions.mkString("\n")
 
@@ -369,6 +379,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
   private def create(
       expressions: Seq[Expression],
       subexpressionEliminationEnabled: Boolean): UnsafeProjection = {
+    // 为该Projection新建一个GodegenContext
     val ctx = newCodeGenContext()
     val eval = createCode(ctx, expressions, subexpressionEliminationEnabled)
 
