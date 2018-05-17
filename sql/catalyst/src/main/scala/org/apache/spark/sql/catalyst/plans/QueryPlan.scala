@@ -31,22 +31,29 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * in Driver and use the captured values in Executors.
    * See [[SQLConf.get]] for more information.
    */
+  // TODO read SQLConf.get
   def conf: SQLConf = SQLConf.get
 
   def output: Seq[Attribute]
 
   /**
+   * 该节点的输出AttributesSet
    * Returns the set of attributes that are output by this node.
    */
   def outputSet: AttributeSet = AttributeSet(output)
 
   /**
+   * 所有来自该operator的expressions中出现的attributes。注意：该set不包含那些被正在
+    * 传输到output tuple（？？？）所隐含引用的attributes。
    * All Attributes that appear in expressions from this operator.  Note that this set does not
    * include attributes that are implicitly referenced by being passed through to the output tuple.
    */
   def references: AttributeSet = AttributeSet(expressions.flatMap(_.references))
 
   /**
+   * 该节点的输入AttributeSet。由所有children的output Attributes集合组成。也就是说，children的输出（output）
+   * 作为该（父）node的输入（input）。
+   * 注意：children必须是QueryPlan类型
    * The set of all attributes that are input to this operator by its children.
    */
   def inputSet: AttributeSet =
@@ -58,6 +65,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   def producedAttributes: AttributeSet = AttributeSet.empty
 
   /**
+   * 该operator中的expressions所引用的，但是该node的children或该node自己没有提供的attributes。（也就是说，
+   * 这些attributes missing了）
    * Attributes that are referenced by expressions but not provided by this node's children.
    * Subclasses should override this method if they produce attributes internally as it is used by
    * assertions designed to prevent the construction of invalid plans.
@@ -146,6 +155,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
       case other => Nil
     }
 
+    // 对于case class Person(name: String, age: Int)，productIterator = (name, age).iterator。注意是name和age的值，
+    // 而不是变量名称。
     productIterator.flatMap {
       case e: Expression => e :: Nil
       case s: Some[_] => seqToExpressions(s.toSeq)
@@ -165,6 +176,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   // scalastyle:on println
 
   /**
+   * 从这里可以看到，如果一个plan的children不为空，但是却有missing的attributes，则这个plan被认定是无效的。
+   *
    * A prefix string used when printing the plan.
    *
    * We use "!" to indicate an invalid plan, and "'" to indicate an unresolved plan.
@@ -263,6 +276,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   final def semanticHash(): Int = canonicalized.hashCode()
 
   /**
+   * 能够被该plan所使用的所有attributes，即由所有children提供的attributes。(结果有序？？？)
+   * （注意区分和reference的区别）
    * All the attributes that are used for this plan.
    */
   lazy val allAttributes: AttributeSeq = children.flatMap(_.output)
@@ -276,13 +291,16 @@ object QueryPlan extends PredicateHelper {
    * `Attribute`, and replace it with `BoundReference` will cause error.
    */
   def normalizeExprId[T <: Expression](e: T, input: AttributeSeq): T = {
+    // transformUp：后序遍历，自下而上
     e.transformUp {
       case s: SubqueryExpression => s.canonicalize(input)
       case ar: AttributeReference =>
         val ordinal = input.indexOf(ar.exprId)
         if (ordinal == -1) {
+          // ar在input（该plan的children的所有output attributes）不存在。（说明什么？？？）
           ar
         } else {
+          // 由ar.exprId变为ordinal
           ar.withExprId(ExprId(ordinal))
         }
     }.canonicalized.asInstanceOf[T]

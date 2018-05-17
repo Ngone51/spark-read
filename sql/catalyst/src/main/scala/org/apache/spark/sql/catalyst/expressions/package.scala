@@ -101,6 +101,7 @@ package object expressions  {
 
 
   /**
+   * 注意：AttributeSeq是一个implicit class
    * Helper functions for working with `Seq[Attribute]`.
    */
   implicit class AttributeSeq(val attrs: Seq[Attribute]) extends Serializable {
@@ -117,6 +118,7 @@ package object expressions  {
     @transient private lazy val exprIdToOrdinal = {
       val arr = attrsArray
       val map = Maps.newHashMapWithExpectedSize[ExprId, Int](arr.length)
+      // 哈？？？
       // Iterate over the array in reverse order so that the final map value is the first attribute
       // with a given expression id.
       var index = arr.length - 1

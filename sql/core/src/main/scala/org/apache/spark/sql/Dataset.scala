@@ -62,6 +62,9 @@ import org.apache.spark.util.Utils
 
 private[sql] object Dataset {
   def apply[T: Encoder](sparkSession: SparkSession, logicalPlan: LogicalPlan): Dataset[T] = {
+    // QUESTION： 这个implicity[Encoder[T]]是要重新创建一个ExpressionEncoder吗？还是说，如果我已经创建过了，
+    // 这边就隐含的传过来了，就不用再创建了？（比如，我是从SparkSession#createDataset()过来的）
+    // (不过简单想想，肯定不会重新再创建)
     new Dataset(sparkSession, logicalPlan, implicitly[Encoder[T]])
   }
 

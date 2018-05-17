@@ -33,6 +33,7 @@ import org.apache.spark.sql.types.{BinaryType, DateType, DecimalType, TimestampT
 import org.apache.spark.util.Utils
 
 /**
+ * 使用spark执行关系查询的主要工作流程。基于良好的设计，开发者能够轻松地访问查询执行过程的中间阶段。
  * The primary workflow for executing relational queries using Spark.  Designed to allow easy
  * access to the intermediate phases of query execution for developers.
  *

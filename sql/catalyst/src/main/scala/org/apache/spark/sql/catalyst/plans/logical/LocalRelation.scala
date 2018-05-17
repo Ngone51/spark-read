@@ -49,6 +49,15 @@ case class LocalRelation(output: Seq[Attribute],
                          override val isStreaming: Boolean = false)
   extends LeafNode with analysis.MultiInstanceRelation {
 
+  // QUESTION：既然output是Attribute类型，Attribute又是LeafExpression类型，所以，output是没有children的。
+  // 然后我们看resolved方法，需保证checkInputDataTypes().isSuccess == true即可。然后再看，Attribute也没有
+  // 实现自己的checkInputDataTypes()方法。而Expression默认的实现是checkInputDataTypes().isSuccess = true。
+  // 难道，这里的require检查是多余的？
+  // ANSWER：不，并不是多余的！如果output是AttributeReference类型，则肯定resolved = true（AttributeReference已经
+  // 指明了告诉你它引用的是哪一个字段啊，当然是resolved = true啦）。而如果output是UnresolvedAttribute，则resolved
+  // 默认为false，需要先resolve它，我们才能使用它。所以对于UnresolvedAttribute，我们需要先resolve它，才能再用来构建
+  // Relation（不然Relation不知道去哪里读写哪些字段啊）。output还有一种可能的类型是PrettyAttribute。（这种类型目前
+  // 我还太了解，不过看起来它的resolved默认也是为true。）
   // A local relation must have resolved output.
   require(output.forall(_.resolved), "Unresolved attributes found when constructing LocalRelation.")
 
@@ -69,6 +78,7 @@ case class LocalRelation(output: Seq[Attribute],
     }
   }
 
+  // 计算该LocalRelation的可写出的字节总数
   override def computeStats(): Statistics =
     Statistics(sizeInBytes = output.map(n => BigInt(n.dataType.defaultSize)).sum * data.length)
 

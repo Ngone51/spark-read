@@ -39,6 +39,9 @@ object AttributeSet {
 
   /** Constructs a new [[AttributeSet]] given a sequence of [[Expression Expressions]]. */
   def apply(baseSet: Iterable[Expression]): AttributeSet = {
+    // 注意：AttributeSet继承了Traversable接口，并覆盖了toSeq方法。而在flatMap()中会用到
+    // seq方法，估计也是通过toSeq来实现。所以，在map(new AttributeEquals(_))中，_才会是
+    // Attribute类型。（不然就说不通了。。。）
     new AttributeSet(
       baseSet
         .flatMap(_.references)

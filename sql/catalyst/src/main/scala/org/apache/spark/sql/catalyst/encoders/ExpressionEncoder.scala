@@ -287,12 +287,18 @@ case class ExpressionEncoder[T](
   }
 
   /**
+   * 返回对象`t`的编码版本，即Spark SQL row的形式。注意：对于同一个对象`t`多次调用toRow()是允许的，且需要返回
+   * 相同的InternalRow对象。因此，调用者需要在发起另一次调用之前，拷贝当前的结果对象。（否则，如果有多个线程操作
+   * 该相同的row，该row的状态会发生变化，导致不同的线程无法维护各自的读写状态。）
    * Returns an encoded version of `t` as a Spark SQL row.  Note that multiple calls to
    * toRow are allowed to return the same actual [[InternalRow]] object.  Thus, the caller should
    * copy the result before making another call if required.
    */
   def toRow(t: T): InternalRow = try {
     inputRow(0) = t
+    // 请看GenerateUnsafeProjection#create()里gencode。因为extractProjection是通过gencode生成的，所以我们在idea里
+    // 无法直接查看它的代码，只能看到通过gencode生成的字符串代码。最后能够通过该方法中的logDebug，查看一下完整的
+    // 生成的代码，更有助于理解。
     extractProjection(inputRow)
   } catch {
     case e: Exception =>

@@ -210,9 +210,10 @@ abstract class SQLImplicits extends LowPrioritySQLImplicits {
   /**
    * @since 1.6.1
    * 注意：case class会在编译完成后，自动继承Product
-   * TODO QUESTION： 用户自定义的class必须是case class类型吗？因为看其它的implicit方法没有合适的了
-   * ANSWER：在spark shell中做个实验就知道了啊！
    * see https://blog.csdn.net/legotime/article/details/52328288 for details
+   *
+   * QUESTION： 用户自定义的class必须是case class类型吗？（因为看其它的implicit方法没有合适的了呀）
+   * ANSWER：目前来说确实是这样的。see: https://databricks.com/glossary/what-are-datasets
    */
   implicit def newProductArrayEncoder[A <: Product : TypeTag]: Encoder[Array[A]] =
     ExpressionEncoder()
