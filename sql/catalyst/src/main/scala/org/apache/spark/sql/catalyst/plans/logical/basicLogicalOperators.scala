@@ -29,6 +29,9 @@ import org.apache.spark.util.Utils
 import org.apache.spark.util.random.RandomSampler
 
 /**
+ * 注意：UnaryNode继承了LogicalPlan
+ * 当规划take()或collect()操作时，该特殊的节点会在调用query planner之前插入到logical plan的
+ * 顶端（即，作为logical plan这颗tree的root节点）
  * When planning take() or collect() operations, this special node that is inserted at the top of
  * the logical plan before invoking the query planner.
  *

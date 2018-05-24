@@ -324,6 +324,7 @@ case class ExpressionEncoder[T](
    * has not been done already in places where we plan to do later composition of encoders.
    */
   def assertUnresolved(): Unit = {
+    // TODO read 啥意思啊？看不懂
     (deserializer +:  serializer).foreach(_.foreach {
       case a: AttributeReference if a.name != "loopVar" =>
         sys.error(s"Unresolved encoder expected, but $a was found.")

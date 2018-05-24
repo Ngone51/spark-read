@@ -66,6 +66,7 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
   }
 
   lazy val analyzed: LogicalPlan = {
+    // TODO read SparkSession.setActiveSession
     SparkSession.setActiveSession(sparkSession)
     sparkSession.sessionState.analyzer.execute(logical)
   }

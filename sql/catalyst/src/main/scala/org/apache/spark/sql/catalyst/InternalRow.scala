@@ -89,6 +89,7 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
       values(i) = get(i, fieldTypes(i))
       i += 1
     }
+    // values中元素的顺序与fieldTypes(Seq)保持相同
     values
   }
 

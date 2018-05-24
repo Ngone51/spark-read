@@ -3234,6 +3234,8 @@ class Dataset[T] private[sql](
   }
 
   /**
+   * 封装一个Dataset的action来追踪QueryExecution对象以及（查询执行）耗时，然后报告给用户注册的回调函数（其实
+   * 就是通过listenerManager来调用回调函数）。
    * Wrap a Dataset action to track the QueryExecution and time cost, then report to the
    * user-registered callback functions.
    */

@@ -39,6 +39,7 @@ abstract class GenericStrategy[PhysicalPlan <: TreeNode[PhysicalPlan]] extends L
 }
 
 /**
+ * 一个用于将LogicalPlan（逻辑计划）转化为physical plan（物理计划）的抽象类。
  * Abstract class for transforming [[LogicalPlan]]s into physical plans.
  * Child classes are responsible for specifying a list of [[GenericStrategy]] objects that
  * each of which can return a list of possible physical plan options.
