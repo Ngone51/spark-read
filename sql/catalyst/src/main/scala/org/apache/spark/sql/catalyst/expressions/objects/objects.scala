@@ -190,6 +190,11 @@ case class StaticInvoke(
 }
 
 /**
+ * 调用一个object的指定方法。如果该方法需要参数，则可以传若干参数。如果"targetObject" expression的eval结果
+ * 为null，则会直接返回null。
+ * 举个例子，如果targetObject为"case class Person(age: Int, name: String)"，则functionName可以是"age"
+ * 或者"name"，而arguments = Nil（这两个方法都不需要传参数）。而调用方法"age"和"name"的前提是targetObject
+ * 不为null。
  * Calls the specified function on an object, optionally passing arguments.  If the `targetObject`
  * expression evaluates to null then null will be returned.
  *

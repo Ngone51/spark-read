@@ -480,6 +480,8 @@ object ScalaReflection extends ScalaReflection {
     }
 
     tpe.dealias match {
+        // QUESTION: 如果不是ObjectType就直接返回该inputObject ？？？（所以，是基础类型咯？）
+        // 那怎么解释"case t if t <:< localTypeOf[java.lang.Integer]"？？？难道是int和Integer的区别？
       case _ if !inputObject.dataType.isInstanceOf[ObjectType] => inputObject
 
       case t if t <:< localTypeOf[Option[_]] =>
@@ -634,7 +636,8 @@ object ScalaReflection extends ScalaReflection {
               "cannot be used as field name\n" + walkedTypePath.mkString("\n"))
           }
 
-          // 对于Product或DefinedByConstructorParams，我们需要验证它的每个参数值都不为null
+          // 对于Product或DefinedByConstructorParams，我们需要验证它（inputObject）自身不为null。
+          // 然后，我们才能再调用它（inputObject）的某个field（当然，filed是可以为null的）
           // 注意：此处fieldValue(Invoke)的dataType是fieldType的dataType类型
           val fieldValue = Invoke(
             AssertNotNull(inputObject, walkedTypePath), fieldName, dataTypeFor(fieldType),
