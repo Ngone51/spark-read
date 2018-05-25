@@ -251,6 +251,8 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       val bos = new ByteArrayOutputStream()
       val out = new DataOutputStream(codec.compressedOutputStream(bos))
       while (iter.hasNext && (n < 0 || count < n)) {
+        // QUESTION：每个partition对应一个row？？？
+        // ANSWER: 不对。每个iter（iterator）对应一个分区的数据，而一个iterator则对应了多个rows（看while循环就知道了）
         val row = iter.next().asInstanceOf[UnsafeRow]
         out.writeInt(row.getSizeInBytes)
         row.writeToStream(out, buffer)
@@ -280,6 +282,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
         val bs = new Array[Byte](sizeOfNextRow)
         ins.readFully(bs)
         val row = new UnsafeRow(nFields)
+        // 指定该unsafeRow的baseObject和sizeInBytes
         row.pointTo(bs, sizeOfNextRow)
         sizeOfNextRow = ins.readInt()
         row
@@ -295,6 +298,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
 
     val results = ArrayBuffer[InternalRow]()
     byteArrayRdd.collect().foreach { countAndBytes =>
+      // 注意countAndBytes的形式是：（Long, Array[Byte]），即byteArrayRdd的泛型类型
       decodeUnsafeRows(countAndBytes._2).foreach(results.+=)
     }
     results.toArray

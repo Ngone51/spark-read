@@ -24,12 +24,18 @@ import org.apache.spark.sql.execution.metric.SQLMetrics
 
 
 /**
+ * 一个用于遍历本地集合的数据的物理计划节点
  * Physical plan node for scanning data from a local collection.
  */
 case class LocalTableScanExec(
     output: Seq[Attribute],
     @transient rows: Seq[InternalRow]) extends LeafExecNode {
 
+  // 不同的exec应该有它们各自不同的metric，因为它们的关注点不一样啊。比如对于该exec，我们只关系该table的行数咯
+  // TODO read SQLMetric extremely
+  // SQLMetric是AccumulatorV2类型的。在这里，我们创建了一个名为"number of output rows"的SQLMetric，
+  // 用于统计该table的输出行数。
+  // 注意："numOutputRows"相当于是对该metric的一个别名，而不是该metric真正的名称。
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
@@ -42,6 +48,7 @@ case class LocalTableScanExec(
     }
   }
 
+  // 分区个数（在默认的cores个数和unsafeRows.length中抉择）
   private lazy val numParallelism: Int = math.min(math.max(unsafeRows.length, 1),
     sqlContext.sparkContext.defaultParallelism)
 
@@ -50,6 +57,8 @@ case class LocalTableScanExec(
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     rdd.map { r =>
+      // 注意：numOutputRows是AccumulatorV2类型的对象，所以，该对象会在各个分区上做一次累加。
+      // 最后，在driver端得到的结果就是各个分区累加后的总和。
       numOutputRows += 1
       r
     }
@@ -65,6 +74,7 @@ case class LocalTableScanExec(
 
   override def executeCollect(): Array[InternalRow] = {
     longMetric("numOutputRows").add(unsafeRows.size)
+    // 因为是本地的table，所以直接可以返回结果unsafeRows，而不用发起spark job
     unsafeRows
   }
 

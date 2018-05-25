@@ -3241,19 +3241,24 @@ class Dataset[T] private[sql](
    */
   private def withAction[U](name: String, qe: QueryExecution)(action: SparkPlan => U) = {
     try {
+      // 初始化该plan的metric（不同的plan/exec应该有它们各自不同的metric）
       qe.executedPlan.foreach { plan =>
         plan.resetMetrics()
       }
+      // 记录execution执行的开始时间
       val start = System.nanoTime()
       val result = SQLExecution.withNewExecutionId(sparkSession, qe) {
         action(qe.executedPlan)
       }
+      // 记录execution执行的结束时间，以统计该execution执行耗时
       val end = System.nanoTime()
+      // 通知listeners，该execution执行成功
       sparkSession.listenerManager.onSuccess(name, qe, end - start)
       result
     } catch {
       case e: Exception =>
-        sparkSession.listenerManager.onFailure(name, qe, e)
+        // 通知listeners，该execution执行失败
+      sparkSession.listenerManager.onFailure(name, qe, e)
         throw e
     }
   }

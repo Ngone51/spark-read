@@ -63,25 +63,38 @@ abstract class QueryPlanner[PhysicalPlan <: TreeNode[PhysicalPlan]] {
     // Collect physical plan candidates.
     val candidates = strategies.iterator.flatMap(_(plan))
 
+    // candidates可能包含标记为planLater的占位符，所以需要将其替换成他们的child plans
     // The candidates may contain placeholders marked as [[planLater]],
     // so try to replace them by their child plans.
     val plans = candidates.flatMap { candidate =>
+      // 类型：Seq[(SparkPlan, LogicalPlan)]
       val placeholders = collectPlaceholders(candidate)
 
       if (placeholders.isEmpty) {
         // Take the candidate as is because it does not contain placeholders.
         Iterator(candidate)
       } else {
+        // 虽然candidate用Iterator包裹了，但是此处应该只有一个candidate。之所以这样做，是因为该plan函数
+        // 最终需要返回Iterator的格式。
+        // 注意: placeholders是该candidate对应的所有planLater，即一个candidate可能有多个placeholders
         // Plan the logical plan marked as [[planLater]] and replace the placeholders.
         placeholders.iterator.foldLeft(Iterator(candidate)) {
+          // 注意：这个case其实是foldLeft里op函数的两个参数。第一个参数就是Iterator(candidate)，
+          // 第二个参数是（placeholder, logicalPlan）（即placeholders foreach之后的每个元素）
+          // 但是注意：真正传进op函数的第一个参数是result，而第一次传进来的result确实是Iterator(candidate)。
+          // 但是由于foldLeft的迭代计算，result是会持续变化的！！！
           case (candidatesWithPlaceholders, (placeholder, logicalPlan)) =>
+            // 为该placeholder的logicalPlan上physical plan
             // Plan the logical plan for the placeholder.
             val childPlans = this.plan(logicalPlan)
 
+            // 注意这两个长得很像的变量在'W'之前差了一个‘s’
             candidatesWithPlaceholders.flatMap { candidateWithPlaceholders =>
               childPlans.map { childPlan =>
                 // Replace the placeholder by the child plan
                 candidateWithPlaceholders.transformUp {
+                  // 即使childPlans有多个，在该替换第一次发生之后，也不会再有相同的替换发生了。因为placeholder已经
+                  // 被替换掉了呀。所以，这里的map相当于只执行了一次next。（理解的对吗？？？）
                   case p if p == placeholder => childPlan
                 }
               }

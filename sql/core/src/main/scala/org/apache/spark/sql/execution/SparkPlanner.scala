@@ -52,6 +52,7 @@ class SparkPlanner(
   def extraPlanningStrategies: Seq[Strategy] = Nil
 
   override protected def collectPlaceholders(plan: SparkPlan): Seq[(SparkPlan, LogicalPlan)] = {
+    // collect会将{f}中的方法应用于plan这颗树上所有适用于此方法的节点
     plan.collect {
       case placeholder @ PlanLater(logicalPlan) => placeholder -> logicalPlan
     }

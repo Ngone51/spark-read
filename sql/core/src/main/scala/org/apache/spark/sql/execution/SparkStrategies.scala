@@ -515,6 +515,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       case logical.Sample(lb, ub, withReplacement, seed, child) =>
         execution.SampleExec(lb, ub, withReplacement, seed, planLater(child)) :: Nil
       case logical.LocalRelation(output, data, _) =>
+        // 如果Dataset由内存中的数据集之间构建，则得到的就是LocalRelation
         LocalTableScanExec(output, data) :: Nil
       case logical.LocalLimit(IntegerLiteral(limit), child) =>
         execution.LocalLimitExec(limit, planLater(child)) :: Nil

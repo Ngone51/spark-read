@@ -554,7 +554,11 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
       int dataRemaining = sizeInBytes;
       long rowReadPosition = baseOffset;
       while (dataRemaining > 0) {
+        // writeBuffer默认4M
         int toTransfer = Math.min(writeBuffer.length, dataRemaining);
+        // writeBuffer在这里扮演了桥梁的角色。先将unsafeRow底层的off-heap的data拷贝到on-heap的byte array中（即
+        // 此处的writeBuffer），再将on-heap的byte array中的data写入到outputStream（即此处的out）中。
+        // 之所以这样做，是因为jdk没有提供直接将on-heap的data写入on-heap的output stream中去的方法啊。
         Platform.copyMemory(
           baseObject, rowReadPosition, writeBuffer, Platform.BYTE_ARRAY_OFFSET, toTransfer);
         out.write(writeBuffer, 0, toTransfer);

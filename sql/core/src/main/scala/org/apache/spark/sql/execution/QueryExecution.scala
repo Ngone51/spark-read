@@ -86,6 +86,8 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
     planner.plan(ReturnAnswer(optimizedPlan)).next()
   }
 
+  // TODO read prepareForExecution(sparkPlan)
+  // executedPlan不能用于初始化任何SparkPlan（哈？），它应该只被用来执行！！！
   // executedPlan should not be used to initialize any SparkPlan. It should be
   // only used for execution.
   lazy val executedPlan: SparkPlan = prepareForExecution(sparkPlan)
@@ -94,10 +96,14 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
   lazy val toRdd: RDD[InternalRow] = executedPlan.execute()
 
   /**
+   * 根据需要插入shuffle operations以及internal row的格式转换来为该paln的执行做准备
    * Prepares a planned [[SparkPlan]] for execution by inserting shuffle operations and internal
    * row format conversions as needed.
    */
   protected def prepareForExecution(plan: SparkPlan): SparkPlan = {
+    // TODO read prepareForExecution
+    // case (sp, rule): sp即sparkPlan，在foldLeft的迭代计算过程中，
+    // 应用于一个个rule（更新）之后的plan。rule即preparations的rules。
     preparations.foldLeft(plan) { case (sp, rule) => rule.apply(sp) }
   }
 

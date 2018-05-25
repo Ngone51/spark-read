@@ -794,7 +794,7 @@ object ScalaReflection extends ScalaReflection {
   /**
    * 给定类型的fields是否全部由该类型的constructor的参数定义。只有两种类型满足该要求：
    * 1、该类型是Product的子类（多为case class类型？）
-   * 2、改类型是 DefinedByConstructorParams的子类
+   * 2、该类型是 DefinedByConstructorParams的子类
    * Whether the fields of the given type is defined entirely by its constructor parameters.
    */
   def definedByConstructorParams(tpe: Type): Boolean = cleanUpReflectionObjects {

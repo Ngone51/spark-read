@@ -48,6 +48,7 @@ object ExpressionEncoder {
     val mirror = ScalaReflection.mirror
     val tpe = typeTag[T].in(mirror).tpe
 
+    // 不支持Option[MyClass]这样的数据类型
     if (ScalaReflection.optionOfProductType(tpe)) {
       throw new UnsupportedOperationException(
         "Cannot create encoder for Option of Product type, because Product type is represented " +
@@ -58,14 +59,17 @@ object ExpressionEncoder {
     }
 
     val cls = mirror.runtimeClass(tpe)
-    // 如果tpe是Product（case class）类型或DefinedByConstructorParams类型， 则flat = false，这意味我们需要
-    // 在下面AssertNotNull。
+    // 如果tpe是Product（case class）类型或DefinedByConstructorParams类型， 则flat = false，这意味
+    // serializer.size > 1，且需要在下面添加AssertNotNull。反之，如果tpe为基础类型，e.g. int，long，
+    // 则flat = true，此时serializer.size == 1，而且也不需要添加AssertNotNull，因为对于每一个基础类型，
+    // 都有一个对应的默认值。
     val flat = !ScalaReflection.definedByConstructorParams(tpe)
 
     val inputObject = BoundReference(0, ScalaReflection.dataTypeFor[T], nullable = !cls.isPrimitive)
     val nullSafeInput = if (flat) {
       inputObject
     } else {
+      // 如果inputObject是Product类型，则inputObject本身不能为null，但是inputObject的成员变量可以为null。
       // For input object of Product type, we can't encode it to row if it's null, as Spark SQL
       // doesn't allow top-level row to be null, only its columns can be null.
       AssertNotNull(inputObject, Seq("top level Product input object"))
