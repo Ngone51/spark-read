@@ -122,6 +122,9 @@ object ScalaReflection extends ScalaReflection {
   }
 
   /**
+   * 返回一个用于（结合匹配的schema）将一个row反序列化为类型T对象的expression。row的fields将会使用
+   * UnresolvedAttributes（和构造函数的参数拥有相同的名称）被抽取出来。内部类则通过UnresolvedExtractValue来
+   * 访问它们的fields。
    * Returns an expression that can be used to deserialize an input row to an object of type `T`
    * with a compatible schema.  Fields of the row will be extracted using UnresolvedAttributes
    * of the same name as the constructor arguments.  Nested classes will have their fields accessed
@@ -151,6 +154,7 @@ object ScalaReflection extends ScalaReflection {
 
     /** Returns the current path with a sub-field extracted. */
     def addToPath(part: String, dataType: DataType, walkedTypePath: Seq[String]): Expression = {
+      // quoted: 默认part是由单引号所包裹的，比如：反引号
       val newPath = path
         .map(p => UnresolvedExtractValue(p, expressions.Literal(part)))
         .getOrElse(UnresolvedAttribute.quoted(part))
@@ -201,6 +205,7 @@ object ScalaReflection extends ScalaReflection {
     }
 
     tpe.dealias match {
+        // 和serializerFor类似，如果t不是ObjectType类型，则直接返回
       case t if !dataTypeFor(t).isInstanceOf[ObjectType] => getPath
 
       case t if t <:< localTypeOf[Option[_]] =>
@@ -373,6 +378,7 @@ object ScalaReflection extends ScalaReflection {
           dataType = ObjectType(udt.getClass))
         Invoke(obj, "deserialize", ObjectType(udt.userClass), getPath :: Nil)
 
+        // t是Product的子类（e.g. case class）或DefinedByConstructorParams的子类（e.g. Column, Table）
       case t if definedByConstructorParams(t) =>
         // 获取类型t的constructor的参数列表；params格式：(fieldName, fieldType)
         val params = getConstructorParameters(t)
@@ -404,6 +410,7 @@ object ScalaReflection extends ScalaReflection {
           }
         }
 
+        // 由此实现一个row到object的反序列化
         val newInstance = NewInstance(cls, arguments, ObjectType(cls), propagateNull = false)
 
         if (path.nonEmpty) {
@@ -419,6 +426,7 @@ object ScalaReflection extends ScalaReflection {
   }
 
   /**
+   * 返回一个用于将类型T对象序列化为内部row的expression。
    * Returns an expression for serializing an object of type T to an internal row.
    *
    * If the given type is not supported, i.e. there is no encoder can be built for this type,
@@ -768,6 +776,7 @@ object ScalaReflection extends ScalaReflection {
       case t if t <:< localTypeOf[scala.math.BigInt] =>
         Schema(DecimalType.BigIntDecimal, nullable = true)
       case t if t <:< localTypeOf[Decimal] => Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
+        // QUESTION：我们从这里注意到：java.lang.Integer和definitions.IntTpe是不一样的？
       case t if t <:< localTypeOf[java.lang.Integer] => Schema(IntegerType, nullable = true)
       case t if t <:< localTypeOf[java.lang.Long] => Schema(LongType, nullable = true)
       case t if t <:< localTypeOf[java.lang.Double] => Schema(DoubleType, nullable = true)

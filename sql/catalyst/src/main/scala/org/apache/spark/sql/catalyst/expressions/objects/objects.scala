@@ -74,7 +74,8 @@ trait InvokeLike extends Expression with NonSQLExpression {
 
     val argCodes = if (needNullCheck) {
       val reset = s"$resultIsNull = false;"
-      // argCodes就是由多个'if()'代码段构成的Seq
+      // argCodes就是由多个'if()'代码段构成的Seq。一旦resultIsNull被updateResultIsNull代码段更新为true，
+      // 则不用再检查其它的arguments了（体现short circuit）。
       val argCodes = arguments.zipWithIndex.map { case (e, i) =>
         val expr = e.genCode(ctx)
         val updateResultIsNull = if (e.nullable) {
@@ -230,6 +231,7 @@ case class Invoke(
 
   @transient lazy val method = targetObject.dataType match {
     case ObjectType(cls) =>
+      // 通过java反射寻找对应的method
       val m = cls.getMethods.find(_.getName == encodedFunctionName)
       if (m.isEmpty) {
         sys.error(s"Couldn't find $encodedFunctionName on $cls")
@@ -243,6 +245,8 @@ case class Invoke(
     val javaType = ctx.javaType(dataType)
     val obj = targetObject.genCode(ctx)
 
+    // 准备调用该方法所需要的参数（代码片段）
+    // 在argCode执行完成之后，argString中才会有真正的参数值
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val returnPrimitive = method.isDefined && method.get.getReturnType.isPrimitive
@@ -263,6 +267,7 @@ case class Invoke(
     val evaluate = if (returnPrimitive) {
       getFuncResult(ev.value, s"${obj.value}.$encodedFunctionName($argString)")
     } else {
+      // 如果不是返回基础类型
       val funcResult = ctx.freshName("funcResult")
       // If the function can return null, we do an extra check to make sure our null bit is still
       // set correctly.

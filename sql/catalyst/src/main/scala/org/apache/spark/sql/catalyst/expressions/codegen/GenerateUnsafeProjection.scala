@@ -72,6 +72,8 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
       inputTypes: Seq[DataType],
       bufferHolder: String,
       isTopLevel: Boolean = false): String = {
+    // 生成创建UnsafeRowWriter的代码片段，可通过rowWriter来访问。
+    // UnsafeRowWriter可以以UnsafeRow的格式来将数据写入BufferHolder中。
     val rowWriterClass = classOf[UnsafeRowWriter].getName
     val rowWriter = ctx.addMutableState(rowWriterClass, "rowWriter",
       v => s"$v = new $rowWriterClass($bufferHolder, ${inputs.length});")
@@ -91,12 +93,14 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
       s"$rowWriter.reset();"
     }
 
+    // 生成用于将fields（值）写入row的代码片段
     val writeFields = inputs.zip(inputTypes).zipWithIndex.map {
       case ((input, dataType), index) =>
         val dt = dataType match {
           case udt: UserDefinedType[_] => udt.sqlType
           case other => other
         }
+        // 在生成的代码片段中，声明一个tmpCursor变量，用于在写完数据之后统计写入的数据的size。
         val tmpCursor = ctx.freshName("tmpCursor")
 
         val setNull = dt match {
@@ -139,6 +143,13 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
 
           case NullType => ""
 
+            // 我们先看个最简单的吧。。。
+            // 注意看这里！！！在这里调用了input.value，将该filed的对应值通过writer写入了BufferHolder中。
+            // 而BufferHolder又会将该value写入row中。
+            // 假如我们有个case class Person(age: Int, name: String)类型，则input就对应了age字段的expression
+            // 或name字段的expression通过genCode()生成的ExprCode，然后(input)调用value，则相当于访问了Person对象
+            // 的age字段或name字段的值。然后，rowWriter将获取到的值写入buffer，再写入row中。最终实现了从一个Object
+            // 对象（类型T）到Spark SQL内部row的序列化。
           case _ => s"$rowWriter.write($index, ${input.value});"
         }
 
@@ -148,6 +159,11 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
             ${writeField.trim}
           """
         } else {
+          // 如果input.code的执行结果可以是为null的，则在执行完input.code之后，判断input.code的执行结果
+          // 是否为null。如果执行结果为null，则我们将row的index对应的值设为null，反之，则设为该执行结果。
+          // 也就是说，（继续应用上面Person的例子，假设此时的input对应name）, 如果调用person.name == null,
+          // 则我们将row的index对应值设置为null；如果调用person.name == "wuyi", 则我们将对应值设置为"wuyi"。
+          // （当然，string类型在spark中可能不会返回null，应该它有默认值""。我们在这里只是打个比方。）
           s"""
             ${input.code}
             if (${input.isNull}) {
@@ -164,6 +180,8 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
       writeFields.mkString("\n")
     } else {
       assert(row != null, "the input row name cannot be null when generating code to write it.")
+      // 为了避免所有expression生成的代码片段作为单独的一个function的size超过jvm对单个function的代码
+      // 片段64kb的限制，将该代码片段拆封成多个functions。
       ctx.splitExpressions(
         expressions = writeFields,
         funcName = "writeFields",
@@ -309,9 +327,10 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
       useSubexprElimination: Boolean = false): ExprCode = {
     // 生成所有Expressions的ExprCode
     val exprEvals = ctx.generateExpressions(expressions, useSubexprElimination)
+    // 获取各个Expression的eval的返回值的数据类型
     val exprTypes = expressions.map(_.dataType)
 
-    // 统计可变长的filed类型的个数
+    // 统计在所有expressions的返回结果的数据类型中可变长的filed类型的个数
     val numVarLenFields = exprTypes.count {
       case dt if UnsafeRow.isFixedLength(dt) => false
       // TODO: consider large decimal and interval type
@@ -319,13 +338,15 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
     }
 
     // 注意：这里返回的不是变量名“result”，而是（类似）“array[i]”（数组访问的代码片段）
+    // 该代码片段用于创建UnsafeRow对象，并通过result来访问它。
     val result = ctx.addMutableState("UnsafeRow", "result",
       v => s"$v = new UnsafeRow(${expressions.length});")
 
     // 一个fully-qualified class name
     val holderClass = classOf[BufferHolder].getName
     // $result的值就是array[i]引用的在上面addMutableState第三个参数initFunc创建的UnsafeRow对象；
-    // 不过此时，这里还都只是代码片段。
+    // （不过一定要认识到，现在这里还都只是代码片段。）
+    // 该代码片段用于创建BufferHolder对象，并通过holder来访问它。
     val holder = ctx.addMutableState(holderClass, "holder",
       v => s"$v = new $holderClass($result, ${numVarLenFields * 32});")
 
@@ -336,17 +357,19 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
     } else {
       s"$holder.reset();"
     }
-    // 如果有变长的fields，则需要生成result(UnsafeRow).totalSize的代码段
+    // 如果有变长的fields，则需要生成"result.setTotalSize(holder.totalSize())"的代码段，
+    // 其中，result即为UnsafeRow对象，holder为BufferHolder对象。
     val updateRowSize = if (numVarLenFields == 0) {
       ""
     } else {
       s"$result.setTotalSize($holder.totalSize());"
     }
 
-    // TODO read
+    // TODO read 可能和subExprEliminationExprs有关
     // Evaluate all the subexpression.
     val evalSubexpr = ctx.subexprFunctions.mkString("\n")
 
+    // 生成将expression写入buffer的代码片段
     val writeExpressions =
       writeExpressionsToBuffer(ctx, ctx.INPUT_ROW, exprEvals, exprTypes, holder, isTopLevel = true)
 
@@ -357,6 +380,8 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
         $writeExpressions
         $updateRowSize
       """
+    // 这一整块代码的执行结果，通过result来访问。result是对UnsafeRow的访问。
+    // 在该代码片段执行完成之后，result对应的UnsafeRow已经写入了所有fields的值。
     ExprCode(code, "false", result)
   }
 
@@ -379,10 +404,22 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
   private def create(
       expressions: Seq[Expression],
       subexpressionEliminationEnabled: Boolean): UnsafeProjection = {
-    // 为该Projection新建一个GodegenContext
+    // 为该UnsafeProjection新建一个GodegenContext
     val ctx = newCodeGenContext()
+    // 返回一个ExprCode，该code的*执行结果*value是一个UnsafeRow对象，且已经写入
+    // 了object的所有fields的值。即完成对了一个object的序列化。
     val eval = createCode(ctx, expressions, subexpressionEliminationEnabled)
 
+    // 注意：虽然ctx.INPUT_ROW = "i"。但它并不是一个row的index，而是它本身就是一个InternalRow！
+    // SpecificUnsafeProjection会读取该INPUT_ROW中的对象，然后将该对象序列化为InternalRow
+    // 1. ctx.declareMutableStates(): 获取所有需要在该类中声明的全局变量（代码片段）
+    // 2. ctx.initMutableStates(): 获取初始化所有在该类中声明的全局变量（代码片段）。
+    // 3. ctx.initPartition(): 暂时还没看到...
+    // 4. eval.code: 执行eval.code，会完成一个object(type of T)到Spark SQL UnsafeRow的序列化过程。
+    // 本质上就是将一个object的各个field的值写入到一个UnsafeRow中。
+    // 5. eval.value: 用于访问eval.code的执行结果，即生成UnsafeRow对象（此时的UnsafeRow已经写入了所有fields的值）
+    // 6. ctx.declareAddedFunctions()：获取所有在该类中声明的方法（代码片段）。在ctx.initMutableStates()
+    // 和eval.code执行时被调用。
     val codeBody = s"""
       public java.lang.Object generate(Object[] references) {
         return new SpecificUnsafeProjection(references);

@@ -68,11 +68,11 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
       // 在currentVars为null的情况下，选择INPUT_ROW
       assert(ctx.INPUT_ROW != null, "INPUT_ROW and currentVars cannot both be null.")
       val javaType = ctx.javaType(dataType)
-      // 返回获取input row中ordinal对应位置的value的代码片段
+      // 返回获取input row中ordinal对应位置的value的*代码片段*
       val value = ctx.getValue(ctx.INPUT_ROW, dataType, ordinal.toString)
       if (nullable) {
         // 如果可以为null，则如果input row的ordinal处为null，则返回dataType对应的默认值。
-        // 例如，boolean = false，byte = (byte) -1， int = (int)-1等等；
+        // 例如，boolean默认false，byte默认-1，int默认-1等等；
         ev.copy(code =
           s"""
              |boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);

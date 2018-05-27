@@ -342,21 +342,33 @@ class CodegenContext {
       val numArrays = mutableStateArrays.arrayNames.size
       mutableStateArrays.arrayNames.zipWithIndex.map { case (arrayName, index) =>
         val length = if (index + 1 == numArrays) {
+          // 说明mutableStateArrays中只有一个array，那么，currentIndex就代表了该array的length。
           mutableStateArrays.getCurrentIndex
         } else {
+          // 反之，说明mutableStateArrays中有多个arrays，则每个array（除了最后一个新申请的array）的
+          // length为MUTABLESTATEARRAY_SIZE_LIMIT
           CodeGenerator.MUTABLESTATEARRAY_SIZE_LIMIT
         }
+        // 既然我们已经在arrayCompactedMutableStates找states，则javaType不可能是多维数组（"[][]..."），
+        // 因为多维数组肯定是在inlinedMutableStates中的。
         if (javaType.contains("[]")) {
           // initializer had an one-dimensional array variable
+          // 例如，javaType = "int[]"，则baseType = "int"
           val baseType = javaType.substring(0, javaType.length - 2)
+          // 注意，这里创建的是二维（"[][]"）数组。以javaType = "int[]"为例，相当于在
+          // mutableStateArrays.array中存储了length个"int[]"。所以，如果我们在一个类中声明
+          // 该length个"int[]"变量的话，直接声明一个二维数组:
+          // private int[] arrayName = new int[length][] 即可。
           s"private $javaType[] $arrayName = new $baseType[$length][];"
         } else {
+          // 和上面一样，在这里也需要声明该变量的一个一维数组即可。
           // initializer had a scalar variable
           s"private $javaType[] $arrayName = new $javaType[$length];"
         }
       }
     }
 
+    // 返回所有需要在该class（outer ？inner ？）中声明的全局（？）变量。
     (inlinedStates ++ arrayStates).mkString("\n")
   }
 
@@ -408,6 +420,7 @@ class CodegenContext {
   val outerClassName = "OuterClass"
 
   /**
+   * (String, String) -> (类类型名，类实例名) e.g. (NestedClass, nestedClassInstance)
    * Holds the class and instance names to be generated, where `OuterClass` is a placeholder
    * standing for whichever class is generated as the outermost class and which will contain any
    * inner sub-classes. All other classes and instance names in this list will represent private,
@@ -476,26 +489,28 @@ class CodegenContext {
       // 如果inlineToOuterClass = true，则将该func添加到outerClass中
       outerClassName -> ""
     } else if (currClassSize > CodeGenerator.GENERATED_CLASS_SIZE_THRESHOLD) {
-      // 如果当前class的size超过了threshold，则创建内部类
+      // 如果当前class（最近一个在outerClass中创建的私有内部类）的size超过了threshold，
+      // 则新创建一个内部类（以避免超过jvm的常量池的限制）
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
 
+      // 添加该新增内部类，更新相关数据结构
       addClass(className, classInstance)
 
       className -> classInstance
     } else {
-      // 反之，返回当前的class，表明还能继续向该class中添加func
+      // 如果没有超过阈值，说明还能继续向该class（最近一个在outerClass中创建的私有内部类）中添加func
       currClass()
     }
 
-    // 向className对应的class，添加该func
+    // 向className对应的class，添加该func（更新相关数据结构）
     addNewFunctionToClass(funcName, funcCode, className)
 
     if (className == outerClassName) {
-      // 说明该func添加到了outerClass中
+      // 说明该func添加到了outerClass中，即作为outerClass的inline function
       NewFunctionSpec(funcName, None, None)
     } else {
-      // 说明该func添加到了outerClass的inner class中
+      // 说明该func添加到了outerClass的某个私有内部类中
       NewFunctionSpec(funcName, Some(className), Some(classInstance))
     }
   }
@@ -515,6 +530,8 @@ class CodegenContext {
   def declareAddedFunctions(): String = {
     val inlinedFunctions = classFunctions(outerClassName).values
 
+    // 私有的内部类没有mutable state（虽然它们引用了在outer class中声明的mutable state（声明的全局变量）），
+    // 因此，我们在outer class里以inline的形式声明并初始化这些内部类。
     // Nested, private sub-classes have no mutable state (though they do reference the outer class'
     // mutable state), so we declare and initialize them inline to the OuterClass.
     val initNestedClasses = classes.filter(_._1 != outerClassName).map {
@@ -522,6 +539,7 @@ class CodegenContext {
         s"private $className $classInstance = new $className();"
     }
 
+    // 生成各个内部类的定义或声明（只有成员方法，没有成员变量）的代码片段
     val declareNestedClasses = classFunctions.filterKeys(_ != outerClassName).map {
       case (className, functions) =>
         s"""
@@ -977,6 +995,10 @@ class CodegenContext {
   }
 
   /**
+   * 将生成的expressions的代码（可能会超过64kb）拆散成多个functions，因为在JVM中单独的一个function的
+   * 代码size不能超过64kb。如果把一个function作为该该class的内联函数将会超过1000kb，那么，我们新定义一个
+   * 私有的内部类，然后将该function作为该内部类的内联函数。因为一个calss的常量池只能包含65536个声明变量（
+   * 估计包含了成员变量和成员方法）。
    * Splits the generated code of expressions into multiple functions, because function has
    * 64kb code size limit in JVM. If the class to which the function would be inlined would grow
    * beyond 1000kb, we declare a private, inner sub-class, and the function is inlined to it
@@ -996,9 +1018,14 @@ class CodegenContext {
       returnType: String = "void",
       makeSplitFunction: String => String = identity,
       foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = {
+    // 将expressions拆分成多个代码块，一个代码块可能包含一个或多个expressin的code。
+    // 每个代码块构建出一个function。
     val blocks = buildCodeBlocks(expressions)
 
     if (blocks.length == 1) {
+      // QUESTION：如果所有的expression只生成了一个block，就直接可以生成inline function？
+      // 考虑这样一种情况，如果只有一个expression，而该expression的size超过了inline function的阈值，
+      // 那么，它还能作为该class的inline function吗？
       // inline execution if only one block
       blocks.head
     } else {
@@ -1011,9 +1038,12 @@ class CodegenContext {
         }
       }
 
-      // funcName默认为'apply'
       val func = freshName(funcName)
+      // 生成func的参数列表：(形参类型1 形参名字1, 形参类型2 形参名字2, ...) （应该是java的）
+      // 例如：func(int age, String name)
       val argString = arguments.map { case (t, name) => s"$t $name" }.mkString(", ")
+      // 为每个block，构建一个func。也就是生成了一组相同功能的func(func_1, func_2,....)
+      // （本来可以调用一个func完成的事情，现在要调用这一组func_i才能完成这一件相同的事情。）
       val functions = blocks.zipWithIndex.map { case (body, i) =>
         val name = s"${func}_$i"
         val code = s"""
@@ -1021,17 +1051,19 @@ class CodegenContext {
            |  ${makeSplitFunction(body)}
            |}
          """.stripMargin
+        // 在内部添加该方法（作为某个私有内部类的inline function）
         addNewFunctionInternal(name, code, inlineToOuterClass = false)
       }
 
       // function的类型为NewFunctionSpec(nfs)，如果nfs.innerClassName为Empty，说明该function被添加到了
-      // outerClass中，反之，被添加到了innerClass中
+      // outerClass中，反之，被添加到了innerClass（即outerClass的内部类）中
       val (outerClassFunctions, innerClassFunctions) = functions.partition(_.innerClassName.isEmpty)
 
       val argsString = arguments.map(_._2).mkString(", ")
+      // 生成调用outerClass的functions的代码片段（注意上面的functions是生func定义或声明的的代码片段，这里是调用！）
       val outerClassFunctionCalls = outerClassFunctions.map(f => s"${f.functionName}($argsString)")
 
-      // TODO read generateInnerClassesFunctionCalls
+      // 生成调用innerClass的functions的代码片段
       val innerClassFunctionCalls = generateInnerClassesFunctionCalls(
         innerClassFunctions,
         func,
@@ -1045,6 +1077,7 @@ class CodegenContext {
   }
 
   /**
+   * 基于String的长度阈值来将生成的expressions的一个单独的代码片段拆封成多个代码片段
    * Splits the generated code of expressions into multiple sequences of String
    * based on a threshold of length of a String
    *
@@ -1054,7 +1087,11 @@ class CodegenContext {
     val blocks = new ArrayBuffer[String]()
     val blockBuilder = new StringBuilder()
     var length = 0
+    // 每个code对应一个单独的expression生成的代码片段
     for (code <- expressions) {
+      // 我们无法知道究竟会有多少字节的代码生成（因为这得等到代码编译完成之后才能知道），所以，我们采用代码
+      // 片段（源代码）的字符长度来作为衡量标准。一个方法不能超过8k，否则它将无法使用JIT功能，也不能太小，
+      // 否则（对于宽表），就会有很多的方法调用（应该比较影响性能）。
       // We can't know how many bytecode will be generated, so use the length of source code
       // as metric. A method should not go beyond 8K, otherwise it will not be JITted, should
       // also not be too small, or it will have many function calls (for wide table), see the
@@ -1064,6 +1101,10 @@ class CodegenContext {
         blockBuilder.clear()
         length = 0
       }
+      // 注意：一个完成的expression的code是不可能拆分开来的！！！我们只会在一个function中放入
+      // 多个expressions的code，🈯️直到该方法超过限制的1024大小。
+      // 假如，有个expressions = [code1, code2, code3], 则我们可能拆出两个function：function1 = {code1, code2}
+      // function2 = {code3}, 且code1 + code2 > 1024.
       blockBuilder.append(code)
       // 计算在code去除注释和多余空行后的length
       length += CodeFormatter.stripExtraNewLinesAndComments(code).length
@@ -1072,6 +1113,11 @@ class CodegenContext {
   }
 
   /**
+   * 在这里，我们处理所有被添加到内部类而不是外部类中的方法。由于这些方法可能会很多，所以在outer class中
+   * 直接一个个调用这些方法会在outer class的常量池中加入很多entries(应该是用于记录这些调用信息)。而这就
+   * 可能会导致常量池的大小超过jvm的限制。另外，这也可能造成outer class的方法调用会超过64kb的限制。为了
+   * 该问题，我们将一个内部类中的方法组织成一个group添加一个新的方法中，而outer class只需要调用该新方法即可。
+   * 由此，就减少了outer class直接调用内部类方法的次数。
    * Here we handle all the methods which have been added to the inner classes and
    * not to the outer class.
    * Since they can be many, their direct invocation in the outer class adds many entries
@@ -1099,18 +1145,26 @@ class CodegenContext {
     val innerClassToFunctions = mutable.LinkedHashMap.empty[(String, String), Seq[String]]
     functions.foreach(f => {
       val key = (f.innerClassName.get, f.innerClassInstance.get)
+      // 从队列的头部插入该function（性能更优？？？why？？？）
       val value = f.functionName +: innerClassToFunctions.getOrElse(key, Seq.empty[String])
       innerClassToFunctions.put(key, value)
     })
 
+    // 生成定义func时的参数列表
     val argDefinitionString = arguments.map { case (t, name) => s"$t $name" }.mkString(", ")
+    // 生成调用func时的参数列表
     val argInvocationString = arguments.map(_._2).mkString(", ")
 
     innerClassToFunctions.flatMap {
       case ((innerClassName, innerClassInstance), innerClassFunctions) =>
+        // 出于性能的考虑，functions在添加的时候是从队首插入的，而不是队尾。
+        // 因此，在这里我们将顺序反过来。即现在functions的顺序，和该function加入到队列中的先后顺序是一样的。
         // for performance reasons, the functions are prepended, instead of appended,
         // thus here they are in reversed order
         val orderedFunctions = innerClassFunctions.reverse
+        // 如果该内部类的function的个数超过了设定的阈值（默认为3），则我们在该内部类中新建一个方法，例如apply(),
+        // 然后在该apply()方法中，调用这些functions。这样，就可以达到在outerClass中，减少调用内部类的functions
+        // 的个数的目的。详见下面注释中的例子。
         if (orderedFunctions.size > CodeGenerator.MERGE_SPLIT_METHODS_THRESHOLD) {
           // Adding a new function to each inner class which contains the invocation of all the
           // ones which have been added to that inner class. For example,
@@ -1124,6 +1178,7 @@ class CodegenContext {
           //       ...
           //     }
           //   }
+          // 在内部类中新生成一个方法，用于调用其它的方法。以减少在outerClass中调用内部类方法的次数。
           val body = foldFunctions(orderedFunctions.map(name => s"$name($argInvocationString)"))
           val code = s"""
               |private $returnType $funcName($argDefinitionString) {
@@ -1377,6 +1432,9 @@ object CodeGenerator extends Logging {
   // method which is going to be called by the outer class instead of the many small ones
   final val MERGE_SPLIT_METHODS_THRESHOLD = 3
 
+  // 一个class中的命名常量的个数被常量池限制为65536。我们无法知道一个class中插入了多少个常量，所以，我们用
+  // 1000k bytes这样一个阈值来决定一个func是否应该作为一个私有的内部类的内联函数。如果超过了该阈值，我们就要
+  // 为新建一个私有的内部类，然后将该方法作为该新建内部类的内联函数。
   // The number of named constants that can exist in the class is limited by the Constant Pool
   // limit, 65,536. We cannot know how many constants will be inserted for a class, so we use a
   // threshold of 1000k bytes to determine when a function should be inlined to a private, inner

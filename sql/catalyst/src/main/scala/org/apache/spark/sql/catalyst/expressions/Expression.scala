@@ -110,6 +110,7 @@ abstract class Expression extends TreeNode[Expression] {
       // size。
       reduceCodeSize(ctx, eval)
       if (eval.code.nonEmpty) {
+        // 将该expression.toString的message添加到代码注释中
         // Add `this` in the comment.
         eval.copy(code = s"${ctx.registerComment(this.toString)}\n" + eval.code.trim)
       } else {
