@@ -348,6 +348,7 @@ abstract class LeafExpression extends Expression {
 
 
 /**
+ * 一个只有一个输入和一个输出的expression。如果输入的eval结果为null，则输出的eval结果默认也为null。
  * An expression with one input and one output. The output is by default evaluated to null
  * if the input is evaluated to null.
  */

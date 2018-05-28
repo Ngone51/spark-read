@@ -360,6 +360,7 @@ case class NewInstance(
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = ctx.javaType(dataType)
 
+    // 准备创建该javaType类型对象实例所需要的参数
     val (argCode, argString, resultIsNull) = prepareArguments(ctx)
 
     val outer = outerPointer.map(func => Literal.fromObject(func()).genCode(ctx))
@@ -369,9 +370,12 @@ case class NewInstance(
     val constructorCall = outer.map { gen =>
       s"${gen.value}.new ${cls.getSimpleName}($argString)"
     }.getOrElse {
+      // argString是对argCode执行结果的访问。只有当argCode执行完成时，argString才有真正的值
       s"new $className($argString)"
     }
 
+    // 需要先执行argCode，生成参数的值。这样，才能在调用constructorCall时，通过argString访问到参数值，并用于创建
+    // javaType类型的对象实例。
     val code = s"""
       $argCode
       ${outer.map(_.code).getOrElse("")}

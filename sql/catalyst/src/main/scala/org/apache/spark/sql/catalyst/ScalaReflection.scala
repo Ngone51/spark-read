@@ -122,7 +122,7 @@ object ScalaReflection extends ScalaReflection {
   }
 
   /**
-   * 返回一个用于（结合匹配的schema）将一个row反序列化为类型T对象的expression。row的fields将会使用
+   * 返回一个用于将一个row反序列化为类型T对象的expression，并且具有相互兼容的schema。row的fields将会使用
    * UnresolvedAttributes（和构造函数的参数拥有相同的名称）被抽取出来。内部类则通过UnresolvedExtractValue来
    * 访问它们的fields。
    * Returns an expression that can be used to deserialize an input row to an object of type `T`
@@ -410,7 +410,7 @@ object ScalaReflection extends ScalaReflection {
           }
         }
 
-        // 由此实现一个row到object的反序列化
+        // 创建NewInstance expression（用于实现一个row到object的反序列化）
         val newInstance = NewInstance(cls, arguments, ObjectType(cls), propagateNull = false)
 
         if (path.nonEmpty) {
@@ -731,8 +731,12 @@ object ScalaReflection extends ScalaReflection {
   /** Returns a catalyst DataType and its nullability for the given Scala Type using reflection. */
   def schemaFor[T: TypeTag]: Schema = schemaFor(localTypeOf[T])
 
-  /** Returns a catalyst DataType and its nullability for the given Scala Type using reflection. */
+  /**
+   * 对于给定的Scala类型，使用反射机制，获取该类型对应的catalyst的DataType及其可否为null
+   * Returns a catalyst DataType and its nullability for the given Scala Type using reflection.
+   */
   def schemaFor(tpe: `Type`): Schema = cleanUpReflectionObjects {
+    // TODO read cleanUpReflectionObjects
     tpe.dealias match {
       // this must be the first case, since all objects in scala are instances of Null, therefore
       // Null type would wrongly match the first of them, which is Option as of now
@@ -791,10 +795,14 @@ object ScalaReflection extends ScalaReflection {
       case t if t <:< definitions.ShortTpe => Schema(ShortType, nullable = false)
       case t if t <:< definitions.ByteTpe => Schema(ByteType, nullable = false)
       case t if t <:< definitions.BooleanTpe => Schema(BooleanType, nullable = false)
+      // 如果t是Product或DefinedByConstructorParams类型
       case t if definedByConstructorParams(t) =>
+        // 获取该类型的构造方法的参数列表
         val params = getConstructorParameters(t)
+        // 这种类型的对象的catalyst DataType是StructType
         Schema(StructType(
           params.map { case (fieldName, fieldType) =>
+            // 递归调用schemaFor()
             val Schema(dataType, nullable) = schemaFor(fieldType)
             StructField(fieldName, dataType, nullable)
           }), nullable = true)
@@ -846,6 +854,7 @@ trait ScalaReflection {
    * @see https://github.com/scala/bug/issues/8302
    */
   def cleanUpReflectionObjects[T](func: => T): T = {
+    // TODO read cleanUpReflectionObjects
     universe.asInstanceOf[scala.reflect.runtime.JavaUniverse].undoLog.undo(func)
   }
 
@@ -911,6 +920,7 @@ trait ScalaReflection {
     }
   }
 
+  // 用于获取tpe类型的构造函数的参数列表
   protected def constructParams(tpe: Type): Seq[Symbol] = {
     val constructorSymbol = tpe.dealias.member(termNames.CONSTRUCTOR)
     val params = if (constructorSymbol.isMethod) {

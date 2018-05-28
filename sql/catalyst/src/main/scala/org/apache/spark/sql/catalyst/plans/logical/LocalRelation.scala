@@ -43,6 +43,7 @@ object LocalRelation {
   }
 }
 
+// 相当于一张本地的关系表，output是该表的schema，data即表中存储的多行数据
 case class LocalRelation(output: Seq[Attribute],
                          data: Seq[InternalRow] = Nil,
                          // Indicates whether this relation has data from a streaming source.
