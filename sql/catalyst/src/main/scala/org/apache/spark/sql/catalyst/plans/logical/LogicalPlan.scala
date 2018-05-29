@@ -149,13 +149,19 @@ abstract class LogicalPlan
       resolver: Resolver,
       attribute: Attribute): Option[(Attribute, List[String])] = {
     if (resolver(attribute.name, nameParts.head)) {
+      // 这里的attribute应该是AttributeReference类型（不然就没意义了啊，还是解析不出来呀）
       Option((attribute.withName(nameParts.head), nameParts.tail.toList))
     } else {
       None
     }
   }
 
-  /** Performs attribute resolution given a name and a sequence of possible attributes. */
+  /**
+   * 给定一个name和一个可能的attributes序列，来解析出一个attributes。简单来说，就是通过该给定的name，
+   * 来从这些attributes中找到一个相匹配的attribute。
+   * 注意该name可能包含多个部分，例如`a`.`bb`.`ccc`，则此时nameParts = Seq("a", "bb", "ccc")
+   * Performs attribute resolution given a name and a sequence of possible attributes.
+   */
   protected def resolve(
       nameParts: Seq[String],
       input: Seq[Attribute],
@@ -164,6 +170,7 @@ abstract class LogicalPlan
     // A sequence of possible candidate matches.
     // Each candidate is a tuple. The first element is a resolved attribute, followed by a list
     // of parts that are to be resolved.
+    // QUESTION：下面的这个例子什么意思？？？意思"b"是StructType类型的吗？？？
     // For example, consider an example where "a" is the table name, "b" is the column name,
     // and "c" is the struct field name, i.e. "a.b.c". In this case, Attribute will be "a.b",
     // and the second element will be List("c").
@@ -188,11 +195,13 @@ abstract class LogicalPlan
     def name = UnresolvedAttribute(nameParts).name
 
     candidates.distinct match {
+      // 匹配到啦！！！且没有嵌套的fields，使用它！
       // One match, no nested fields, use it.
       case Seq((a, Nil)) => Some(a)
 
       // One match, but we also need to extract the requested nested field.
       case Seq((a, nestedFields)) =>
+        // TODO read LogicalPlan.resolve: ExtractValue
         // The foldLeft adds ExtractValues for every remaining parts of the identifier,
         // and aliased it with the last part of the name.
         // For example, consider "a.b.c", where "a" is resolved to an existing attribute.

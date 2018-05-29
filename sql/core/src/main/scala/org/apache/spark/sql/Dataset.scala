@@ -69,8 +69,13 @@ private[sql] object Dataset {
   }
 
   def ofRows(sparkSession: SparkSession, logicalPlan: LogicalPlan): DataFrame = {
+    // 创建QueryExecution对象(qe)
     val qe = sparkSession.sessionState.executePlan(logicalPlan)
+    // 通过Analyzer解析该logicalPlan
     qe.assertAnalyzed()
+    // 在logicalPlan解析完成之后，我们才能获的该plan（解析完成后是analyzed）的schema。
+    // 因为，只有在解析之后，那些UnresolvedStar、UnresolvedAttributed才能被resolve。而只有在这些
+    // expression被resolve之后，我们才能知道如何通过这些attributes去一个row中获取对应的值。
     new Dataset[Row](sparkSession, qe, RowEncoder(qe.analyzed.schema))
   }
 }

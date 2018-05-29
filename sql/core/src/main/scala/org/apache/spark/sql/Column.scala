@@ -129,6 +129,10 @@ class TypedColumn[-T, U](
 @InterfaceStability.Stable
 class Column(val expr: Expression) extends Logging {
 
+  // name有三种不同的类型：
+  // 1. SELECT * FROM ...
+  // 2. SELECT record.* from (SELECT struct(a,b,c) as record ...)
+  // 3. 其它普通类型
   def this(name: String) = this(name match {
     case "*" => UnresolvedStar(None)
     case _ if name.endsWith(".*") =>
@@ -160,6 +164,7 @@ class Column(val expr: Expression) extends Logging {
 
     case u: UnresolvedExtractValue => UnresolvedAlias(u)
 
+      // UnresolvedStar是NamedExpression的子类
     case expr: NamedExpression => expr
 
     // Leave an unaliased generator with an empty list of names since the analyzer will generate

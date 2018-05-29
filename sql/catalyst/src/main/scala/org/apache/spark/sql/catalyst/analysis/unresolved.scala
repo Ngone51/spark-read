@@ -142,6 +142,8 @@ object UnresolvedAttribute {
     new UnresolvedAttribute(parseAttributeName(name))
 
   /**
+   * 简单看了一下，该方法应该是用了解析`a`.`bb`.`ccc`这种格式的name，最后的返回结果是
+   * Seq("a", "bb", "ccc")，可通过该Seq描述一个name的全量路径。该方法目前不支持转义字符。
    * Used to split attribute name by dot with backticks rule.
    * Backticks must appear in pairs, and the quoted string must be a complete name part,
    * which means `ab..c`e.f is not allowed.
@@ -275,6 +277,7 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
       }
     if (expandedAttributes.nonEmpty) return expandedAttributes
 
+    // TODO read UnresolvedStar.expand
     // Try to resolve it as a struct expansion. If there is a conflict and both are possible,
     // (i.e. [name].* is both a table and a struct), the struct path can always be qualified.
     val attribute = input.resolve(target.get, resolver)

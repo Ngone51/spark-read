@@ -805,6 +805,7 @@ class Analyzer(
         // Leave unchanged if resolution fails. Hopefully will be resolved next round.
         val result =
           withPosition(u) {
+            // resolver用于相等判断，有两种：1.忽略大小写；2. 大小写敏感；
             q.resolveChildren(nameParts, resolver)
               .orElse(resolveLiteralFunction(nameParts, u, q))
               .getOrElse(u)
@@ -819,6 +820,7 @@ class Analyzer(
     def apply(plan: LogicalPlan): LogicalPlan = plan.transformUp {
       case p: LogicalPlan if !p.childrenResolved => p
 
+      // 如果该Project包含"*"
       // If the projection list contains Stars, expand it.
       case p: Project if containsStar(p.projectList) =>
         p.copy(projectList = buildExpandedProjectList(p.projectList, p.child))
@@ -874,6 +876,8 @@ class Analyzer(
 
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString}")
+        // TODO read mapExpressions()
+        // 应用resolve()方法到该q（LogicalPlan）中的所有expressions上
         q.mapExpressions(resolve(_, q))
     }
 
