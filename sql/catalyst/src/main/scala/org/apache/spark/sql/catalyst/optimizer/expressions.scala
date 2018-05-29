@@ -603,12 +603,15 @@ object FoldablePropagation extends Rule[LogicalPlan] {
 
 
 /**
+ * 删除不必要的Cast（在输入的数据类型已经正确的情况下）。
  * Removes [[Cast Casts]] that are unnecessary because the input is already the correct type.
  */
 object SimplifyCasts extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
     case Cast(e, dataType, _) if e.dataType == dataType => e
     case c @ Cast(e, dataType, _) => (e.dataType, dataType) match {
+        // 要求左边的集合类型的元素不能为null，但是右边的可以为null。因为Cast是把左边的元素类型转换为右边的元素类型，
+        // 所以非null的元素可以转换成null，但是null元素就不能转换成非null的元素了。（是这样的吗？）
       case (ArrayType(from, false), ArrayType(to, true)) if from == to => e
       case (MapType(fromKey, fromValue, false), MapType(toKey, toValue, true))
         if fromKey == toKey && fromValue == toValue => e

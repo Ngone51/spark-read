@@ -264,9 +264,11 @@ case class ExpressionEncoder[T](
   def resolveAndBind(
       attrs: Seq[Attribute] = schema.toAttributes,
       analyzer: Analyzer = SimpleAnalyzer): ExpressionEncoder[T] = {
+    // 从这个plan的LocalRelation可以看到，它是没有数据的，也没有其它的operator。可能这就是所谓的dummyPlan吧。
     val dummyPlan = CatalystSerde.deserialize(LocalRelation(attrs))(this)
     val analyzedPlan = analyzer.execute(dummyPlan)
     analyzer.checkAnalysis(analyzedPlan)
+    // SimplifyCasts:去除必要的Cast
     val resolved = SimplifyCasts(analyzedPlan).asInstanceOf[DeserializeToObject].deserializer
     val bound = BindReferences.bindReference(resolved, attrs)
     copy(deserializer = bound)

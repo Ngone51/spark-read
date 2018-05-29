@@ -75,6 +75,7 @@ trait ObjectConsumer extends UnaryNode {
 }
 
 /**
+ * 接受来自child的row，并使用给定的deserializer expression将该row转成Object
  * Takes the input row from child and turns it into object using the given deserializer expression.
  */
 case class DeserializeToObject(

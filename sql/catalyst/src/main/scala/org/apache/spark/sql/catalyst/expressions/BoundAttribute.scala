@@ -87,20 +87,25 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
 
 object BindReferences extends Logging {
 
+  // 注意：第二个参数AttributeSeq是通过implicit引入的。
   def bindReference[A <: Expression](
       expression: A,
       input: AttributeSeq,
       allowFailures: Boolean = false): A = {
+    // transform默认是先序遍历（从上到下）。
     expression.transform { case a: AttributeReference =>
       attachTree(a, "Binding attribute") {
         val ordinal = input.indexOf(a.exprId)
-        if (ordinal == -1) {
+        if (ordinal == -1) { // 绑定失败
           if (allowFailures) {
+            // 如果允许failure，则不会跑出异常
             a
           } else {
+            // 反之，抛出异常
             sys.error(s"Couldn't find $a in ${input.attrs.mkString("[", ",", "]")}")
           }
         } else {
+          // 绑定成功
           BoundReference(ordinal, a.dataType, input(ordinal).nullable)
         }
       }

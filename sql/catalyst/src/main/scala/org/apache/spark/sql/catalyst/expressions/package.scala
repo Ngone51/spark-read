@@ -118,7 +118,7 @@ package object expressions  {
     @transient private lazy val exprIdToOrdinal = {
       val arr = attrsArray
       val map = Maps.newHashMapWithExpectedSize[ExprId, Int](arr.length)
-      // 哈？？？
+      // 哈？？？HashMap是无序的呀....
       // Iterate over the array in reverse order so that the final map value is the first attribute
       // with a given expression id.
       var index = arr.length - 1

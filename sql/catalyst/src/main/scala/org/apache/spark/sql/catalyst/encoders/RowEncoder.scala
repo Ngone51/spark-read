@@ -56,9 +56,16 @@ import org.apache.spark.unsafe.types.UTF8String
  */
 object RowEncoder {
   def apply(schema: StructType): ExpressionEncoder[Row] = {
+    // QUESTION：现在是对一个Row进行ExpressionEncoder的构建了，然后它的类型是StructType？
+    // ANSWER: 我们可以把Row看成是一个Object对象，而StructType就是该对象的所有fields。则StrcutType描述了如何来访问
+    // 该Row的数据。同时，该StructType其实也是唯一的表征了该Row对象，所以也可以把它当做该Row的类型。
+    // 咱们再看看上面注释，Spark SQL内置类型和外部类型之间的映射就明白了。
     val cls = classOf[Row]
+    // 我们的inputObject是一个cls类型的外部Row。下面创建的Encoder用来负责将该外部Row序列化为SparkSql的内部Row
+    // 或者从SparkSQL内部Row中反序列出该外部Row。
     val inputObject = BoundReference(0, ObjectType(cls), nullable = true)
     val serializer = serializerFor(AssertNotNull(inputObject, Seq("top level row object")), schema)
+    // 通过deserializer反序列化得到的外部row类型貌似只能是GenericRowWithSchema
     val deserializer = deserializerFor(schema)
     new ExpressionEncoder[Row](
       schema,
@@ -185,6 +192,7 @@ object RowEncoder {
             field.dataType),
           field.dataType)
         val convertedField = if (field.nullable) {
+          // 如果inputObject（只能是Row？）对应index的值为null，则直接返回null，反之返回对应的值（fieldValue）
           If(
             Invoke(inputObject, "isNullAt", BooleanType, Literal(index) :: Nil),
             Literal.create(null, field.dataType),

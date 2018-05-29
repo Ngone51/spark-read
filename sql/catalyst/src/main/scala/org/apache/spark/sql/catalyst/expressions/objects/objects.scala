@@ -1110,6 +1110,8 @@ case class ExternalMapToCatalyst private(
 }
 
 /**
+ * 通过使用特定expressions的eval结果作为内容，来构建一个新的外部row。换句话说，就是使用child expression的eval的值
+ * 来创建一个新的外部row。
  * Constructs a new external row, using the result of evaluating the specified expressions
  * as content.
  *
@@ -1126,6 +1128,7 @@ case class CreateExternalRow(children: Seq[Expression], schema: StructType)
     throw new UnsupportedOperationException("Only code-generated evaluation is supported")
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 所以，生成的external row就是GenericRowWithSchema咯...
     val rowClass = classOf[GenericRowWithSchema].getName
     val values = ctx.freshName("values")
 
@@ -1141,6 +1144,12 @@ case class CreateExternalRow(children: Seq[Expression], schema: StructType)
        """.stripMargin
     }
 
+    // 注意到extraArguments，此处准备传参到方法“createExternalRow()”的参数“Object[] values”是空的（即不是用来读的，
+    // 而是准备用来写的）。
+    // 在方法"createExternalRow()"中我们执行childrenCode来对values数组赋值。所以，我们可能会把childrenCodes
+    // 拆分成多个functions来执行，比如，createExternalRow_1(InternalRow i, Object[] values),
+    // createExternalRow_2(InternalRow i, Object[] values)，...。但是，这些方法都会去赋值values。然后，我们就得到了
+    // 一个由所有childrenCodes产生的结果值组成的一个values数组。
     val childrenCode = ctx.splitExpressionsWithCurrentInputs(
       expressions = childrenCodes,
       funcName = "createExternalRow",

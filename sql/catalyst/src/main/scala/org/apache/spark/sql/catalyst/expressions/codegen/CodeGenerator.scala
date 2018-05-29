@@ -105,8 +105,10 @@ class CodegenContext {
   val references: mutable.ArrayBuffer[Any] = new mutable.ArrayBuffer[Any]()
 
   /**
+   * 添加一个Object到‘references’数组中。
    * Add an object to `references`.
    *
+   * 返回用于访问该对象的代码片段。
    * Returns the code to access it.
    *
    * This does not to store the object into field but refer it from the references field at the
@@ -960,6 +962,7 @@ class CodegenContext {
    * beyond 1000kb, we declare a private, inner sub-class, and the function is inlined to it
    * instead, because classes have a constant pool limit of 65,536 named values.
    *
+   * QUESTION：splitExpressions和splitExpressionsWithCurrentInputs的区别是？？？
    * Note that different from `splitExpressions`, we will extract the current inputs of this
    * context and pass them to the generated functions. The input is `INPUT_ROW` for normal codegen
    * path, and `currentVars` for whole stage codegen path. Whole stage codegen path is not
@@ -1018,7 +1021,7 @@ class CodegenContext {
       returnType: String = "void",
       makeSplitFunction: String => String = identity,
       foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = {
-    // 将expressions拆分成多个代码块，一个代码块可能包含一个或多个expressin的code。
+    // 将expressions拆分成多个代码块，一个代码块可能包含一个或多个expression的code。
     // 每个代码块构建出一个function。
     val blocks = buildCodeBlocks(expressions)
 
