@@ -270,6 +270,7 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
 
     val expandedAttributes =
       if (target.get.size == 1) {
+        // target对应一个table
         // If there is a table, pick out attributes that are part of this table.
         input.output.filter(_.qualifier.exists(resolver(_, target.get.head)))
       } else {
