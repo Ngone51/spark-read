@@ -244,8 +244,9 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * compressed.
    */
   private def getByteArrayRdd(n: Int = -1): RDD[(Long, Array[Byte])] = {
-    // 所以，这里execute()返回的肯定是UnsafeRow类型的咯...
+    // 注意：execute()返回的是RDD[InternalRow]
     execute().mapPartitionsInternal { iter => // 对应每个分区
+      // 用于控制在iter分区中遍历的rows的个数，要求count < n
       var count = 0
       val buffer = new Array[Byte](4 << 10)  // 4K
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
@@ -341,6 +342,10 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       return new Array[InternalRow](0)
     }
 
+    // QUESTION：getByteArrayRdd(n)返回类型为RDD[(Long, Array[Byte])]，那么，
+    // map(_._2)返回的为什么是一个RDD呢？
+    // ANSWER：相当于是在RDD[(Long, Array[Byte])]上进行了map操作，然后应用的f：(iter[T] => iter[U]) = _._2。
+    // 所以，返回的是RDD[(Array[Byte])]。
     val childRDD = getByteArrayRdd(n).map(_._2)
 
     val buf = new ArrayBuffer[InternalRow]

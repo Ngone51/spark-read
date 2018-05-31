@@ -146,6 +146,7 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
       case (NoOp, _) => ""
       case (e, i) =>
         val evaluationCode = e.genCode(ctx)
+        // TODO read GenerateSafeProjection.create: convertToSafe()
         val converter = convertToSafe(ctx, evaluationCode.value, e.dataType)
         evaluationCode.code +
           s"""

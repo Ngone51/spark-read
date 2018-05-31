@@ -70,6 +70,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
           TakeOrderedAndProjectExec(limit, order, child.output, planLater(child)) :: Nil
         case Limit(IntegerLiteral(limit), Project(projectList, Sort(order, true, child))) =>
           TakeOrderedAndProjectExec(limit, order, projectList, planLater(child)) :: Nil
+        // QUESTION：看不懂这里的模式匹配啊！！！
         case Limit(IntegerLiteral(limit), child) =>
           // With whole stage codegen, Spark releases resources only when all the output data of the
           // query plan are consumed. It's possible that `CollectLimitExec` only consumes a little

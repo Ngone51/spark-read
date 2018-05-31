@@ -245,6 +245,7 @@ class Dataset[T] private[sql](
   private[sql] def showString(
       _numRows: Int, truncate: Int = 20, vertical: Boolean = false): String = {
     val numRows = _numRows.max(0).min(Int.MaxValue - 1)
+    // 无论是Dataset还是DataFrame，在调用show时，都会转换为DF。那么，DataFrame.toDF()有啥不一样的呢？
     val newDf = toDF()
     val castCols = newDf.logicalPlan.output.map { col =>
       // Since binary types in top-level schema fields have a specific format to print,

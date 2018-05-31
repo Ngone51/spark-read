@@ -460,6 +460,8 @@ case class UnresolvedDeserializer(deserializer: Expression, inputAttributes: Seq
   override lazy val resolved = false
 }
 
+// 用于获取ordinal对应Column的data，且data的数据类型为dataType的一个标识。在LogicalPlan的Analyze
+// 阶段，会被replace为plan.output(ordinal)
 case class GetColumnByOrdinal(ordinal: Int, dataType: DataType) extends LeafExpression
   with Unevaluable with NonSQLExpression {
   override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
