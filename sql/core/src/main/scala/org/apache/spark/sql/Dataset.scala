@@ -3276,6 +3276,9 @@ class Dataset[T] private[sql](
     // thread-safe. Here we create the projection inside this method to make `Dataset` thread-safe.
     val objProj = GenerateSafeProjection.generate(deserializer :: Nil)
     plan.executeCollect().map { row =>
+      // （因为deserializer（expression）只有一个，所以，这里的ordinal恒为0。）
+      // SafeProjection会先将通过deserializer反序列出来的对象（对于Dataset是类型T，对于DataFrame是GenericRowWithSchema），
+      // 然后再将该对象写入SpecificInternalRow中。（QUESTION：为什么要讲该对象再写入sir中，而不是直接返回该对象？？？）
       // The row returned by SafeProjection is `SpecificInternalRow`, which ignore the data type
       // parameter of its `get` method, so it's safe to use null here.
       objProj(row).get(0, null).asInstanceOf[T]

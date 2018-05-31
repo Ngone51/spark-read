@@ -244,7 +244,8 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * compressed.
    */
   private def getByteArrayRdd(n: Int = -1): RDD[(Long, Array[Byte])] = {
-    execute().mapPartitionsInternal { iter =>
+    // 所以，这里execute()返回的肯定是UnsafeRow类型的咯...
+    execute().mapPartitionsInternal { iter => // 对应每个分区
       var count = 0
       val buffer = new Array[Byte](4 << 10)  // 4K
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
@@ -297,8 +298,10 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     val byteArrayRdd = getByteArrayRdd()
 
     val results = ArrayBuffer[InternalRow]()
+    // 这里的collect，就会触发spark core，提交一个job
     byteArrayRdd.collect().foreach { countAndBytes =>
       // 注意countAndBytes的形式是：（Long, Array[Byte]），即byteArrayRdd的泛型类型
+      // (results返回的应该是UnsafeRow)
       decodeUnsafeRows(countAndBytes._2).foreach(results.+=)
     }
     results.toArray

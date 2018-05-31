@@ -64,8 +64,9 @@ object RowEncoder {
     // 我们的inputObject是一个cls类型的外部Row。下面创建的Encoder用来负责将该外部Row序列化为SparkSql的内部Row
     // 或者从SparkSQL内部Row中反序列出该外部Row。
     val inputObject = BoundReference(0, ObjectType(cls), nullable = true)
+    // 获取[inputObject（Row），schema（StructType）]的serializer，用于序列化
     val serializer = serializerFor(AssertNotNull(inputObject, Seq("top level row object")), schema)
-    // 通过deserializer反序列化得到的外部row类型貌似只能是GenericRowWithSchema
+    // （通过deserializer反序列化得到的外部row（貌似只能是GenericRowWithSchema类型））
     val deserializer = deserializerFor(schema)
     new ExpressionEncoder[Row](
       schema,

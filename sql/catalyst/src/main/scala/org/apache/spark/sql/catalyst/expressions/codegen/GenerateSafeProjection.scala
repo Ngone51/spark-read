@@ -195,6 +195,8 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
     logDebug(s"code for ${expressions.mkString(",")}:\n${CodeFormatter.format(code)}")
 
     val (clazz, _) = CodeGenerator.compile(code)
+    // 创建一个SpecificInternalRow，此时该row的值都是null。当调用了SpecificSafeProjection的apply()方法后，
+    // 就会把将InternalRow（ctx.INPUT_ROW）的值填充到SpecificInternalRow，并返回。
     val resultRow = new SpecificInternalRow(expressions.map(_.dataType))
     clazz.generate(ctx.references.toArray :+ resultRow).asInstanceOf[Projection]
   }

@@ -43,6 +43,7 @@ case class LocalTableScanExec(
     if (rows.isEmpty) {
       Array.empty
     } else {
+      // UnsafeProjection将rows（InternalRow）转换为UnsafeRow？可能我rows已经是UnsafeRow类型了呢？
       val proj = UnsafeProjection.create(output, output)
       rows.map(r => proj(r).copy()).toArray
     }
