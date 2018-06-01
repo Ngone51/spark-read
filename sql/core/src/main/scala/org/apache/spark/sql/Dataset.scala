@@ -256,6 +256,7 @@ class Dataset[T] private[sql](
         Column(col).cast(StringType)
       }
     }
+    // QUESTION： 为啥要 “+ 1” ？
     val takeResult = newDf.select(castCols: _*).take(numRows + 1)
     val hasMoreData = takeResult.length > numRows
     val data = takeResult.take(numRows)
@@ -1310,6 +1311,7 @@ class Dataset[T] private[sql](
    */
   @scala.annotation.varargs
   def select(cols: Column*): DataFrame = withPlan {
+    // 该Project的output就变成了select()所选择的那几列
     Project(cols.map(_.named), planWithBarrier)
   }
 

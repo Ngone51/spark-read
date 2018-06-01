@@ -67,7 +67,10 @@ case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
   }
 
   protected override def doExecute(): RDD[InternalRow] = {
+    // 这里所做的事情，相当于是从原来的一个row中抽取指定的projectList的对应值，组成一个新的row
     child.execute().mapPartitionsWithIndexInternal { (index, iter) =>
+      // projectList是child.output的子集
+      // subexpressionEliminationEnabled默认为true
       val project = UnsafeProjection.create(projectList, child.output,
         subexpressionEliminationEnabled)
       project.initialize(index)

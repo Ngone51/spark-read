@@ -503,6 +503,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         }
       case logical.Sort(sortExprs, global, child) =>
         execution.SortExec(sortExprs, global, planLater(child)) :: Nil
+        // dataset/dataframe.select会生成一个Project，其中的projectList就是通过select选定的那几列
       case logical.Project(projectList, child) =>
         execution.ProjectExec(projectList, planLater(child)) :: Nil
       case logical.Filter(condition, child) =>

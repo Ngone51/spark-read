@@ -23,6 +23,8 @@ import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.expressions.objects.LambdaVariable
 
 /**
+ * 这个类用于计算（sub）expression trees之间的相等性。Expressions可以被添加到该类中，然后再来查询expression
+ * 的相等性。如果Expression trees的拥有相同的输入和相同的输出，则被认为是相等的。
  * This class is used to compute equality of (sub)expression trees. Expressions can be added
  * to this class and they subsequently query for expression equality. Expression trees are
  * considered equal if for the same input(s), the same result is produced.
