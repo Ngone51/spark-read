@@ -143,6 +143,8 @@ package object expressions  {
   }
 
   /**
+   * 如果一个expression继承了该trait，就意味着该expression是null intolerant的（例如，任何带null的输入，都会导致最终
+   * 的输出结果为null）。我们会在具有IsNotNull限制的构建过程中来使用它。
    * When an expression inherits this, meaning the expression is null intolerant (i.e. any null
    * input will result in null output). We will use this information during constructing IsNotNull
    * constraints.
