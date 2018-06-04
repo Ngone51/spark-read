@@ -135,6 +135,7 @@ class Pipeline @Since("1.4.0") (
   override def fit(dataset: Dataset[_]): PipelineModel = {
     transformSchema(dataset.schema, logging = true)
     val theStages = $(stages)
+    // 寻找最后一个estimator
     // Search for the last estimator.
     var indexOfLastEstimator = -1
     theStages.view.zipWithIndex.foreach { case (stage, index) =>

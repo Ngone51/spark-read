@@ -52,6 +52,7 @@ class HashingTF @Since("1.4.0") (@Since("1.4.0") override val uid: String)
   def setOutputCol(value: String): this.type = set(outputCol, value)
 
   /**
+   * 特征个数（默认为2^18 = 262144，这么多？？？）
    * Number of features. Should be greater than 0.
    * (default = 2^18^)
    * @group param
@@ -61,6 +62,8 @@ class HashingTF @Since("1.4.0") (@Since("1.4.0") override val uid: String)
     ParamValidators.gt(0))
 
   /**
+   * 如果binary为true，则只统计term是否出现，出现的count = 1（不管出现多少次），没出现count = 0。
+   * discrete probabilistic：离散概率
    * Binary toggle to control term frequency counts.
    * If true, all non-zero counts are set to 1.  This is useful for discrete probabilistic
    * models that model binary events rather than integer counts.

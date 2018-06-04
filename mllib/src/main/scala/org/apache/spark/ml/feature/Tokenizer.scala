@@ -24,6 +24,7 @@ import org.apache.spark.ml.util._
 import org.apache.spark.sql.types.{ArrayType, DataType, StringType}
 
 /**
+ * 一个用于将输入的字符串转为小写，并以空格分割的分词器。
  * A tokenizer that converts the input string to lowercase and then splits it by white spaces.
  *
  * @see [[RegexTokenizer]]

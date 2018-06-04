@@ -682,6 +682,7 @@ trait Params extends Identifiable with Serializable {
    * Sets a parameter in the embedded param map.
    */
   final def set[T](param: Param[T], value: T): this.type = {
+    // 注意，“ -> ”是Param对象的一个方法，返回一个ParamPair对象
     set(param -> value)
   }
 
