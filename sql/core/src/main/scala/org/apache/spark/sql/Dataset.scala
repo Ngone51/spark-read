@@ -2175,6 +2175,7 @@ class Dataset[T] private[sql](
       "in given column names",
       sparkSession.sessionState.conf.caseSensitiveAnalysis)
 
+    // 用于比较输入的两个字符串是否相等。有两种：1.大小写敏感；2.大小写不敏感
     val resolver = sparkSession.sessionState.analyzer.resolver
     val output = queryExecution.analyzed.output
 
@@ -2184,15 +2185,18 @@ class Dataset[T] private[sql](
       columnMap.find { case (colName, _) =>
         resolver(field.name, colName)
       } match {
+          // 如果找到了一个列名相同的column，则用新的列替换它
         case Some((colName: String, col: Column)) => col.as(colName)
         case _ => Column(field)
       }
     }
 
+    // 构建新的column
     val newColumns = columnMap.filter { case (colName, col) =>
       !output.exists(f => resolver(f.name, colName))
     }.map { case (colName, col) => col.as(colName) }
 
+    // 这里使用select，感觉很巧妙
     select(replacedAndExistingColumns ++ newColumns : _*)
   }
 
