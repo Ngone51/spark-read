@@ -526,6 +526,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   }
 
   /**
+   * （All the nodes ）作为该node的一个内部嵌套树
    * All the nodes that should be shown as a inner nested tree of this node.
    * For example, this can be used to show sub-queries.
    */
@@ -549,9 +550,28 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
       addSuffix: Boolean = false): StringBuilder = {
 
     if (depth > 0) {
+      // QUESTION：init得到的children可能会isLast == true吗？
       lastChildren.init.foreach { isLast =>
         builder.append(if (isLast) "   " else ":  ")
       }
+      // QUESTION：last得到的children可能会false吗？
+      // ANSWER: 统一回答上述两个QUESTION：可能的。考虑一种更为复杂的情况：
+      //          1
+      //        /  \
+      //      2     3
+      //   / \ \
+      // 4   5 6
+      //      / \
+      //     7   8
+      // 其中节点1为根节点。
+      // 当depth = 1时，节点2进入该函数，且节点3（depth = 1时的last child）未进入该函数，此时，lastChildren = (false)，
+      // 则lastChildren的init中不可能出现isLast == true的情况，而lastChildren.last = false。当depth = 2时，节点5进入该
+      // 函数，且节点6（depth = 2时的last child）未进入该函数，此时，lastChildren = (false, false, false)。同样，
+      // lastChildren的init中不可能出现isLast == true的情况。而lastChildren.last还是等于false。
+      // 而当节点6进入该函数时，lastChildren = (false, false, false, true)。此时，lastChildren的init中还是
+      // *不会*出现isLast == true的情况。而lastChildren.last现在为true。等到，节点7和节点8进入该函数，lastChildren =
+      // Seq(false, false, false, true, false, true)。此时，lastChildren的init中终于*出现*isLast == true的情况。
+      // 另外，注意，当节点3进入该函数时，lastChildren = (false, true），而不包含节点4、5、6、7、8的（由dfs的回溯可知）。
       builder.append(if (lastChildren.last) "+- " else ":- ")
     }
 
@@ -565,6 +585,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     builder.append("\n")
 
     if (innerChildren.nonEmpty) {
+      // 注意，innerChildren的depth是 +2
       innerChildren.init.foreach(_.generateTreeString(
         depth + 2, lastChildren :+ children.isEmpty :+ false, builder, verbose,
         addSuffix = addSuffix))
@@ -574,8 +595,10 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     }
 
     if (children.nonEmpty) {
+      // init：返回Seq中除最后一个元素外的所有元素。注意，如果seq.size = 1,则返回empty seq
       children.init.foreach(_.generateTreeString(
         depth + 1, lastChildren :+ false, builder, verbose, prefix, addSuffix))
+      // last：返回Seq中的最后一个元素
       children.last.generateTreeString(
         depth + 1, lastChildren :+ true, builder, verbose, prefix, addSuffix)
     }

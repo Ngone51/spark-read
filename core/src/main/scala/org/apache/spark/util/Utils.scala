@@ -91,6 +91,8 @@ private[spark] object Utils extends Logging {
   @volatile private var localRootDirs: Array[String] = null
 
   /**
+   * 为一个宽表的schema创建和记录字符串的性能开销会很大。为了减少该影响，我们设置了默认可以包含的字段的数量。即，默认
+   * 情况下，我们只抽取schema中的25个字段来创建和记录字符串。当然，该值可以通过‘spark.debug.maxToStringFields’来设置。
    * The performance overhead of creating and logging strings for wide schemas can be large. To
    * limit the impact, we bound the number of fields to include by default. This can be overridden
    * by setting the 'spark.debug.maxToStringFields' conf in SparkEnv.

@@ -308,6 +308,7 @@ case class AttributeReference(
     ""
   }
 
+  // 注意：'#'后面是该attribute的exprId
   override def toString: String = s"$name#${exprId.id}$typeSuffix$delaySuffix"
 
   // Since the expression id is not in the first constructor it is missing from the default
