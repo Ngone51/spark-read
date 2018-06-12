@@ -86,6 +86,7 @@ private[spark] class CoalescedRDD[T: ClassTag](
   }
 
   override def getPartitions: Array[Partition] = {
+    // QUESTION: DefaultPartitionCoalescer又不是Serializable实例，为什么它可以？？？
     val pc = partitionCoalescer.getOrElse(new DefaultPartitionCoalescer())
 
     pc.coalesce(maxPartitions, prev).zipWithIndex.map {
@@ -162,6 +163,7 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
 
   val rnd = new scala.util.Random(7919) // keep this class deterministic
 
+  // groupArr的每个元素代表一个合并分区（由多个分区合并而成）
   // each element of groupArr represents one coalesced partition
   val groupArr = ArrayBuffer[PartitionGroup]()
 
@@ -197,6 +199,7 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
           if (locs.nonEmpty) {
             tmpPartsWithLocs.put(p, locs)
           } else {
+            // 说明分区p没有特定的locations
             partsWithoutLocs += p
           }
         }
@@ -206,6 +209,7 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
         tmpPartsWithLocs.foreach { parts =>
           val p = parts._1
           val locs = parts._2
+          // QUESTION：最多只选择前两个preferred location？？？
           if (locs.size > x) partsWithLocs += ((locs(x), p))
         }
       }
@@ -239,8 +243,11 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
    * @param targetLen
    */
   def setupGroups(targetLen: Int, partitionLocs: PartitionLocations) {
+    // 如果所有的partitions都没有指定的preferred locations，
+    // 则直接创建targetLen个PartitionGroup（without preferred location）
     // deal with empty case, just create targetLen partition groups with no preferred location
     if (partitionLocs.partsWithLocs.isEmpty) {
+      // 注意：是to，不是until。to包含targetLen，而until不包含targetLen
       (1 to targetLen).foreach(x => groupArr += new PartitionGroup())
       return
     }
@@ -256,17 +263,20 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
     // which case we have likely seen all preferred locations)
     val numPartsToLookAt = math.min(expectedCoupons2, partitionLocs.partsWithLocs.length)
     while (numCreated < targetLen && tries < numPartsToLookAt) {
+      // (host, partition)
       val (nxt_replica, nxt_part) = partitionLocs.partsWithLocs(tries)
       tries += 1
       if (!groupHash.contains(nxt_replica)) {
         val pgroup = new PartitionGroup(Some(nxt_replica))
         groupArr += pgroup
+        // 将分区nxt_part添加到分区组pgroup中
         addPartToPGroup(nxt_part, pgroup)
         groupHash.put(nxt_replica, ArrayBuffer(pgroup)) // list in case we have multiple
         numCreated += 1
       }
     }
     tries = 0
+    // 如果我们创建的分区组个数不够（小于targetLen），则创建重复的分区组
     // if we don't have enough partition groups, create duplicates
     while (numCreated < targetLen) {
       val (nxt_replica, nxt_part) = partitionLocs.partsWithLocs(tries)
@@ -389,8 +399,10 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
    */
   def coalesce(maxPartitions: Int, prev: RDD[_]): Array[PartitionGroup] = {
     val partitionLocs = new PartitionLocations(prev)
+    // 创建分区组（如果prev.partitions的个数小于要求的maxPartitions，则使用prev.partitions的个数作为分组个数）
     // setup the groups (bins)
     setupGroups(math.min(prev.partitions.length, maxPartitions), partitionLocs)
+    // 分配分区到每个分区组中
     // assign partitions (balls) to each group (bins)
     throwBalls(maxPartitions, prev, balanceSlack, partitionLocs)
     getPartitions

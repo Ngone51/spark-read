@@ -681,7 +681,6 @@ private[spark] class AppStatusListener(
   }
 
   override def onUnpersistRDD(event: SparkListenerUnpersistRDD): Unit = {
-    // 如果一个rdd在磁盘了持久化了，那么，就在内存（liveRDDs、kvstore）中删除它
     liveRDDs.remove(event.rddId)
     kvstore.delete(classOf[RDDStorageInfoWrapper], event.rddId)
   }
