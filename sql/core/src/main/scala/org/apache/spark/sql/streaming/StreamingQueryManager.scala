@@ -198,6 +198,10 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
       trigger: Trigger,
       triggerClock: Clock): StreamingQueryWrapper = {
     var deleteCheckpointOnStop = false
+    // 初始化checkpointLocation，有三种情况：
+    // 1.用户指定userSpecifiedCheckpointLocation
+    // 2.读取配置spark.sql.streaming.checkpointLocation中指定的路径
+    // 3.使用名叫“temporary”临时checkpoint location
     val checkpointLocation = userSpecifiedCheckpointLocation.map { userSpecified =>
       new Path(userSpecified).toUri.toString
     }.orElse {
@@ -218,7 +222,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
     }
 
     // If offsets have already been created, we trying to resume a query.
-    if (!recoverFromCheckpointLocation) {
+    if (!recoverFromCheckpointLocation) { // 不支持从checkpoint location恢复
       val checkpointPath = new Path(checkpointLocation, "offsets")
       val fs = checkpointPath.getFileSystem(df.sparkSession.sessionState.newHadoopConf())
       if (fs.exists(checkpointPath)) {
@@ -232,10 +236,13 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
     df.queryExecution.assertAnalyzed()
 
     if (sparkSession.sessionState.conf.isUnsupportedOperationCheckEnabled) {
+      // 检查该analyzedPlan的合法性
+      // TODO read UnsupportedOperationChecker.checkForStreaming 实在是复杂。。。
       UnsupportedOperationChecker.checkForStreaming(analyzedPlan, outputMode)
     }
 
     if (sparkSession.sessionState.conf.adaptiveExecutionEnabled) {
+      // streaming DataFrames/Datasets不支持adaptive execution
       logWarning(s"${SQLConf.ADAPTIVE_EXECUTION_ENABLED.key} " +
           "is not supported in streaming DataFrames/Datasets and will be disabled.")
     }

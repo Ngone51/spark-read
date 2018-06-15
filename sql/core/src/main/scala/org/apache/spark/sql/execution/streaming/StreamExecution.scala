@@ -245,6 +245,7 @@ abstract class StreamExecution(
     logInfo(s"Starting $prettyIdString. Use $resolvedCheckpointRoot to store the query checkpoint.")
     queryExecutionThread.setDaemon(true)
     queryExecutionThread.start()
+    // 阻塞等待，直到queryExecutionThread启动并且向listenerBus post QueryStartEvent
     startLatch.await()  // Wait until thread started and QueryStart event has been posted
   }
 
@@ -263,17 +264,17 @@ abstract class StreamExecution(
    */
   private def runStream(): Unit = {
     try {
-      // 设置JobGroup
+      // 设置JobGroup(此时，currentBatch = -1)
       sparkSession.sparkContext.setJobGroup(runId.toString, getBatchDescriptionString,
         interruptOnCancel = true)
       // 在sparkContext的local property中，设置该stream query的id
       sparkSession.sparkContext.setLocalProperty(StreamExecution.QUERY_ID_KEY, id.toString)
-      // 如果启用了stream metric机制，则注册该streamMetrics（source）
+      // 如果启用了stream metric机制（默认不启用），则注册该streamMetrics（source）
       if (sparkSession.sessionState.conf.streamingMetricsEnabled) {
         sparkSession.sparkContext.env.metricsSystem.registerSource(streamMetrics)
       }
 
-      // post stream query开始事件
+      // post stream query开始事件（注意，如果用户没有设定该query的name，则name为null）
       // `postEvent` does not throw non fatal exception.
       postEvent(new QueryStartedEvent(id, runId, name))
 
@@ -305,6 +306,7 @@ abstract class StreamExecution(
         initializationLatch.countDown()
         // 执行处于activated状态的stream
         runActivatedStream(sparkSessionForStream)
+        // 如果上面一个函数返回，说明该stream的执行结束了。
         updateStatusMessage("Stopped")
       } else {
         // `stop()` is already called. Let `finally` finish the cleanup.

@@ -390,6 +390,7 @@ final class DataStreamWriter[T] private[sql](ds: Dataset[T]) {
   // Builder pattern config options
   ///////////////////////////////////////////////////////////////////////////////////////
 
+  // 默认parquet
   private var source: String = df.sparkSession.sessionState.conf.defaultDataSourceName
 
   private var outputMode: OutputMode = OutputMode.Append

@@ -48,6 +48,7 @@ import org.apache.spark.sql.SparkSession
 class HDFSMetadataLog[T <: AnyRef : ClassTag](sparkSession: SparkSession, path: String)
   extends MetadataLog[T] with Logging {
 
+  // 用于Serialization.write
   private implicit val formats = Serialization.formats(NoTypeHints)
 
   /** Needed to serialize type T into JSON when using Jackson */
@@ -91,6 +92,7 @@ class HDFSMetadataLog[T <: AnyRef : ClassTag](sparkSession: SparkSession, path: 
   }
 
   protected def serialize(metadata: T, out: OutputStream): Unit = {
+    // metadata一般就是case class。write方法会将metadata以json的形式写入out对应的文件中。
     // called inside a try-finally where the underlying stream is closed in the caller
     Serialization.write(metadata, out)
   }
@@ -107,6 +109,8 @@ class HDFSMetadataLog[T <: AnyRef : ClassTag](sparkSession: SparkSession, path: 
    */
   override def add(batchId: Long, metadata: T): Boolean = {
     require(metadata != null, "'null' metadata cannot written to a metadata log")
+    // 如果get到了一个对应的batchMetadataFile，说明该batch的metadata已经存在了，不允许重复写入，返回false;
+    // 反之，不存在，则为该batch写一个新的batchMetadataFile
     get(batchId).map(_ => false).getOrElse {
       // Only write metadata when the batch has not yet been written
       writeBatch(batchId, metadata)
@@ -154,11 +158,13 @@ class HDFSMetadataLog[T <: AnyRef : ClassTag](sparkSession: SparkSession, path: 
     val tempPath = writeTempBatch(metadata).getOrElse(
       throw new IllegalStateException(s"Unable to create temp batch file $batchId"))
     try {
+      // QUESTION：这里就是commit the batch ？？？
       // Try to commit the batch
       // It will fail if there is an existing file (someone has committed the batch)
       logDebug(s"Attempting to write log #${batchIdToPath(batchId)}")
       fileManager.rename(tempPath, batchIdToPath(batchId))
 
+      // QUESTION：这个crc files是不是上面writeTempBatch用json4写文件时产生的？？？
       // SPARK-17475: HDFSMetadataLog should not leak CRC files
       // If the underlying filesystem didn't rename the CRC file, delete it.
       val crcPath = new Path(tempPath.getParent(), s".${tempPath.getName()}.crc")

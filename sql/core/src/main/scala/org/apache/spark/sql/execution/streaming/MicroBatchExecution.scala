@@ -123,6 +123,7 @@ class MicroBatchExecution(
           if (currentBatchId < 0) {
             // We'll do this initialization only once
             populateStartOffsets(sparkSessionForStream)
+            // 注意，此时currentBatchId已经等于0（表示第一个batch）了，而不是-1
             sparkSession.sparkContext.setJobDescription(getBatchDescriptionString)
             logDebug(s"Stream running from $committedOffsets to $availableOffsets")
           } else {
@@ -131,6 +132,7 @@ class MicroBatchExecution(
           if (dataAvailable) {
             currentStatus = currentStatus.copy(isDataAvailable = true)
             updateStatusMessage("Processing new data")
+            // 执行当前的batch
             runBatch(sparkSessionForStream)
           }
         }
@@ -235,17 +237,20 @@ class MicroBatchExecution(
       case None => // We are starting this stream for the first time.
         // 第一次启动该stream
         logInfo(s"Starting new streaming query.")
+        // 设置第一个batchId = 0
         currentBatchId = 0
         constructNextBatch()
     }
   }
 
   /**
+   * 如果有任何新数据到达，则返回true。
    * Returns true if there is any new data available to be processed.
    */
   private def dataAvailable: Boolean = {
     availableOffsets.exists {
       case (source, available) =>
+        // QUESTION：为什么不是committed < available？？？
         committedOffsets
           .get(source)
           .map(committed => committed != available)
@@ -273,6 +278,7 @@ class MicroBatchExecution(
               (s, s.getOffset)
             }
           case s: MicroBatchReader =>
+            // TODO read MicroBatchReader
             updateStatusMessage(s"Getting offsets from $s")
             reportTimeTaken("getOffset") {
             // Once v1 streaming source execution is gone, we can refactor this away.
@@ -285,6 +291,8 @@ class MicroBatchExecution(
               (s, Some(s.getEndOffset))
             }
         }.toMap
+        // 注意，latestOffsets是Map[BaseStreamingSource, Option[Offset]]类型的，mapValues(_.get)会遍历map的
+        // values，然后把Option中的值取出来，所以最后返回的是GenTraversableOnce[(BaseStreamingSource, Offset)]类型
         availableOffsets ++= latestOffsets.filter { case (_, o) => o.nonEmpty }.mapValues(_.get)
 
         if (dataAvailable) {
@@ -294,11 +302,13 @@ class MicroBatchExecution(
           false
         }
       } finally {
+        // 释放锁
         awaitProgressLock.unlock()
       }
     }
-    if (hasNewData) {
+    if (hasNewData) { // 如果有新数据
       var batchWatermarkMs = offsetSeqMetadata.batchWatermarkMs
+      // TODO read lastExecution != null
       // Update the eventTime watermarks if we find any in the plan.
       if (lastExecution != null) {
         lastExecution.executedPlan.collect {
@@ -341,6 +351,7 @@ class MicroBatchExecution(
 
       updateStatusMessage("Writing offsets to log")
       reportTimeTaken("walCommit") {
+        // QUESTION：也就是说，一个batch可以同时对应多个sources？？？
         assert(offsetLog.add(
           currentBatchId,
           availableOffsets.toOffsetSeq(sources, offsetSeqMetadata)),
@@ -352,9 +363,10 @@ class MicroBatchExecution(
         // batch at a time. If we add pipeline parallelism (multiple batches in flight at
         // the same time), this cleanup logic will need to change.
 
+        // 既然我们已经更新了scheduler的持久化的检查点，那么对于sources来说，抛弃来自上一个batch的数据就是安全的。
         // Now that we've updated the scheduler's persistent checkpoint, it is safe for the
         // sources to discard data from the previous batch.
-        if (currentBatchId != 0) {
+        if (currentBatchId != 0) { // 说明存在上一个batch（currentBatchId = 0说明是第一个batch，则不存在上一个batch）
           val prevBatchOff = offsetLog.get(currentBatchId - 1)
           if (prevBatchOff.isDefined) {
             prevBatchOff.get.toStreamProgress(sources).foreach {
@@ -367,6 +379,8 @@ class MicroBatchExecution(
           }
         }
 
+        // FIXME 如果currentBatchId已经大于minLogEntriesToMaintain了，而currentBatchId只会最近增大，
+        // 那么，岂不是每次进来都会purge，且每次purge的只有先前的一个batch file。
         // It is now safe to discard the metadata beyond the minimum number to retain.
         // Note that purge is exclusive, i.e. it purges everything before the target ID.
         if (minLogEntriesToMaintain < currentBatchId) {
@@ -394,13 +408,17 @@ class MicroBatchExecution(
     newData = reportTimeTaken("getBatch") {
       availableOffsets.flatMap {
         case (source: Source, available)
-          if committedOffsets.get(source).map(_ != available).getOrElse(true) =>
+          if committedOffsets.get(source).map(_ != available).getOrElse(true) => // 确定Else是true？？？
+          // current：上一个batch的结束offset + 1是当前batch的开始offset。
+          // available： 则是当前batch的结束offset
           val current = committedOffsets.get(source)
+          // 从source获取当前的batch（包含数据）。注意，此时该batch的offset信息已经写入WAL日志中
           val batch = source.getBatch(current, available)
           assert(batch.isStreaming,
             s"DataFrame returned by getBatch from $source did not have isStreaming=true\n" +
               s"${batch.queryExecution.logical}")
           logDebug(s"Retrieving data from $source: $current -> $available")
+          // 返回一个map的Entry(source, logicalPlan)
           Some(source -> batch.logicalPlan)
         case (reader: MicroBatchReader, available)
           if committedOffsets.get(reader).map(_ != available).getOrElse(true) =>
