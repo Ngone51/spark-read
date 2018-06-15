@@ -27,6 +27,7 @@ import org.apache.spark.annotation.InterfaceStability
 import org.apache.spark.unsafe.types.CalendarInterval
 
 /**
+ * 一个基于处理时间周期性执行查询的触发器。如果interval = 0，则查询会尽可能快地执行。
  * A trigger that runs a query periodically based on the processing time. If `interval` is 0,
  * the query will run as fast as possible.
  *

@@ -69,15 +69,19 @@ abstract class StreamExecution(
 
   import org.apache.spark.sql.streaming.StreamingQueryListener._
 
+  // 在没有数据到达的情况下，发起轮询的延迟时间，默认10ms
   protected val pollingDelayMs: Long = sparkSession.sessionState.conf.streamingPollingDelay
 
+  // 必须保留的最小的batches的个数？？？默认100个
   protected val minLogEntriesToMaintain: Int = sparkSession.sessionState.conf.minBatchesToRetain
   require(minLogEntriesToMaintain > 0, "minBatchesToRetain has to be positive")
 
   /**
+   * 一个用于在batches完成时等待或唤醒的锁。为了避免线程饥饿，使用公平锁。
    * A lock used to wait/notify when batches complete. Use a fair lock to avoid thread starvation.
    */
   protected val awaitProgressLock = new ReentrantLock(true)
+  // QUESTION：condition一般怎么用来着？？？
   protected val awaitProgressLockCondition = awaitProgressLock.newCondition()
 
   private val initializationLatch = new CountDownLatch(1)
@@ -86,6 +90,7 @@ abstract class StreamExecution(
 
   val resolvedCheckpointRoot = {
     val checkpointPath = new Path(checkpointRoot)
+    // QUESTION：讲道理，不论是本地还是hdfs，都可以用hadoopConf来创建文件吗？
     val fs = checkpointPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
     checkpointPath.makeQualified(fs.getUri, fs.getWorkingDirectory).toUri.toString
   }
@@ -152,19 +157,28 @@ abstract class StreamExecution(
     Option(name).map(_ + " ").getOrElse("") + s"[id = $id, runId = $runId]"
 
   /**
+   * 在查询计划中一组唯一的sources列表，会在生成逻辑计划时被设置。
+   * QUESTION：可以同时有多个sources？？？
    * A list of unique sources in the query plan. This will be set when generating logical plan.
    */
   @volatile protected var uniqueSources: Seq[BaseStreamingSource] = Seq.empty
 
-  /** Defines the internal state of execution */
+  /**
+   * 定义执行的内部状态
+   * Defines the internal state of execution
+   */
   protected val state = new AtomicReference[State](INITIALIZING)
 
   @volatile
   var lastExecution: IncrementalExecution = _
 
-  /** Holds the most recent input data for each source. */
+  /**
+   * 维护每个source最近一次的输入的数据
+   * Holds the most recent input data for each source.
+   */
   protected var newData: Map[BaseStreamingSource, LogicalPlan] = _
 
+  // 终止该stream的异常
   @volatile
   protected var streamDeathCause: StreamingQueryException = null
 
@@ -176,6 +190,7 @@ abstract class StreamExecution(
     this, s"spark.streaming.${Option(name).getOrElse(id)}")
 
   /**
+   * 用于运行（？）该stream微批次的线程
    * The thread that runs the micro-batches of this stream. Note that this thread must be
    * [[org.apache.spark.util.UninterruptibleThread]] to workaround KAFKA-1894: interrupting a
    * running `KafkaConsumer` may cause endless loop.
@@ -191,6 +206,9 @@ abstract class StreamExecution(
     }
 
   /**
+   * 一个用于记录每个batch中的offsets的WAL（预写日志）。为了保证一个给定的batch总是由相同的数据组成，我们会在任何
+   * 处理完成之前去写该日志。因此，该日志中记载了第N条offset，就意味着此时正在被处理的数据为第N个，而第N - 1条offset
+   * 则意味着该数据已经提交到了sink。
    * A write-ahead-log that records the offsets that are present in each batch. In order to ensure
    * that a given batch will always consist of the same data, we write to this log *before* any
    * processing is done.  Thus, the Nth record in this log indicated data that is currently being
@@ -199,6 +217,7 @@ abstract class StreamExecution(
   val offsetLog = new OffsetSeqLog(sparkSession, checkpointFile("offsets"))
 
   /**
+   * 一个用于记录已经完成的batches的id的日志。
    * A log that records the batch ids that have completed. This is used to check if a batch was
    * fully processed, and its output was committed to the sink, hence no need to process it again.
    * This is used (for instance) during restart, to help identify which batch to run next.
@@ -244,16 +263,21 @@ abstract class StreamExecution(
    */
   private def runStream(): Unit = {
     try {
+      // 设置JobGroup
       sparkSession.sparkContext.setJobGroup(runId.toString, getBatchDescriptionString,
         interruptOnCancel = true)
+      // 在sparkContext的local property中，设置该stream query的id
       sparkSession.sparkContext.setLocalProperty(StreamExecution.QUERY_ID_KEY, id.toString)
+      // 如果启用了stream metric机制，则注册该streamMetrics（source）
       if (sparkSession.sessionState.conf.streamingMetricsEnabled) {
         sparkSession.sparkContext.env.metricsSystem.registerSource(streamMetrics)
       }
 
+      // post stream query开始事件
       // `postEvent` does not throw non fatal exception.
       postEvent(new QueryStartedEvent(id, runId, name))
 
+      // 释放启动线程（调用start()方法的那个线程，同时start()方法也将return）
       // Unblock starting thread
       startLatch.countDown()
 
@@ -261,11 +285,14 @@ abstract class StreamExecution(
       SparkSession.setActiveSession(sparkSession)
 
       updateStatusMessage("Initializing sources")
+      // TODO read 强制初始化logical plan，这样source才能被创建
       // force initialization of the logical plan so that the sources can be created
       logicalPlan
 
+      // 独立出一个用于执行batches的spark session
       // Isolated spark session to run the batches with.
       val sparkSessionForStream = sparkSession.cloneSession()
+      // QUESTION：adaptive execution？？？自适应执行？？？
       // Adaptive execution can change num shuffle partitions, disallow
       sparkSessionForStream.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
       // Disable cost-based join optimization as we do not want stateful operations to be rearranged
@@ -276,6 +303,7 @@ abstract class StreamExecution(
       if (state.compareAndSet(INITIALIZING, ACTIVE)) {
         // Unblock `awaitInitialization`
         initializationLatch.countDown()
+        // 执行处于activated状态的stream
         runActivatedStream(sparkSessionForStream)
         updateStatusMessage("Stopped")
       } else {
@@ -381,6 +409,7 @@ abstract class StreamExecution(
   }
 
   override protected def postEvent(event: StreamingQueryListener.Event): Unit = {
+    // 注意，此处streams为StreamingQueryManager对象
     sparkSession.streams.postListenerEvent(event)
   }
 

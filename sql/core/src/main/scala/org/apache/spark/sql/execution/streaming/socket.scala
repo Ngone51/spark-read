@@ -72,6 +72,7 @@ class TextSocketSource(host: String, port: Int, includeTimestamp: Boolean, sqlCo
   initialize()
 
   private def initialize(): Unit = synchronized {
+    // 多么经典的socket操作啊，可是你会写吗？
     socket = new Socket(host, port)
     val reader = new BufferedReader(new InputStreamReader(socket.getInputStream))
     readThread = new Thread(s"TextSocketSource($host, $port)") {
@@ -80,6 +81,7 @@ class TextSocketSource(host: String, port: Int, includeTimestamp: Boolean, sqlCo
       override def run(): Unit = {
         try {
           while (true) {
+            // QUESTION：阻塞？？？
             val line = reader.readLine()
             if (line == null) {
               // End of file reached
@@ -91,6 +93,7 @@ class TextSocketSource(host: String, port: Int, includeTimestamp: Boolean, sqlCo
                 Timestamp.valueOf(
                   TextSocketSource.DATE_FORMAT.format(Calendar.getInstance().getTime()))
                 )
+              // 每增加一行（line）数据，增加一个偏移量offset
               currentOffset = currentOffset + 1
               batches.append(newData)
             }

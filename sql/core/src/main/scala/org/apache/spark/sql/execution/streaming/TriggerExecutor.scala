@@ -55,13 +55,16 @@ case class ProcessingTimeExecutor(processingTime: ProcessingTime, clock: Clock =
       val nextTriggerTimeMs = nextBatchTime(triggerTimeMs)
       val terminated = !triggerHandler()
       if (intervalMs > 0) {
+        // 统计该batch的处理时间
         val batchElapsedTimeMs = clock.getTimeMillis - triggerTimeMs
+        // 如果该batch的处理时间大于batch的处理间隔intervalMs，则警告该batch的处理滞后了
         if (batchElapsedTimeMs > intervalMs) {
           notifyBatchFallingBehind(batchElapsedTimeMs)
         }
         if (terminated) {
           return
         }
+        // 阻塞等待直到nextTriggerTimeMs，开始执行下一个batch
         clock.waitTillTime(nextTriggerTimeMs)
       } else {
         if (terminated) {

@@ -21,6 +21,8 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.types.StructType
 
 /**
+ * 一个持续地有数据到达的用于流查询的源。一个源的过程必须有单调递增的概念能够表示为一个Offset。Spark会有规律地
+ * 去查询每个源，以查看是否有更多的数据到达。
  * A source of continually arriving data for a streaming query. A [[Source]] must have a
  * monotonically increasing notion of progress that can be represented as an [[Offset]]. Spark
  * will regularly query each [[Source]] to see if any more data is available.

@@ -110,7 +110,9 @@ trait ProgressReporter extends Logging {
   protected def startTrigger(): Unit = {
     logDebug("Starting Trigger Calculation")
     lastTriggerStartTimestamp = currentTriggerStartTimestamp
+    // 记录当前trigger的开始时间
     currentTriggerStartTimestamp = triggerClock.getTimeMillis()
+    // 更新trigger的状态为active
     currentStatus = currentStatus.copy(isTriggerActive = true)
     currentDurationsMs.clear()
   }

@@ -74,6 +74,7 @@ class MicroBatchExecution(
     val _logicalPlan = analyzedPlan.transform {
       case streamingRelation@StreamingRelation(dataSource, _, output) =>
         toExecutionRelationMap.getOrElseUpdate(streamingRelation, {
+          // 具体化source，以避免在每个batch中创建它
           // Materialize source to avoid creating it in every batch
           val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
           val source = dataSource.createSource(metadataPath)
@@ -110,6 +111,7 @@ class MicroBatchExecution(
   }
 
   /**
+   * 当数据到达，反复地尝试去执行batches
    * Repeatedly attempts to run batches as data arrives.
    */
   protected def runActivatedStream(sparkSessionForStream: SparkSession): Unit = {
@@ -231,6 +233,7 @@ class MicroBatchExecution(
         logDebug(s"Resuming at batch $currentBatchId with committed offsets " +
           s"$committedOffsets and available offsets $availableOffsets")
       case None => // We are starting this stream for the first time.
+        // 第一次启动该stream
         logInfo(s"Starting new streaming query.")
         currentBatchId = 0
         constructNextBatch()
@@ -251,12 +254,15 @@ class MicroBatchExecution(
   }
 
   /**
+   * 询问所有的sources来查看是否有新的数据到达。如果有新的数据到达，batchId计数器就会增加，并且一条新的带有
+   * 最新的offset的日志记录会被写入（WAL）。
    * Queries all of the sources to see if any new data is available. When there is new data the
    * batchId counter is incremented and a new log entry is written with the newest offsets.
    */
   private def constructNextBatch(): Unit = {
     // Check to see what new data is available.
     val hasNewData = {
+      // 上锁
       awaitProgressLock.lock()
       try {
         // Generate a map from each unique source to the next available offset.
