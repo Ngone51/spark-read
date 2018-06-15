@@ -347,7 +347,10 @@ class DAGScheduler(
       case None =>
         // Create stages for all missing ancestor shuffle dependencies.
         // 返回该rdd的所有祖先（不再是直接）ShuffleDependencies
-        // 那shuffle dependency的遍历顺序是？？？可能又是类似于树的先序遍历？？？
+        // QUESTION：那shuffle dependency的遍历顺序是？？？可能又是类似于树的先序遍历？？？
+        // ANSWER：getMissXXX该方法返回一个ArrayStack，而我们在遍历ancestor shuffleDependencies的时候是由下至上。因此，
+        // 底层的shuffleDep先入栈，上层的shuffleDep后入栈。所以，此处遍历时，先遍历上层的shuffleDep。由此，优先创建
+        // 上层的stages。
         getMissingAncestorShuffleDependencies(shuffleDep.rdd).foreach { dep =>
           // Even though getMissingAncestorShuffleDependencies only returns shuffle dependencies
           // that were not already in shuffleIdToMapStage, it's possible that by the time we
