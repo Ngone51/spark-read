@@ -205,11 +205,11 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
         }
       )
       // convert it into an array of host to partition
+      // QUESTION：最多只选择前3个preferred location？？？
       for (x <- 0 to 2) {
         tmpPartsWithLocs.foreach { parts =>
           val p = parts._1
           val locs = parts._2
-          // QUESTION：最多只选择前两个preferred location？？？
           if (locs.size > x) partsWithLocs += ((locs(x), p))
         }
       }
@@ -252,6 +252,7 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
       return
     }
 
+    // 说明存在partitions拥有指定的preferred locations
     noLocality = false
     // number of iterations needed to be certain that we've seen most preferred locations
     val expectedCoupons2 = 2 * (math.log(targetLen)*targetLen + targetLen + 0.5).toInt
@@ -345,6 +346,10 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
           groupArr(i).partitions += p
         }
       } else { // no locality available, then simply split partitions based on positions in array
+        // 这里只有可能是groupArr.size == maxPartitions，因为groupArr.size = min(prev.partitions.length, maxPartition)
+        // 这种情况是maxPartition < prev.partitions.length。假设maxPartition = 3，即最后合并成3个分区，
+        // prev.partitions.length = 11，那么，我们就将prev的前三个partition合并为第一个分区，中间四个分区合并为第二个
+        // 分区，最后四个分区合并为第三个分区。
         for (i <- 0 until maxPartitions) {
           val rangeStart = ((i.toLong * prev.partitions.length) / maxPartitions).toInt
           val rangeEnd = (((i.toLong + 1) * prev.partitions.length) / maxPartitions).toInt
