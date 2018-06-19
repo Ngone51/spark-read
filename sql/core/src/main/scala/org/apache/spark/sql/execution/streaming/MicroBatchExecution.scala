@@ -132,7 +132,7 @@ class MicroBatchExecution(
           if (dataAvailable) {
             currentStatus = currentStatus.copy(isDataAvailable = true)
             updateStatusMessage("Processing new data")
-            // 执行当前的batch
+            // 执行当前的batch（包含数据）
             runBatch(sparkSessionForStream)
           }
         }
@@ -149,6 +149,7 @@ class MicroBatchExecution(
         } else {
           currentStatus = currentStatus.copy(isDataAvailable = false)
           updateStatusMessage("Waiting for data to arrive")
+          // 在休眠pollingDelayMs（默认10ms），再尝试去获取数据
           Thread.sleep(pollingDelayMs)
         }
       }
@@ -293,11 +294,13 @@ class MicroBatchExecution(
         }.toMap
         // 注意，latestOffsets是Map[BaseStreamingSource, Option[Offset]]类型的，mapValues(_.get)会遍历map的
         // values，然后把Option中的值取出来，所以最后返回的是GenTraversableOnce[(BaseStreamingSource, Offset)]类型
+        // （availableOffsets和latestOffsets的key是一样，应该是会更新value吧？？？）
         availableOffsets ++= latestOffsets.filter { case (_, o) => o.nonEmpty }.mapValues(_.get)
 
         if (dataAvailable) {
           true
         } else {
+          // 用于标记一个没有new data，但已经完成了的batch
           noNewData = true
           false
         }
@@ -307,6 +310,7 @@ class MicroBatchExecution(
       }
     }
     if (hasNewData) { // 如果有新数据
+      // TODO read batchWatermarkMs 先不管这个
       var batchWatermarkMs = offsetSeqMetadata.batchWatermarkMs
       // TODO read lastExecution != null
       // Update the eventTime watermarks if we find any in the plan.
@@ -349,11 +353,15 @@ class MicroBatchExecution(
         batchWatermarkMs = batchWatermarkMs,
         batchTimestampMs = triggerClock.getTimeMillis()) // Current batch timestamp in milliseconds
 
+      // （在处理batch的数据之前）先写WAL日志
       updateStatusMessage("Writing offsets to log")
       reportTimeTaken("walCommit") {
         // QUESTION：也就是说，一个batch可以同时对应多个sources？？？
+        // ANSWER: 看起来真的是这样...
         assert(offsetLog.add(
+          // 用于创建该batch对应的文件名称（每个batch产生一个对应的文件）
           currentBatchId,
+          // 返回一个OffsetSeq对象。注意，OffsetSeq不包含sources信息，只包含sources对应的offsets。
           availableOffsets.toOffsetSeq(sources, offsetSeqMetadata)),
           s"Concurrent update to the log. Multiple streaming jobs detected for $currentBatchId")
         logInfo(s"Committed offsets for batch $currentBatchId. " +
@@ -370,6 +378,7 @@ class MicroBatchExecution(
           val prevBatchOff = offsetLog.get(currentBatchId - 1)
           if (prevBatchOff.isDefined) {
             prevBatchOff.get.toStreamProgress(sources).foreach {
+              // 通知source，接下来该stream只会处理off之后的数据。（对于socket source，commit()会抛弃掉off之前的数据）
               case (src: Source, off) => src.commit(off)
               case (reader: MicroBatchReader, off) =>
                 reader.commit(reader.deserializeOffset(off.json))
@@ -445,6 +454,7 @@ class MicroBatchExecution(
           replacements ++= output.zip(dataPlan.output)
           dataPlan
         }.getOrElse {
+          // 如果source没有对应的dataPlan，则返回一个空（没有数据）的LocalRelation
           LocalRelation(output, isStreaming = true)
         }
     }

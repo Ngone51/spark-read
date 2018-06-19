@@ -76,6 +76,7 @@ trait ProgressReporter extends Logging {
   /** Holds the most recent query progress updates.  Accesses must lock on the queue itself. */
   private val progressBuffer = new mutable.Queue[StreamingQueryProgress]()
 
+  // 当没有数据到达时，在两个过程事件中的等待时间
   private val noDataProgressEventInterval =
     sparkSession.sessionState.conf.streamingNoDataProgressEventInterval
 
@@ -120,10 +121,13 @@ trait ProgressReporter extends Logging {
   private def updateProgress(newProgress: StreamingQueryProgress): Unit = {
     progressBuffer.synchronized {
       progressBuffer += newProgress
+      // 默认保留100个StreamingQueryProgress
       while (progressBuffer.length >= sparkSession.sqlContext.conf.streamingProgressRetention) {
+        // 出队
         progressBuffer.dequeue()
       }
     }
+    // 提交QueryProgressEvent事件
     postEvent(new QueryProgressEvent(newProgress))
     logInfo(s"Streaming query made progress: $newProgress")
   }

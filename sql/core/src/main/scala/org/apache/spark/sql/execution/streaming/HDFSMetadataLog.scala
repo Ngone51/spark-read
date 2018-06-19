@@ -159,6 +159,7 @@ class HDFSMetadataLog[T <: AnyRef : ClassTag](sparkSession: SparkSession, path: 
       throw new IllegalStateException(s"Unable to create temp batch file $batchId"))
     try {
       // QUESTION：这里就是commit the batch ？？？
+      // ANSWER：只是commit该batch的offset信息
       // Try to commit the batch
       // It will fail if there is an existing file (someone has committed the batch)
       logDebug(s"Attempting to write log #${batchIdToPath(batchId)}")
