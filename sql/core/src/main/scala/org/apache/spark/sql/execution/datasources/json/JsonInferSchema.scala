@@ -49,6 +49,12 @@ private[sql] object JsonInferSchema {
     val rootType = json.mapPartitions { iter =>
       val factory = new JsonFactory()
       configOptions.setJacksonOptions(factory)
+      // QUESTION：这是不是意味着，我为了推测一个json文件中的schema，需要把每行数据都扫一遍？？？
+      // 因为考虑到：
+      // {"name":"Michael"}
+      //{"name":"Andy", "age":30}
+      // 有些是不完整的，比如第一个没有“age”字段。所以，最终我们还有把所有的schema合并起来，得到一个
+      // 完整的schema: {age, name}。所以，我们只有在扫描了所有的数据之后，才能确定一个完整的schema。
       iter.flatMap { row =>
         try {
           Utils.tryWithResource(createParser(factory, row)) { parser =>
@@ -104,6 +110,7 @@ private[sql] object JsonInferSchema {
       case null | VALUE_NULL => NullType
 
       case FIELD_NAME =>
+        // 如果currentToken是FIELD_NAME，那么nextToken必定是VALUE_SomeType（该FIELD的类型）
         parser.nextToken()
         inferField(parser, configOptions)
 
@@ -119,6 +126,8 @@ private[sql] object JsonInferSchema {
       case VALUE_STRING => StringType
       case START_OBJECT =>
         val builder = Array.newBuilder[StructField]
+        // 注意，在nextUntil中，会执行parser.nextToken。所以，此时的parser.currentToken不再是START_OBJECT，
+        // 而是FIELD_NAME。
         while (nextUntil(parser, END_OBJECT)) {
           builder += StructField(
             parser.getCurrentName,
@@ -126,6 +135,7 @@ private[sql] object JsonInferSchema {
             nullable = true)
         }
         val fields: Array[StructField] = builder.result()
+        // 最后还要根据字段的名称进行字符串的排序...（where's the other code???）
         // Note: other code relies on this sorting for correctness, so don't remove it!
         java.util.Arrays.sort(fields, structFieldComparator)
         StructType(fields)
@@ -298,6 +308,7 @@ private[sql] object JsonInferSchema {
           var f1Idx = 0
           var f2Idx = 0
 
+          // fields1的个数和fields2的个数可能不一样
           while (f1Idx < fields1.length && f2Idx < fields2.length) {
             val f1Name = fields1(f1Idx).name
             val f2Name = fields2(f2Idx).name

@@ -126,6 +126,7 @@ class TextFileFormat extends TextBasedFileFormat with DataSourceRegister {
       val reader = if (!wholeTextMode) {
         new HadoopFileLinesReader(file, confValue)
       } else {
+        // TODO read HadoopFileWholeTextReader
         new HadoopFileWholeTextReader(file, confValue)
       }
       Option(TaskContext.get()).foreach(_.addTaskCompletionListener(_ => reader.close()))
@@ -137,6 +138,7 @@ class TextFileFormat extends TextBasedFileFormat with DataSourceRegister {
         val bufferHolder = new BufferHolder(unsafeRow)
         val unsafeRowWriter = new UnsafeRowWriter(bufferHolder, 1)
 
+        // 把从file中读取的数据写入到UnsafeRow中
         reader.map { line =>
           // Writes to an UnsafeRow directly
           bufferHolder.reset()

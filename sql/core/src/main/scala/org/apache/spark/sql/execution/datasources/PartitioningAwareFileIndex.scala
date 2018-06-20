@@ -152,6 +152,7 @@ abstract class PartitioningAwareFileIndex(
       case _ =>
         PartitioningUtils.parsePartitions(
           leafDirs,
+          // 默认开启类型推断
           typeInference = sparkSession.sessionState.conf.partitionColumnTypeInferenceEnabled,
           basePaths = basePaths,
           timeZoneId = timeZoneId)

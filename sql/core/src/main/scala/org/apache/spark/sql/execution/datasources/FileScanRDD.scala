@@ -65,7 +65,9 @@ class FileScanRDD(
     @transient val filePartitions: Seq[FilePartition])
   extends RDD[InternalRow](sparkSession.sparkContext, Nil) {
 
+  // 是否忽略corrupt files，默认false
   private val ignoreCorruptFiles = sparkSession.sessionState.conf.ignoreCorruptFiles
+  // 是否忽略missing files，默认false
   private val ignoreMissingFiles = sparkSession.sessionState.conf.ignoreMissingFiles
 
   override def compute(split: RDDPartition, context: TaskContext): Iterator[InternalRow] = {

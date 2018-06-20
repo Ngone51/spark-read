@@ -162,6 +162,7 @@ object PartitioningUtils {
   }
 
   /**
+   * QUESTION：在下面的例子中，“42”“hello”“3.14”是真正的数据的值吗，还是什么？
    * Parses a single partition, returns column names and values of each partition column, also
    * the path when we stop partition discovery.  For example, given:
    * {{{
@@ -200,12 +201,15 @@ object PartitioningUtils {
       }
 
       if (basePaths.contains(currentPath)) {
+        // 如果currentPath是一个basePath，我们就停止继续探索。
         // If the currentPath is one of base paths. We should stop.
         finished = true
       } else {
+        // 如果currentPath = "/table/a=1/"，那么，调用currentPath.getName会返回"a=1"
         // Let's say currentPath is a path of "/table/a=1/", currentPath.getName will give us a=1.
         // Once we get the string, we try to parse it and find the partition column and value.
         val maybeColumn =
+          // （解析分区列）
           parsePartitionColumn(currentPath.getName, typeInference, timeZone)
         maybeColumn.foreach(columns += _)
 
@@ -243,7 +247,7 @@ object PartitioningUtils {
     val equalSignIndex = columnSpec.indexOf('=')
     if (equalSignIndex == -1) {
       None
-    } else {
+    } else { // 找到了等号，说明（至少）存在一个column咯
       val columnName = unescapePathName(columnSpec.take(equalSignIndex))
       assert(columnName.nonEmpty, s"Empty partition column name in '$columnSpec'")
 
@@ -437,6 +441,7 @@ object PartitioningUtils {
       if (raw == DEFAULT_PARTITION_NAME) {
         Literal.create(null, NullType)
       } else {
+        // 如果没有开启类型自动推断机制，则默认为StringType
         Literal.create(unescapePathName(raw), StringType)
       }
     }

@@ -67,6 +67,7 @@ case class HadoopFsRelation(
     }
   }
 
+  // schema由（dataSchema + partitionSchema - overlappedPartCols）构成
   val schema: StructType = {
     StructType(dataSchema.map(f => overlappedPartCols.getOrElse(getColName(f), f)) ++
       partitionSchema.filterNot(f => overlappedPartCols.contains(getColName(f))))

@@ -91,6 +91,8 @@ class InMemoryFileIndex(
     val files = listLeafFiles(rootPaths)
     cachedLeafFiles =
       new mutable.LinkedHashMap[Path, FileStatus]() ++= files.map(f => f.getPath -> f)
+    // 哇哦~：根据每个文件的父目录来分组
+    // （注意，groupBy返回的是一个map）
     cachedLeafDirToChildrenFiles = files.toArray.groupBy(_.getPath.getParent)
     cachedPartitionSpec = null
   }
@@ -111,10 +113,12 @@ class InMemoryFileIndex(
    */
   def listLeafFiles(paths: Seq[Path]): mutable.LinkedHashSet[FileStatus] = {
     val output = mutable.LinkedHashSet[FileStatus]()
+    // 需要获取该路径下所有文件（包括递归的）的路径集合
     val pathsToFetch = mutable.ArrayBuffer[Path]()
     for (path <- paths) {
       fileStatusCache.getLeafFiles(path) match {
         case Some(files) =>
+          // 如果缓存里已经存储了该路径下的所有文件，则不需要再去展开获取了
           HiveCatalogMetrics.incrementFileCacheHits(files.length)
           output ++= files
         case None =>
@@ -155,6 +159,8 @@ object InMemoryFileIndex extends Logging {
       blockLocations: Array[SerializableBlockLocation])
 
   /**
+   * 递归地展开一组文件路径，并根据文件路径的个数来自动地选择展开策略（如果文件路径个数大于32个，则会发起一个job来
+   * 并发地展开）。
    * Lists a collection of paths recursively. Picks the listing strategy adaptively depending
    * on the number of paths to list.
    *
@@ -168,6 +174,7 @@ object InMemoryFileIndex extends Logging {
       filter: PathFilter,
       sparkSession: SparkSession): Seq[(Path, Seq[FileStatus])] = {
 
+    // 默认32个，超过32个就会发起一个spark job来进行File listing（所以，这也只有分布式文件系统支持？比如HDFS？）
     // Short-circuits parallel listing when serial listing is likely to be faster.
     if (paths.size <= sparkSession.sessionState.conf.parallelPartitionDiscoveryThreshold) {
       return paths.map { path =>
@@ -175,15 +182,18 @@ object InMemoryFileIndex extends Logging {
       }
     }
 
+    // 准备发起一个job来进行并发的File listing
     logInfo(s"Listing leaf files and directories in parallel under: ${paths.mkString(", ")}")
     HiveCatalogMetrics.incrementParallelListingJobCount(1)
 
     val sparkContext = sparkSession.sparkContext
     val serializableConfiguration = new SerializableConfiguration(hadoopConf)
     val serializedPaths = paths.map(_.toString)
+    // 默认10000
     val parallelPartitionDiscoveryParallelism =
       sparkSession.sessionState.conf.parallelPartitionDiscoveryParallelism
 
+    // 设置File listing的并发度
     // Set the number of parallelism to prevent following file listing from generating many tasks
     // in case of large #defaultParallelism.
     val numParallelism = Math.min(paths.size, parallelPartitionDiscoveryParallelism)
@@ -208,6 +218,8 @@ object InMemoryFileIndex extends Logging {
           }.iterator
         }.map { case (path, statuses) =>
         val serializableStatuses = statuses.map { status =>
+          // 因为我们这里是在executor上进行File listing的，所以获得FileStatus需要发送给driver
+          // 将FileStatus转换成SerializableFileStatus
           // Turn FileStatus into SerializableFileStatus so we can send it back to the driver
           val blockLocations = status match {
             case f: LocatedFileStatus =>
@@ -234,11 +246,12 @@ object InMemoryFileIndex extends Logging {
             blockLocations)
         }
         (path.toString, serializableStatuses)
-      }.collect()
+      }.collect() // 触发一个job
     } finally {
       sparkContext.setJobDescription(previousJobDescription)
     }
 
+    // 将SerializableFileStatus恢复成Status
     // turn SerializableFileStatus back to Status
     statusMap.map { case (path, serializableStatuses) =>
       val statuses = serializableStatuses.map { f =>
@@ -274,16 +287,19 @@ object InMemoryFileIndex extends Logging {
     // [SPARK-17599] Prevent InMemoryFileIndex from failing if path doesn't exist
     // Note that statuses only include FileStatus for the files and dirs directly under path,
     // and does not include anything else recursively.
+    // 注意，statuses只包含该目录下直接地文件和目录的FileStatus，而不包含任何其它递归的文件和目录的FileStatus。
     val statuses = try fs.listStatus(path) catch {
       case _: FileNotFoundException =>
         logWarning(s"The directory $path was not found. Was it deleted very recently?")
         Array.empty[FileStatus]
     }
 
+    // 剩下的就是过滤了的statuses
     val filteredStatuses = statuses.filterNot(status => shouldFilterOut(status.getPath.getName))
 
     val allLeafStatuses = {
       val (dirs, topLevelFiles) = filteredStatuses.partition(_.isDirectory)
+      // QUESTION：为什么有sparkSession就调用bulkListLeafFiles，而没有就调用listLeafFiles
       val nestedFiles: Seq[FileStatus] = sessionOpt match {
         case Some(session) =>
           bulkListLeafFiles(dirs.map(_.getPath), hadoopConf, filter, session).flatMap(_._2)

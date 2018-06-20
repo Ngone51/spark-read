@@ -320,6 +320,7 @@ case class FileSourceScanExec(
       "scanTime" -> SQLMetrics.createTimingMetric(sparkContext, "scan time"))
 
   protected override def doExecute(): RDD[InternalRow] = {
+    // TODO read WholeStageCodegenExec(this).execute() when supportsBatch
     if (supportsBatch) {
       // in the case of fallback, this batched scan should never fail because of:
       // 1) only primitive types are supported
@@ -397,8 +398,10 @@ case class FileSourceScanExec(
       readFile: (PartitionedFile) => Iterator[InternalRow],
       selectedPartitions: Seq[PartitionDirectory],
       fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    // 一个文件可以向一个partition写入的数据的最大size，默认128M
     val defaultMaxSplitBytes =
       fsRelation.sparkSession.sessionState.conf.filesMaxPartitionBytes
+    // 预计打开一个文件的开销，默认4M？？？
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
     val defaultParallelism = fsRelation.sparkSession.sparkContext.defaultParallelism
     val totalBytes = selectedPartitions.flatMap(_.files.map(_.getLen + openCostInBytes)).sum

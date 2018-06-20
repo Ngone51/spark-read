@@ -386,7 +386,9 @@ case class DataSource(
         val globbedPaths = allPaths.flatMap(
           DataSource.checkAndGlobPathIfNecessary(hadoopConf, _, checkFilesExist)).toArray
 
+        // 创建FileStatusCache
         val fileStatusCache = FileStatusCache.getOrCreate(sparkSession)
+        // 获取数据和分区的schema
         val (dataSchema, partitionSchema) = getOrInferFileFormatSchema(format, fileStatusCache)
 
         val fileCatalog = if (sparkSession.sqlContext.conf.manageFilesourcePartitions &&
