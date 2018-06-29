@@ -91,6 +91,10 @@ abstract class StreamExecution(
   val resolvedCheckpointRoot = {
     val checkpointPath = new Path(checkpointRoot)
     // QUESTION：讲道理，不论是本地还是hdfs，都可以用hadoopConf来创建文件吗？
+    // ANSWER：实验证明，是的。而且生成的本地文件和在hdfs上的文件结构是一样的。比如：
+    // _SUCCESSS
+    // part-00000
+    // part-00001
     val fs = checkpointPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
     checkpointPath.makeQualified(fs.getUri, fs.getWorkingDirectory).toUri.toString
   }

@@ -155,6 +155,7 @@ class ContinuousExecution(
     var nextSourceId = 0
     continuousSources = logicalPlan.collect {
       case ContinuousExecutionRelation(dataSource, extraReaderOptions, output) =>
+        // 为每个source创建一个metadataPath
         val metadataPath = s"$resolvedCheckpointRoot/sources/$nextSourceId"
         nextSourceId += 1
 
