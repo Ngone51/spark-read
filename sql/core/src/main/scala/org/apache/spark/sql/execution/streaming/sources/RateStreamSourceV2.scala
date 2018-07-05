@@ -176,6 +176,9 @@ object RateStreamSourceV2 {
   private[sql] def createInitialOffset(numPartitions: Int, creationTimeMs: Long) = {
     RateStreamOffset(
       Range(0, numPartitions).map { i =>
+        // 默认的increment和numPartitions相等。所以每个partition的第一个产生的row的值和各自的partition index相等（
+        // 因为startValue = i - numPartitions，所以第一个产生的row的value为startValue + increment = i - numPartitions
+        // + numPartitions = i。）
         // Note that the starting offset is exclusive, so we have to decrement the starting value
         // by the increment that will later be applied. The first row output in each
         // partition will have a value equal to the partition index.

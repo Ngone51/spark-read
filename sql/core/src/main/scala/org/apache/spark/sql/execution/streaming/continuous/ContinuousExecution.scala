@@ -122,8 +122,10 @@ class ContinuousExecution(
           throw new IllegalStateException(
             s"Batch $latestEpochId was committed without end epoch offsets!")
         }
+        // nextOffsets是上一个batch的commit offsets，也就是end offsets，所以作为下一个batch的start offsets
         committedOffsets = nextOffsets.toStreamProgress(sources)
 
+        // QUESTION：latestEpochId和latestOffsetEpoch不一样？？？
         // Get to an epoch ID that has definitely never been sent to a sink before. Since sink
         // commit happens between offset log write and commit log write, this means an epoch ID
         // which is not in the offset log.
@@ -137,9 +139,13 @@ class ContinuousExecution(
         logDebug(s"Resuming at epoch $currentBatchId with committed offsets $committedOffsets")
         nextOffsets
       case None =>
+        // 我们正在第一次启动该stream。Offsets都还空的嘞。
         // We are starting this stream for the first time. Offsets are all None.
         logInfo(s"Starting new streaming query.")
         currentBatchId = 0
+        // QUESTION：一个流可以对应多个sources，那么，这些sources在某个时间段内总是对应同一个currentBatchId吗？？？
+        // 话说，对于continuous stream，currentBatchId又是怎么增长的呢？？？在stream每次重启的时候？？？看上面的代码
+        // 发现就有`urrentBatchId = latestOffsetEpoch + 1`
         OffsetSeq.fill(continuousSources.map(_ => null): _*)
     }
   }
@@ -166,6 +172,7 @@ class ContinuousExecution(
     }
     uniqueSources = continuousSources.distinct
 
+    // 获取所有sources的start offset
     val offsets = getStartOffsets(sparkSessionForQuery)
 
     var insertedSourceId = 0
@@ -180,6 +187,7 @@ class ContinuousExecution(
             s"${Utils.truncatedString(newOutput, ",")}")
         replacements ++= output.zip(newOutput)
 
+        // TODO && QUESTION：只取第一个offset？？？难道说continuous stream只能有一个source？
         val loggedOffset = offsets.offsets(0)
         val realOffset = loggedOffset.map(off => reader.deserializeOffset(off.json))
         reader.setOffset(java.util.Optional.ofNullable(realOffset.orNull))

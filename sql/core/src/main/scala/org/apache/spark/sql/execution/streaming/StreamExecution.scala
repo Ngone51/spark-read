@@ -72,7 +72,7 @@ abstract class StreamExecution(
   // 在没有数据到达的情况下，发起轮询的延迟时间，默认10ms
   protected val pollingDelayMs: Long = sparkSession.sessionState.conf.streamingPollingDelay
 
-  // 必须保留的最小的batches的个数？？？默认100个
+  // 最少batches的log（offsetLog和commitLog）的保留个数，默认100个。
   protected val minLogEntriesToMaintain: Int = sparkSession.sessionState.conf.minBatchesToRetain
   require(minLogEntriesToMaintain > 0, "minBatchesToRetain has to be positive")
 
@@ -211,7 +211,7 @@ abstract class StreamExecution(
 
   /**
    * 一个用于记录每个batch中的offsets的WAL（预写日志）。为了保证一个给定的batch总是由相同的数据组成，我们会在任何
-   * 处理完成之前去写该日志。因此，该日志中记载了第N条offset，就意味着此时正在被处理的数据为第N个，而第N - 1条offset
+   * 处理发生之前去写该日志。因此，该日志中记载了第N条offset，就意味着此时正在被处理的数据为第N个，而第N - 1条offset
    * 则意味着该数据已经提交到了sink。
    * A write-ahead-log that records the offsets that are present in each batch. In order to ensure
    * that a given batch will always consist of the same data, we write to this log *before* any

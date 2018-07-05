@@ -39,6 +39,7 @@ class RateStreamContinuousReader(options: DataSourceV2Options)
   extends ContinuousReader {
   implicit val defaultFormats: DefaultFormats = DefaultFormats
 
+  // 该reader的创建时间，会作为每个partition中，第一次读取数据的开始时间。
   val creationTime = System.currentTimeMillis()
 
   val numPartitions = options.get(RateStreamSourceV2.NUM_PARTITIONS).orElse("5").toInt
@@ -76,6 +77,7 @@ class RateStreamContinuousReader(options: DataSourceV2Options)
           s"invalid offset type ${off.getClass()} for ContinuousRateSource")
     }
     if (partitionStartMap.keySet.size != numPartitions) {
+      // 也就是说，如果该stream是restart的，它不能重新配置numPartitions。
       throw new IllegalArgumentException(
         s"The previous run contained ${partitionStartMap.keySet.size} partitions, but" +
         s" $numPartitions partitions are currently configured. The numPartitions option" +
@@ -121,6 +123,10 @@ class RateStreamContinuousDataReader(
     rowsPerSecond: Double)
   extends ContinuousDataReader[Row] {
   private var nextReadTime: Long = startTimeMs
+  // 1000（1秒 = 1000毫秒） / rowsPerSecond意为产生一个row的间隔时间（毫秒）。假设rowsPerSecond = 50，即每秒要求产生
+  // 50个row，则间隔每readTimeIncrement = 20毫秒就需要产生一个row。
+  // 如果rowsPerSecond > 1000，且readTimeIncrement = 0其实也没有关系。最终会导致nextReadTime始终不变。
+  // 这就意味着，每次调用next方法，会立即返回一个Row。
   private val readTimeIncrement: Long = (1000 / rowsPerSecond).toLong
 
   private var currentValue = startValue

@@ -121,6 +121,8 @@ class MicroBatchExecution(
       if (isActive) {
         reportTimeTaken("triggerExecution") {
           if (currentBatchId < 0) {
+            // 初始化该steam的start offsets，该初始化只会被执行一次，就是每次该stream启动（不论是一个新的stream还是一个
+            // recovery的stream）的时候。
             // We'll do this initialization only once
             populateStartOffsets(sparkSessionForStream)
             // 注意，此时currentBatchId已经等于0（表示第一个batch）了，而不是-1
@@ -190,14 +192,17 @@ class MicroBatchExecution(
         /* Initialize committed offsets to a committed batch, which at this
          * is the second latest batch id in the offset log. */
         if (latestBatchId != 0) {
+          // 注意，secondLatestBatchId是OffsetSeq类型的对象
           val secondLatestBatchId = offsetLog.get(latestBatchId - 1).getOrElse {
             throw new IllegalStateException(s"batch ${latestBatchId - 1} doesn't exist")
           }
+          // 上一个batch肯定已经commit过了，所以我们用上一个batch的offsets来作为当前的committedOffsets
           committedOffsets = secondLatestBatchId.toStreamProgress(sources)
         }
 
         // update offset metadata
         nextOffsets.metadata.foreach { metadata =>
+          // TODO read OffsetSeqMetadata.setSessionConf
           OffsetSeqMetadata.setSessionConf(metadata, sparkSessionToRunBatches.conf)
           offsetSeqMetadata = OffsetSeqMetadata(
             metadata.batchWatermarkMs, metadata.batchTimestampMs, sparkSessionToRunBatches.conf)
@@ -208,6 +213,8 @@ class MicroBatchExecution(
          * i.e., committedBatchId + 1 */
         commitLog.getLatest() match {
           case Some((latestCommittedBatchId, _)) =>
+            // offsetLog的latestBatchId和commitLog里的latestBatchId相等，说明offsetLog中记录的batch都已经
+            // 处理完成了。所以，我们需要构建一个新的batch
             if (latestBatchId == latestCommittedBatchId) {
               /* The last batch was successfully committed, so we can safely process a
                * new next batch but first:
@@ -223,10 +230,20 @@ class MicroBatchExecution(
                   // here, so we do nothing here.
               }
               currentBatchId = latestCommittedBatchId + 1
+              // 因为latestBatchId == latestCommittedBatchId，所以当前的committedOffsets就是availableOffsets。
+              // 因为availableOffsets就是offsetLog的latest batch的offsets。
               committedOffsets ++= availableOffsets
+              // 因为没有新的batch需要被处理了，所以现在需要构建一个新的batch
               // Construct a new batch be recomputing availableOffsets
               constructNextBatch()
-            } else if (latestCommittedBatchId < latestBatchId - 1) {
+            } else if (latestCommittedBatchId < latestBatchId - 1) { // 可能发生吗？？？
+              // FIXME & QUESTION
+              // 按理说，如果latestCommittedBatchId == latestBatchId - 1，即offsetLog的latest batch没有被提交（commit）
+              // 到commitLog中，所以接下来就需要处理offsetLog的latest batch，这才是正常的。也就是下面logWarning中的意思，
+              // 即正常情况下，commitLog的latest batch最多只落后于offsetLog的latest batch的一个！！！
+              // 但是，如果latestCommittedBatchId < latestBatchId - 1，也就是说commitLog落后于offsetLog至少2个batch了，
+              // 所以currentBatchId应该等于latestCommittedBatchId + 1才对啊，然后处理offsetLog中对应的batch，
+              // 而不是latest batch。难道不是这样的吗？？？
               logWarning(s"Batch completion log latest batch id is " +
                 s"${latestCommittedBatchId}, which is not trailing " +
                 s"batchid $latestBatchId by one")
@@ -240,6 +257,7 @@ class MicroBatchExecution(
         logInfo(s"Starting new streaming query.")
         // 设置第一个batchId = 0
         currentBatchId = 0
+        // 构建一个新的batch
         constructNextBatch()
     }
   }
@@ -255,7 +273,7 @@ class MicroBatchExecution(
         committedOffsets
           .get(source)
           .map(committed => committed != available)
-          .getOrElse(true)
+          .getOrElse(true) // QUESTION: always true???
     }
   }
 
@@ -309,7 +327,7 @@ class MicroBatchExecution(
         awaitProgressLock.unlock()
       }
     }
-    if (hasNewData) { // 如果有新数据
+    if (hasNewData) { // 如果有新数据，我们先预写日志（WAL）。这里没有数据处理的内容。
       // TODO read batchWatermarkMs 先不管这个
       var batchWatermarkMs = offsetSeqMetadata.batchWatermarkMs
       // TODO read lastExecution != null
@@ -388,8 +406,8 @@ class MicroBatchExecution(
           }
         }
 
-        // FIXME 如果currentBatchId已经大于minLogEntriesToMaintain了，而currentBatchId只会最近增大，
-        // 那么，岂不是每次进来都会purge，且每次purge的只有先前的一个batch file。
+        // FIXME 如果currentBatchId已经大于minLogEntriesToMaintain了，而currentBatchId只会逐渐增大，
+        // 那么，岂不是每次进来都会purge，且每次purge的只有先前的一个batch file？？？
         // It is now safe to discard the metadata beyond the minimum number to retain.
         // Note that purge is exclusive, i.e. it purges everything before the target ID.
         if (minLogEntriesToMaintain < currentBatchId) {
