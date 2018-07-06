@@ -199,6 +199,8 @@ class MemorySink(val schema: StructType, outputMode: OutputMode) extends Sink wi
   }
 
   def latestBatchId: Option[Long] = synchronized {
+    // QUESTION：map()中选择了batchId(Long)字段，但该方法返回的是Option[Long],
+    // 是发生了隐式转换吗？？？
     batches.lastOption.map(_.batchId)
   }
 

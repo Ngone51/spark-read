@@ -111,6 +111,12 @@ class MicroBatchExecution(
   }
 
   /**
+   * 对于MicroBatchExecution的runActivatedStream方法，主要由以下几个步骤构成：
+   * 0. 如果该stream是第一次启动或重启，则获取其start offsets； 反之，直接进入第1步；
+   * 1. 构建下一个Batch，并预写日志（WAL），即将sources最新的offsets写入offsetLog；
+   * 2. 根据sources最新的offsets获取对应batch，并处理该batch（此时，会有新的spark job发起）；
+   * 3. batch处理完成，将该batch id写入commitLog。
+   *
    * 当数据到达，反复地尝试去执行batches
    * Repeatedly attempts to run batches as data arrives.
    */
@@ -141,6 +147,7 @@ class MicroBatchExecution(
         // Report trigger as finished and construct progress object.
         finishTrigger(dataAvailable)
         if (dataAvailable) {
+          // 当该batch处理完之后，就将该batch的id写入commitLog。同时更新此时的committedOffsets为availableOffsets
           // Update committed offsets.
           commitLog.add(currentBatchId)
           committedOffsets ++= availableOffsets
@@ -462,9 +469,13 @@ class MicroBatchExecution(
 
     // A list of attributes that will need to be updated.
     val replacements = new ArrayBuffer[(Attribute, Attribute)]
+    // 用新的dataPlan去替换logical plan中仍包含上一个batch的数据的source。
+    // 注意，在这里logicalPlan不会改变。如果logicalPlan被改变了，那么之后就case不到StreamingExecutionRelation了呀。
+    // 所以这里返回的应该是logicalPlan被修改后的副本，logicalPlan本身还是不会变的。
     // Replace sources in the logical plan with data that has arrived since the last batch.
     val newBatchesPlan = logicalPlan transform {
-      case StreamingExecutionRelation(source, output) =>
+      case StreamingExecutionRelation(source, output) => // 就是说把原先逻辑上的Relation，
+                                                          // 替换成了一个包含该batch的数据的实际Relation
         newData.get(source).map { dataPlan =>
           assert(output.size == dataPlan.output.size,
             s"Invalid batch: ${Utils.truncatedString(output, ",")} != " +
@@ -482,6 +493,7 @@ class MicroBatchExecution(
     val newAttributePlan = newBatchesPlan transformAllExpressions {
       case a: Attribute if replacementMap.contains(a) =>
         replacementMap(a).withMetadata(a.metadata)
+        // TODO read CurrentTimestamp && CurrentDate
       case ct: CurrentTimestamp =>
         CurrentBatchTimestamp(offsetSeqMetadata.batchTimestampMs,
           ct.dataType)
@@ -490,6 +502,7 @@ class MicroBatchExecution(
           cd.dataType, cd.timeZoneId)
     }
 
+    // TODO read triggerLogicalPlan with sink
     val triggerLogicalPlan = sink match {
       case _: Sink => newAttributePlan
       case s: MicroBatchWriteSupport =>
@@ -516,6 +529,7 @@ class MicroBatchExecution(
       lastExecution.executedPlan // Force the lazy generation of execution plan
     }
 
+    // 构建一个Dataset用于执行该batch
     val nextBatch =
       new Dataset(sparkSessionToRunBatch, lastExecution, RowEncoder(lastExecution.analyzed.schema))
 

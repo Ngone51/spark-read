@@ -76,7 +76,7 @@ trait ProgressReporter extends Logging {
   /** Holds the most recent query progress updates.  Accesses must lock on the queue itself. */
   private val progressBuffer = new mutable.Queue[StreamingQueryProgress]()
 
-  // 当没有数据到达时，在两个过程事件中的等待时间
+  // 当没有数据到达时，在两个过程事件中的等待时间，默认10秒
   private val noDataProgressEventInterval =
     sparkSession.sessionState.conf.streamingNoDataProgressEventInterval
 
@@ -136,6 +136,7 @@ trait ProgressReporter extends Logging {
   protected def finishTrigger(hasNewData: Boolean): Unit = {
     currentTriggerEndTimestamp = triggerClock.getTimeMillis()
 
+    // TODO read extractExecutionStats
     val executionStats = extractExecutionStats(hasNewData)
     val processingTimeSec =
       (currentTriggerEndTimestamp - currentTriggerStartTimestamp).toDouble / 1000
