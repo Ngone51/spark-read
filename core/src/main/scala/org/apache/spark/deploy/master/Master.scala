@@ -649,7 +649,7 @@ private[deploy] class Master(
     val coresPerExecutor = app.desc.coresPerExecutor
     val minCoresPerExecutor = coresPerExecutor.getOrElse(1)
     // 如果coresPerExecutor为空，则每个worker上只能启动一个executor
-    // (因为该executor会霸占该worker的所有的cores)
+    // (因为该executor会霸占该worker的所有可用的cores)
     val oneExecutorPerWorker = coresPerExecutor.isEmpty
     // 每个executor的所需内存
     val memoryPerExecutor = app.desc.memoryPerExecutorMB
@@ -682,13 +682,13 @@ private[deploy] class Master(
         val underLimit = assignedExecutors.sum + app.executors.size < app.executorLimit
         keepScheduling && enoughCores && enoughMemory && underLimit
       } else {
-        // FIXME no need to check memory??? 至少得check一次吧???在哪儿呢???
         // We're adding cores to an existing executor, so no need
         // to check memory and executor limits
         keepScheduling && enoughCores
       }
     }
 
+    // 注意，filter之后返回的是workers对应的序号的集合！
     // Keep launching executors until no more workers can accommodate any
     // more executors, or if we have reached this application's limits
     var freeWorkers = (0 until numUsable).filter(canLaunchExecutor)
@@ -744,14 +744,15 @@ private[deploy] class Master(
     for (app <- waitingApps) {
       val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1)
       // QUESTION: 如果该app还需要的cpu核数小于每个executor的核数，则不分配????为什么???
+      // ANSWER：显然的啊，因为人家要求就要这么多，但是你比人家要求的少，还怎么分配给人家呢。
       // If the cores left is less than the coresPerExecutor,the cores left will not be allocated
       if (app.coresLeft >= coresPerExecutor) {
-        // 可用核数最多的worker先来
+        // 过滤掉那些剩余的可用资源不足以发起一个executor的worker
         // Filter out workers that don't have enough resources to launch an executor
         val usableWorkers = workers.toArray.filter(_.state == WorkerState.ALIVE)
           .filter(worker => worker.memoryFree >= app.desc.memoryPerExecutorMB &&
             worker.coresFree >= coresPerExecutor)
-          .sortBy(_.coresFree).reverse
+          .sortBy(_.coresFree).reverse  // 可用核数最多的worker先来
         val assignedCores = scheduleExecutorsOnWorkers(app, usableWorkers, spreadOutApps)
 
         // 通过scheduleExecutorsOnWorkers我们已经在逻辑上分配好了每个worker为了启动executor所分配的
@@ -808,8 +809,10 @@ private[deploy] class Master(
     val shuffledAliveWorkers = Random.shuffle(workers.toSeq.filter(_.state == WorkerState.ALIVE))
     val numWorkersAlive = shuffledAliveWorkers.size
     var curPos = 0
-    // 如果有等待发起的driver(info)s,我们必须先launch drivers
+    // 如果有等待发起的driver(info)s,我们必须先launch drivers（不只是发起一个，而是能发起多少个就发起多少个。）
     for (driver <- waitingDrivers.toList) { // iterate over a copy of waitingDrivers
+      // 注意！！！（从curPos可以看到）每次分配一个driver，会首先从上一次成功分配了driver的那个worker开始尝试。
+      // 这就意味着，standalone会更倾向于集中地的在一个worker上发起多个driver。
       // We assign workers to each waiting driver in a round-robin fashion. For each driver, we
       // start from the last worker that was assigned a driver, and continue onwards until we have
       // explored all alive workers.
@@ -818,6 +821,7 @@ private[deploy] class Master(
       while (numWorkersVisited < numWorkersAlive && !launched) {
         val worker = shuffledAliveWorkers(curPos)
         numWorkersVisited += 1
+        // 从这里我们可以看到，只要一个worker的资源足够，是可以同时发起多个driver进程的。
         if (worker.memoryFree >= driver.desc.mem && worker.coresFree >= driver.desc.cores) {
           // 如果该worker的资源（内存、cpu核数）满足driver描述，则在该worker上发起一个driver进程
           launchDriver(worker, driver)
@@ -827,6 +831,7 @@ private[deploy] class Master(
         curPos = (curPos + 1) % numWorkersAlive
       }
     }
+    // 在driver分配完后，接下来开始在worker上分配executors。
     // 由于在while循环中launchDriver()是异步的，所以startExecutorsOnWorkers()也会马上执行
     // QUESTION：如果在startExecutorsOnWorkers执行过程中，driver还没启动怎么办？？？
     startExecutorsOnWorkers()
@@ -1129,6 +1134,7 @@ private[deploy] class Master(
     driver.worker = Some(worker)
     // 向该worker发送LaunchDriver消息，希望它能启动一个driver进程
     worker.endpoint.send(LaunchDriver(driver.id, driver.desc))
+    // QUESTION：直接在send之后就将driver.state设置为RUNNING。可是，万一DRIVER启动失败了呢？
     driver.state = DriverState.RUNNING
   }
 

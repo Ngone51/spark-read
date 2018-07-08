@@ -235,15 +235,15 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
               logDebug(s"Decremented number of pending executors ($numPendingExecutors left)")
             }
           }
-          // 通知executor进程，executor注册成功。executor进程接收到该消息会
-          // 创建一个Executor对象。
+          // 通知executor进程（即由CoarseGrainedExecutorBackend对象开启的进程），executor注册成功。
+          // executor进程接收到该消息会创建一个Executor对象。
           executorRef.send(RegisteredExecutor)
           // Note: some tests expect the reply to come after we put the executor in the map
           context.reply(true)
           // 将executor添加事件放到监听总线上
           listenerBus.post(
             SparkListenerExecutorAdded(System.currentTimeMillis(), executorId, data))
-          // 我们接收到了新的计算资源，所以立马查看有没有task可以被执行
+          // 我们接收到了新的计算资源，所以立马查看有没有task可以被执行（感觉这一行代码写的实在太漂亮了！）
           makeOffers()
         }
 

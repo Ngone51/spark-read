@@ -600,11 +600,14 @@ private[deploy] class Worker(
         self,
         workerUri,
         securityMgr)
+      // 可以透过drivers这个对象看到，一个worker上可以同时开启多个driver
       drivers(driverId) = driver
-      // 在该worker上启动该driver线程（也就说，该worker现在就是一个driver了）
+      // 在该worker上启动该driver线程
       driver.start()
 
-      // worker的资源变化什么时候同步到master???
+      // QUESTION：worker的资源变化什么时候同步到master???
+      // ANSWER：worker在向master注册时，就已经将自己所有的资源情况报备给了master。master在向该worker分配driver时，
+      // 已经将该worker的可用资源更新了（即减去了该driver所需要的资源）。所以，此处，不需要再同步到master。
       coresUsed += driverDesc.cores
       memoryUsed += driverDesc.mem
 

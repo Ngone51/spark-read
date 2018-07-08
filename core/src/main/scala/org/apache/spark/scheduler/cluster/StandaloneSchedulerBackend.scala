@@ -172,7 +172,8 @@ private[spark] class StandaloneSchedulerBackend(
     }
   }
 
-  // 为该app新增一个executor后，具体地啥也没干啊...
+  // 为该app新增一个executor后，具体地啥也没干啊..（答：不用慌，在worker上新启动
+  // 的executor进程（CoarseGrainedExecutorBackend）之后会通过自己向driver注册的。）
   // QUESTION：该executor是只能由该app使用吗???如果该app使用完该executor之后，是要kill掉
   // 该executor吗???还是让其它的app复用???
   override def executorAdded(fullId: String, workerId: String, hostPort: String, cores: Int,

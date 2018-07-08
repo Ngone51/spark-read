@@ -138,8 +138,11 @@ class RateStreamSource(
 
   val clock = if (useManualClock) new ManualClock else new SystemClock
 
+  // 也就是说该source最多生成Long.MaxValue个rows，则该source最长的供给时间就是Long.MaxValue / rowsPerSecond。
+  // 同时，该时间其实也对应了该source的最大偏移量offset。
   private val maxSeconds = Long.MaxValue / rowsPerSecond
 
+  // 显然rampUpTimeSeconds是不可能大于maxSeconds的
   if (rampUpTimeSeconds > maxSeconds) {
     throw new ArithmeticException(
       s"Integer overflow. Max offset with $rowsPerSecond rowsPerSecond" +
