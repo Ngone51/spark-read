@@ -106,6 +106,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   def find(f: BaseType => Boolean): Option[BaseType] = if (f(this)) {
     Some(this)
   } else {
+    // 如果children为empty，则foldLeft同样会返回Option.empty[BaseType]。
+    // （这个简直有点妙！）
     children.foldLeft(Option.empty[BaseType]) { (l, r) => l.orElse(r.find(f)) }
   }
 
@@ -114,11 +116,13 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * @param f the function to be applied to each node in the tree.
    */
   def foreach(f: BaseType => Unit): Unit = {
+    // 相当于也是先序遍历咯
     f(this)
     children.foreach(_.foreach(f))
   }
 
   /**
+   * 自下而上，相当于后续遍历
    * Runs the given function recursively on [[children]] then on this node.
    * @param f the function to be applied to each node in the tree.
    */
@@ -128,6 +132,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   }
 
   /**
+   * 把一棵tree转成了一个Seq
    * Returns a Seq containing the result of applying the given function to each
    * node in this tree in a preorder traversal.
    * @param f the function to be applied.
@@ -154,6 +159,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    */
   def collect[B](pf: PartialFunction[BaseType, B]): Seq[B] = {
     val ret = new collection.mutable.ArrayBuffer[B]()
+    // TODO & QUESTION PartialFunction.lift ？？？
     val lifted = pf.lift
     foreach(node => lifted(node).foreach(ret.+=))
     ret
