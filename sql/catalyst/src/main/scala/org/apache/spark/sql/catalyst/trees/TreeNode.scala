@@ -160,6 +160,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   def collect[B](pf: PartialFunction[BaseType, B]): Seq[B] = {
     val ret = new collection.mutable.ArrayBuffer[B]()
     // TODO & QUESTION PartialFunction.lift ？？？
+    // ANSWER: see https://stackoverflow.com/questions/17965059/what-is-lifting-in-scala for explanation
     val lifted = pf.lift
     foreach(node => lifted(node).foreach(ret.+=))
     ret
@@ -184,6 +185,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   }
 
   /**
+   * 用于将该TreeNode的所有参数在应用方法f后的结果以Array的形式返回。
    * Efficient alternative to `productIterator.map(f).toArray`.
    */
   protected def mapProductIterator[B: ClassTag](f: Any => B): Array[B] = {
@@ -205,6 +207,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     var changed = false
     val remainingNewChildren = newChildren.toBuffer
     val remainingOldChildren = children.toBuffer
+    // 构建该TreeNode的新参数
     val newArgs = mapProductIterator {
       case s: StructType => s // Don't convert struct types to some other type of Seq[StructField]
       // Handle Seq[TreeNode] in TreeNode parameters.
@@ -397,6 +400,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     if (ctors.isEmpty) {
       sys.error(s"No valid constructor for $nodeName")
     }
+    // Question： Array的类型为AnyRef，是不是意味着在参数中，不会存在AnyVal(e.g. Int, Boolean)类型？
     val allArgs: Array[AnyRef] = if (otherCopyArgs.isEmpty) {
       newArgs
     } else {
@@ -417,6 +421,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
     try {
       CurrentOrigin.withOrigin(origin) {
+        // 注意`_*`的使用，它使得一个array以可变长参数的形式传给newInstance这个方法。
         defaultCtor.newInstance(allArgs.toArray: _*).asInstanceOf[BaseType]
       }
     } catch {
