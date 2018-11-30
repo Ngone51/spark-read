@@ -350,9 +350,14 @@ private[spark] class Client(
     val destFs = destDir.getFileSystem(hadoopConf)
     val srcFs = srcPath.getFileSystem(hadoopConf)
     var destPath = srcPath
+    // compareFs，可以避免已经上传至同一个HDFS文件系统中的文件重复拷贝
+    // TODO read Client#compareFs
     if (force || !compareFs(srcFs, destFs) || "file".equals(srcFs.getScheme)) {
       destPath = new Path(destDir, destName.getOrElse(srcPath.getName()))
       logInfo(s"Uploading resource $srcPath -> $destPath")
+      // 上传文件到远程文件系统，e.g. HDFS
+      // FIXME 我们可以在这里调用copy(srcFS, fileStatus, dstFS, dst, deleteSource, overwrite, conf),
+      //  然后直接将fileStatus缓存到statCache中
       FileUtil.copy(srcFs, srcPath, destFs, destPath, false, hadoopConf)
       destFs.setReplication(destPath, replication)
       destFs.setPermission(destPath, new FsPermission(APP_FILE_PERMISSION))
@@ -363,6 +368,7 @@ private[spark] class Client(
     // version shows the specific version in the distributed cache configuration
     val qualifiedDestPath = destFs.makeQualified(destPath)
     val qualifiedDestDir = qualifiedDestPath.getParent
+    // TODO & QUESTION symlinkCache 什么意思啊？
     val resolvedDestDir = symlinkCache.getOrElseUpdate(qualifiedDestDir.toUri(), {
       val fc = FileContext.getFileContext(qualifiedDestDir.toUri(), hadoopConf)
       fc.resolvePath(qualifiedDestDir)
@@ -371,6 +377,9 @@ private[spark] class Client(
   }
 
   /**
+   * QUESTION：如果已经手动上传了spark的jar包到HDFS上，那么，是否还会上传？
+   * ANSWER： 不会。因为copyFileToRemote()在拷贝文件之前会先判断源文件系统和目标文件系统是否为同一个文件系统，如果是，
+   * 则无需重复拷贝！
    * Upload any resources to the distributed cache if needed. If a resource is intended to be
    * consumed locally, set up the appropriate config for downstream code to handle it properly.
    * This is used for setting up a container launch context for our ApplicationMaster.
@@ -380,10 +389,12 @@ private[spark] class Client(
       destDir: Path,
       pySparkArchives: Seq[String]): HashMap[String, LocalResource] = {
     logInfo("Preparing resources for our AM container")
+    // 如果必要的话，将Spark和应用程序的jar包上传到远程的文件系统上，并且将它们作为Application Master的本地资源添加进去。
     // Upload Spark and the application JAR to the remote file system if necessary,
     // and add them as local resources to the application master.
     val fs = destDir.getFileSystem(hadoopConf)
 
+    // TODO read credentialManager
     // Merge credentials obtained from registered providers
     val nearestTimeOfNextRenewal = credentialManager.obtainDelegationTokens(hadoopConf, credentials)
 
@@ -423,9 +434,11 @@ private[spark] class Client(
     // containers for the app with an internal error.
     val distributedNames = new HashSet[String]
 
+    // 文件复本个数
     val replication = sparkConf.get(STAGING_FILE_REPLICATION).map(_.toShort)
       .getOrElse(fs.getDefaultReplication(destDir))
     val localResources = HashMap[String, LocalResource]()
+    // 在fs上创建具有指定权限（Private）的目标目录
     FileSystem.mkdirs(fs, destDir, new FsPermission(STAGING_DIR_PERMISSION))
 
     val statCache: Map[URI, FileStatus] = HashMap[URI, FileStatus]()
@@ -475,13 +488,16 @@ private[spark] class Client(
           val localPath = getQualifiedLocalPath(localURI, hadoopConf)
           val linkname = targetDir.map(_ + "/").getOrElse("") +
             destName.orElse(Option(localURI.getFragment())).getOrElse(localPath.getName())
+          // 先将该本地文件上传至远程文件系统（e.g. HDFS）
           val destPath = copyFileToRemote(destDir, localPath, replication, symlinkCache)
           val destFs = FileSystem.get(destPath.toUri(), hadoopConf)
+          // 然后再将该资源添加到distribute cache的资源列表中（到时候app master或executor就能去下载）
           distCacheMgr.addResource(
             destFs, hadoopConf, destPath, localResources, resType, linkname, statCache,
             appMasterOnly = appMasterOnly)
           (false, linkname)
         } else {
+          // 具有相同路径或名称的资源已经添加到了distributed cache中
           (false, null)
         }
       } else {
@@ -501,6 +517,7 @@ private[spark] class Client(
     }
 
     /**
+     * TODO & QUESTION 如果spark jar包已经上传到HDFS了，那么，这里是不是还是会上传？
      * Add Spark to the cache. There are two settings that control what files to add to the cache:
      * - if a Spark archive is defined, use the archive. The archive is expected to contain
      *   jar files at its root directory.
@@ -522,10 +539,14 @@ private[spark] class Client(
         case Some(jars) =>
           // Break the list of jars to upload, and resolve globs.
           val localJars = new ArrayBuffer[String]()
+          // distribute spark的jar包。所以，如果jar包比较多，可能会比较耗时，此时建议将jar包压缩成归档文件，
+          // 以spark.yarn.archive的方式加载。NodeManager下载该文件后，会自动解压，并将所有jar包添加到CLASSPATH中。
           jars.foreach { jar =>
             if (!isLocalUri(jar)) {
+              // TODO & QUESTION & read Client#getQualifiedLocalPath
               val path = getQualifiedLocalPath(Utils.resolveURI(jar), hadoopConf)
               val pathFs = FileSystem.get(path.toUri(), hadoopConf)
+              // 匹配具有path模式的文件，并且获取它们的FileStatus
               pathFs.globStatus(path).filter(_.isFile()).foreach { entry =>
                 val uri = entry.getPath().toUri()
                 statCache.update(uri, entry)
@@ -536,6 +557,7 @@ private[spark] class Client(
             }
           }
 
+          // 本地的jar包，只要通过spark.yarn.jars配置，就能让本地的containers用了
           // Propagate the local URIs to the containers using the configuration.
           sparkConf.set(SPARK_JARS, localJars)
 
@@ -577,6 +599,7 @@ private[spark] class Client(
       val (isLocal, localizedPath) = distribute(jar, destName = Some(APP_JAR_NAME))
       if (isLocal) {
         require(localizedPath != null, s"Path $jar already distributed")
+        // TODO & QUESTION 不会被覆盖吗？ userJar只有一个？ userJar是指app master的jar吗？还是Spark app的user jar？
         // If the resource is intended for local use only, handle this downstream
         // by setting the appropriate property
         sparkConf.set(APP_JAR, localizedPath)
@@ -628,6 +651,7 @@ private[spark] class Client(
       distribute(f, targetDir = targetDir)
     }
 
+    // 针对所有的distributed files，更新conf，但不把archive conf列入在内。
     // Update the configuration with all the distributed files, minus the conf archive. The
     // conf archive will be handled by the AM differently so that we avoid having to send
     // this configuration by other means. See SPARK-14602 for one reason of why this is needed.
@@ -645,6 +669,7 @@ private[spark] class Client(
     val remoteFs = FileSystem.get(remoteConfArchivePath.toUri(), hadoopConf)
     sparkConf.set(CACHED_CONF_ARCHIVE, remoteConfArchivePath.toString())
 
+    // TODO read Client#createConfArchive
     val localConfArchive = new Path(createConfArchive().toURI())
     copyFileToRemote(destDir, localConfArchive, replication, symlinkCache, force = true,
       destName = Some(LOCALIZED_CONF_ARCHIVE))
@@ -655,6 +680,8 @@ private[spark] class Client(
       remoteFs, hadoopConf, remoteConfArchivePath, localResources, LocalResourceType.ARCHIVE,
       LOCALIZED_CONF_DIR, statCache, appMasterOnly = false)
 
+    // QUESTION 这里删除了配置，那AM或Executor怎么再去获取呢？
+    // ANSWER: 看createConfArchive()方法，已经把这些配置写入到conf archive中，am和Executor通过conf archive去获取
     // Clear the cache-related entries from the configuration to avoid them polluting the
     // UI's environment page. This works for client mode; for cluster mode, this is handled
     // by the AM.
@@ -859,7 +886,9 @@ private[spark] class Client(
         Nil
       }
 
+    // TODO read Client#setupLaunchEnv
     val launchEnv = setupLaunchEnv(appStagingDirPath, pySparkArchives)
+    // TODO read Client#prepareLocalResources
     val localResources = prepareLocalResources(appStagingDirPath, pySparkArchives)
 
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
@@ -1318,6 +1347,7 @@ private object Client extends Logging {
     addClasspathEntry(buildPath(Environment.PWD.$$(), LOCALIZED_LIB_DIR, "*"), env)
     if (sparkConf.get(SPARK_ARCHIVE).isEmpty) {
       sparkConf.get(SPARK_JARS).foreach { jars =>
+        // only本地的spark jar包
         jars.filter(isLocalUri).foreach { jar =>
           val uri = new URI(jar)
           addClasspathEntry(getClusterPath(sparkConf, uri.getPath()), env)

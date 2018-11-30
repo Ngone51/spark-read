@@ -35,10 +35,13 @@ private case class CacheEntry(
   uri: URI,
   size: Long,
   modTime: Long,
+  // Public: 在所有用户之间共享；Private: 在同一用户的所有应用之间共享；Application: 在同一个应用中共享
   visibility: LocalResourceVisibility,
   resType: LocalResourceType)
 
-/** Client side methods to setup the Hadoop distributed cache */
+/**
+ * 用于建立Hadoop distributed cache的客户端方法
+ * Client side methods to setup the Hadoop distributed cache */
 private[spark] class ClientDistributedCacheManager() extends Logging {
 
   private val distCacheEntries = new ListBuffer[CacheEntry]()
@@ -68,9 +71,11 @@ private[spark] class ClientDistributedCacheManager() extends Logging {
       link: String,
       statCache: Map[URI, FileStatus],
       appMasterOnly: Boolean = false): Unit = {
+    // FIXME： 这里应该是getOrElseUpdate才对
     val destStatus = statCache.getOrElse(destPath.toUri(), fs.getFileStatus(destPath))
     val amJarRsrc = Records.newRecord(classOf[LocalResource])
     amJarRsrc.setType(resourceType)
+    // 获取该文件的权限信息（public or private）
     val visibility = getVisibility(conf, destPath.toUri(), statCache)
     amJarRsrc.setVisibility(visibility)
     amJarRsrc.setResource(ConverterUtils.getYarnUrlFromPath(destPath))
@@ -79,6 +84,7 @@ private[spark] class ClientDistributedCacheManager() extends Logging {
     require(link != null && link.nonEmpty, "You must specify a valid link name.")
     localResources(link) = amJarRsrc
 
+    // 如果该本地资源还需要被executor端所使用，则将其添加到distCacheEntries中
     if (!appMasterOnly) {
       val uri = destPath.toUri()
       val pathURI = new URI(uri.getScheme(), uri.getAuthority(), uri.getPath(), null, link)
@@ -106,6 +112,7 @@ private[spark] class ClientDistributedCacheManager() extends Logging {
       conf: Configuration,
       uri: URI,
       statCache: Map[URI, FileStatus]): LocalResourceVisibility = {
+    //  除了Public就是Private，没有Application ？
     if (isPublic(conf, uri, statCache)) {
       LocalResourceVisibility.PUBLIC
     } else {
@@ -124,10 +131,14 @@ private[spark] class ClientDistributedCacheManager() extends Logging {
     if (!checkPermissionOfOther(fs, current, FsAction.READ, statCache)) {
       return false
     }
+    // 在文件本身对于其它用户是可读的前提下，我们再检查该文件所在的所有上级目录对于其它用户是否具有可执行权限。
+    // 只有当上述两个条件都满足之后，该文件才能被认定是Public的，及被所有用户共享。
     ancestorsHaveExecutePermissions(fs, current.getParent(), statCache)
   }
 
   /**
+   * 如果给定路径的所有祖先目录对于其他用户都拥有执行权限，则该方法返回true。
+   *  因为某些其它用户可能会根据给定的目录来按目录层级进行遍历。
    * Returns true if all ancestors of the specified path have the 'execute'
    * permission set for all users (i.e. that other users can traverse
    * the directory hierarchy to the given path)
@@ -138,6 +149,7 @@ private[spark] class ClientDistributedCacheManager() extends Logging {
       path: Path,
       statCache: Map[URI, FileStatus]): Boolean = {
     var current = path
+    // 注意，循环退出条件是current=null（直到根目录？）。所以，该方法会一直递推向上找path的所有父目录。
     while (current != null) {
       // the subdirs in the path should have execute permissions for others
       if (!checkPermissionOfOther(fs, current, FsAction.EXECUTE, statCache)) {

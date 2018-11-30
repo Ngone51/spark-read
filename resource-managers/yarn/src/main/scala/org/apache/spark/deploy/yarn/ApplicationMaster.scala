@@ -221,6 +221,7 @@ private[spark] class ApplicationMaster(args: ApplicationMasterArguments) extends
     val visibilities = sparkConf.get(CACHED_FILES_VISIBILITIES)
     val resTypes = sparkConf.get(CACHED_FILES_TYPES)
 
+    // 所以你上面五个配置得一一对应，万一没有对应怎么办？不检查一下吗
     for (i <- 0 to distFiles.size - 1) {
       val resType = LocalResourceType.valueOf(resTypes(i))
       setupDistributedCache(distFiles(i), resType, timeStamps(i).toString, fileSizes(i).toString,
