@@ -886,9 +886,7 @@ private[spark] class Client(
         Nil
       }
 
-    // TODO read Client#setupLaunchEnv
     val launchEnv = setupLaunchEnv(appStagingDirPath, pySparkArchives)
-    // TODO read Client#prepareLocalResources
     val localResources = prepareLocalResources(appStagingDirPath, pySparkArchives)
 
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
